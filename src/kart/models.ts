@@ -773,41 +773,122 @@ function haloSprite(color: string, size: number, opacity = 0.9) {
 }
 
 /**
- * Item box: an iridescent glass cube with a glowing rainbow frame, a "?"
- * floating inside and a soft glow around it. The game cycles its colours.
+ * Item box: a thick iridescent glass cube with glossy bevelled edges, an
+ * embossed "?" on every face, a golden gem spinning inside, glints orbiting
+ * it and a pool of coloured light on the road below. The game cycles its
+ * colours and spins the parts against each other.
  */
-export function itemBox(glyph: THREE.Texture) {
+export function itemBox(face: THREE.Texture, spark: THREE.Texture) {
   const g = new THREE.Group();
-  const cube = new THREE.Mesh(rbox(1.5, 1.5, 1.5, 0.24), new THREE.MeshPhysicalMaterial({
-    color: "#9fd0ff", transparent: true, opacity: 0.62, roughness: 0.06, metalness: 0.05,
-    iridescence: 1, iridescenceIOR: 1.8, iridescenceThicknessRange: [200, 900],
-    clearcoat: 1, emissive: "#3f7dff", emissiveIntensity: 0.5, depthWrite: false,
+  const shellGeo = rbox(1.5, 1.5, 1.5, 0.3);
+  // The glass: a front shell, plus a dimmer back shell that gives it depth.
+  const cube = new THREE.Mesh(shellGeo, new THREE.MeshPhysicalMaterial({
+    color: "#9fd0ff", transparent: true, opacity: 0.5, roughness: 0.04, metalness: 0.1,
+    iridescence: 0.8, iridescenceIOR: 1.9, iridescenceThicknessRange: [180, 950],
+    clearcoat: 1, clearcoatRoughness: 0.02, emissive: "#3f7dff", emissiveIntensity: 0.55,
+    depthWrite: false, side: THREE.FrontSide,
   }));
-  cube.renderOrder = 3;
+  cube.renderOrder = 4;
   g.add(cube);
-  // Glowing edges and corner studs, riding on the cube as it tumbles.
-  const frameMat = new THREE.MeshStandardMaterial({ color: "#ffffff", emissive: "#7fb4ff", emissiveIntensity: 2.2, roughness: 0.3 });
-  const frame = new THREE.Mesh(cached("boxFrame", () => {
+  const inner = new THREE.Mesh(shellGeo, new THREE.MeshBasicMaterial({
+    color: "#6f9bff", transparent: true, opacity: 0.22, depthWrite: false, side: THREE.BackSide,
+    blending: THREE.AdditiveBlending, toneMapped: false,
+  }));
+  inner.renderOrder = 2;
+  cube.add(inner);
+  // "?" decals, one per face, just proud of the glass.
+  const decal = new THREE.Mesh(cached("boxDecal", () => new THREE.BoxGeometry(1.51, 1.51, 1.51)), texMat("boxFace", () => new THREE.MeshBasicMaterial({
+    map: face, transparent: true, depthWrite: false, toneMapped: false, side: THREE.FrontSide,
+  })));
+  decal.renderOrder = 5;
+  cube.add(decal);
+  // Glossy bevelled edges and corner studs, riding on the cube as it tumbles.
+  const frameMat = new THREE.MeshPhysicalMaterial({
+    color: "#c9d6ff", emissive: "#7fb4ff", emissiveIntensity: 1.9, roughness: 0.18, metalness: 0.2,
+    clearcoat: 1, clearcoatRoughness: 0.05,
+  });
+  const frame = new THREE.Mesh(cached("boxFrame2", () => {
     const parts: THREE.BufferGeometry[] = [];
-    const e = 0.7;
+    const e = 0.69;
     for (const [a, b] of [[e, e], [e, -e], [-e, e], [-e, -e]]) {
-      parts.push(new THREE.CapsuleGeometry(0.055, 1.28, 4, 8).translate(a, 0, b));
-      parts.push(new THREE.CapsuleGeometry(0.055, 1.28, 4, 8).rotateZ(Math.PI / 2).translate(0, a, b));
-      parts.push(new THREE.CapsuleGeometry(0.055, 1.28, 4, 8).rotateX(Math.PI / 2).translate(a, b, 0));
+      parts.push(new THREE.CapsuleGeometry(0.075, 1.24, 4, 10).translate(a, 0, b));
+      parts.push(new THREE.CapsuleGeometry(0.075, 1.24, 4, 10).rotateZ(Math.PI / 2).translate(0, a, b));
+      parts.push(new THREE.CapsuleGeometry(0.075, 1.24, 4, 10).rotateX(Math.PI / 2).translate(a, b, 0));
     }
-    for (const x of [e, -e]) for (const y of [e, -e]) for (const z of [e, -e]) parts.push(new THREE.SphereGeometry(0.1, 10, 8).translate(x, y, z));
+    for (const x of [e, -e]) for (const y of [e, -e]) for (const z of [e, -e]) parts.push(new THREE.SphereGeometry(0.14, 14, 10).translate(x, y, z));
     return mergeGeometries(parts)!;
   }), frameMat);
+  frame.renderOrder = 6;
   cube.add(frame);
-  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: glyph, depthWrite: false, toneMapped: false }));
-  spr.scale.setScalar(1.05);
-  spr.renderOrder = 4;
-  g.add(spr);
-  const halo = haloSprite("#8fc4ff", 3.4, 0.35);
-  halo.renderOrder = 2;
+  // A golden gem turning the other way inside.
+  const core = new THREE.Mesh(cached("boxGem", () => new THREE.OctahedronGeometry(0.34, 0).scale(1, 1.35, 1)), texMat("boxGem", () => new THREE.MeshPhysicalMaterial({
+    color: "#ffd84a", emissive: "#ff9d00", emissiveIntensity: 1.1, roughness: 0.12, metalness: 0.6,
+    clearcoat: 1, flatShading: true,
+  })));
+  core.renderOrder = 3;
+  g.add(core);
+  const halo = haloSprite("#9fc8ff", 3.8, 0.4);
+  halo.renderOrder = 1;
   g.add(halo);
+  // Glints orbiting the box.
+  const orbit = new THREE.Group();
+  const sparkMat = texMat("boxSpark", () => new THREE.SpriteMaterial({
+    map: spark, color: "#ffffff", transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }));
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2;
+    const s = new THREE.Sprite(sparkMat as THREE.SpriteMaterial);
+    s.position.set(Math.cos(a) * 1.35, Math.sin(a * 2) * 0.55, Math.sin(a) * 1.35);
+    s.scale.setScalar(0.5);
+    s.userData.k = k;
+    orbit.add(s);
+  }
+  g.add(orbit);
+  // Coloured light pooled on the road under the box.
+  const poolBase = texMat("boxPool", () => new THREE.MeshBasicMaterial({
+    map: T.blobTex("rgba(255,255,255,1)", "rgba(255,255,255,0)"), color: "#7fb4ff", transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }));
+  // Own copy of the material (sharing the texture) so each box tints its own pool.
+  const pool = new THREE.Mesh(cached("boxPool", () => new THREE.PlaneGeometry(3.4, 3.4).rotateX(-Math.PI / 2)), poolBase.clone());
+  pool.position.y = -1.25;
+  g.add(pool);
   g.userData.cube = cube;
   g.userData.frame = frameMat;
+  g.userData.inner = inner.material;
+  g.userData.core = core;
+  g.userData.orbit = orbit;
+  g.userData.pool = pool;
+  return g;
+}
+
+/**
+ * Coin Magnet field: two counter-spinning rings of red and white light and
+ * a faint dome, around the player while the magnet is on.
+ */
+export function magnetAura() {
+  const g = new THREE.Group();
+  const ringMat = (color: string, o: number) => new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: o, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const a = new THREE.Mesh(cached("magRingA", () => new THREE.TorusGeometry(1.9, 0.045, 8, 64)), ringMat("#ff3d5a", 0.95));
+  const b = new THREE.Mesh(cached("magRingB", () => new THREE.TorusGeometry(2.15, 0.03, 8, 64)), ringMat("#ffffff", 0.7));
+  a.rotation.x = Math.PI / 2;
+  b.rotation.x = Math.PI / 2;
+  g.add(a, b);
+  // Dashed field lines: short arcs that sweep round.
+  const dash = new THREE.Group();
+  for (let k = 0; k < 6; k++) {
+    const m = new THREE.Mesh(cached("magDash", () => new THREE.TorusGeometry(2.45, 0.05, 6, 12, Math.PI / 7)), ringMat(k % 2 ? "#ff8a9a" : "#ffd84a", 0.9));
+    m.rotation.set(Math.PI / 2, 0, (k / 6) * Math.PI * 2);
+    dash.add(m);
+  }
+  g.add(dash);
+  g.add(haloSprite("#ff3d5a", 4.2, 0.28));
+  g.position.y = 0.7;
+  g.userData.a = a;
+  g.userData.b = b;
+  g.userData.dash = dash;
   return g;
 }
 

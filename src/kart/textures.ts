@@ -490,25 +490,78 @@ export function coinFaceTex(kind: CoinKind) {
   return tex(c, false);
 }
 
-/** The glowing mark that floats inside item boxes. */
-export function itemGlyphTex() {
-  const S = 128;
+/**
+ * One face of an item box: a bevelled inner frame and a big embossed "?"
+ * with a soft glow, on a transparent ground so the glass shows through.
+ */
+export function itemFaceTex() {
+  const S = 256;
   const [c, g] = canvas(S, S);
-  const glow = g.createRadialGradient(S / 2, S / 2, 4, S / 2, S / 2, S / 2);
-  glow.addColorStop(0, "rgba(255,255,255,.9)");
-  glow.addColorStop(0.5, "rgba(140,200,255,.35)");
-  glow.addColorStop(1, "rgba(140,200,255,0)");
+  const rr = (x: number, y: number, w: number, h: number, r: number) => {
+    g.beginPath();
+    g.roundRect(x, y, w, h, r);
+  };
+  // Inner bevel: a bright hairline with a darker line inside it.
+  rr(22, 22, S - 44, S - 44, 34);
+  g.lineWidth = 7;
+  g.strokeStyle = "rgba(255,255,255,.75)";
+  g.stroke();
+  rr(34, 34, S - 68, S - 68, 26);
+  g.lineWidth = 3;
+  g.strokeStyle = "rgba(255,255,255,.28)";
+  g.stroke();
+  // Corner glints.
+  g.fillStyle = "rgba(255,255,255,.9)";
+  for (const [x, y] of [[40, 40], [S - 40, 40], [40, S - 40], [S - 40, S - 40]]) {
+    g.beginPath();
+    g.arc(x, y, 4, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Soft glow behind the mark.
+  const glow = g.createRadialGradient(S / 2, S / 2, 8, S / 2, S / 2, S * 0.36);
+  glow.addColorStop(0, "rgba(255,255,255,.55)");
+  glow.addColorStop(1, "rgba(255,255,255,0)");
   g.fillStyle = glow;
   g.fillRect(0, 0, S, S);
-  g.font = "900 84px 'Inter', 'Arial Black', sans-serif";
+  // The "?": deep outline, drop shadow, gradient fill, top highlight.
+  g.font = "900 172px 'Inter', 'Arial Black', sans-serif";
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.lineWidth = 10;
-  g.strokeStyle = "#2f6bff";
-  g.strokeText("?", S / 2, S / 2 + 6);
-  g.fillStyle = "#ffffff";
-  g.fillText("?", S / 2, S / 2 + 6);
+  const x = S / 2 + 2, y = S / 2 + 12;
+  g.lineJoin = "round";
+  g.lineWidth = 22;
+  g.strokeStyle = "rgba(20,24,80,.55)";
+  g.strokeText("?", x, y + 7);
+  g.lineWidth = 16;
+  g.strokeStyle = "#2140c8";
+  g.strokeText("?", x, y);
+  const fill = g.createLinearGradient(0, y - 80, 0, y + 80);
+  fill.addColorStop(0, "#ffffff");
+  fill.addColorStop(0.55, "#fff4c2");
+  fill.addColorStop(1, "#ffc63a");
+  g.fillStyle = fill;
+  g.fillText("?", x, y);
   return tex(c, false);
+}
+
+/** Four-point sparkle, for glints that orbit pickups. */
+export function sparkleTex() {
+  const S = 64;
+  const [c, g] = canvas(S, S);
+  const core = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  core.addColorStop(0, "rgba(255,255,255,1)");
+  core.addColorStop(0.18, "rgba(255,255,255,.8)");
+  core.addColorStop(0.4, "rgba(255,255,255,.12)");
+  core.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = core;
+  g.fillRect(0, 0, S, S);
+  g.fillStyle = "rgba(255,255,255,.95)";
+  for (const [w, h] of [[3, S], [S, 3]]) {
+    g.beginPath();
+    g.ellipse(S / 2, S / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  return tex(c, false, false);
 }
 
 /** Soft round blob, used for shadows, glows and particles. */

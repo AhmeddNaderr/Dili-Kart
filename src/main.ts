@@ -1,4 +1,5 @@
 import "./style.css";
+import "./ui/hub.css";
 import { DiliCart, LAPS, type RaceResult } from "./kart/race";
 import { buildIntro, greetedThisSession } from "./ui/intro";
 import { mountStage, type MenuStage } from "./ui/stage3d";
@@ -7,7 +8,7 @@ import { MASCOT } from "./kart/mascot";
 import { sfx, setMuted, isMuted } from "./engine/audio";
 import * as api from "./app/api";
 import {
-  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, nextTier, normaliseHandle,
+  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, TIERS, nextTier, normaliseHandle,
   type BoardEntry, type CharId, type RaceReply,
 } from "../shared/rules";
 
@@ -96,8 +97,13 @@ const FLAG = `<svg viewBox="0 0 48 48"><path d="M10 6v38" stroke="currentColor" 
   <path d="M12 8c8-4 14 4 24 0v20c-10 4-16-4-24 0z" fill="#fff"/>
   <path d="M12 8c2-1 4-1 6-.6v6.4c-2-.4-4-.4-6 .4zM24 9.4c2 .8 4 1 6 .6v6.4c-2 .4-4 .2-6-.6zM18 13.8c2 .4 4 1 6 1.6v6.4c-2-.6-4-1.2-6-1.6zM30 16.4c2-.2 4-.8 6-1.6v6.4c-2 .8-4 1.4-6 1.6zM12 21c2-.8 4-1 6-.8v6.4c-2-.2-4 0-6 .8zM24 21.8c2 .6 4 1 6 .8v6.2c-2 .2-4-.2-6-.8z" fill="#0b0c14"/></svg>`;
 
-function brand() {
-  return `<div class="brand">${LOGO}<b>Dili Cart</b><span>by Dlicom</span></div>`;
+/** The app mark: the Dlicom swoosh on a glossy squircle, like a home-screen icon. */
+function appIcon(size = "") {
+  return `<span class="app-icon ${size}" aria-hidden="true"><i class="ai-gloss"></i>${LOGO}<i class="ai-shine"></i></span>`;
+}
+
+function brand(name = "Dili Cart", by = "by Dlicom") {
+  return `<div class="brand">${appIcon()}<span class="brand-text"><b>${name}</b>${by ? `<span>${by}</span>` : ""}</span></div>`;
 }
 
 function soundButton() {
@@ -321,7 +327,7 @@ function landingSections() {
     </section>
     <section class="land">
       <div class="about panel" data-reveal>
-        <div class="brand big">${LOGO}<b>Dlicom</b></div>
+        <div class="brand big">${appIcon("lg")}<span class="brand-text"><b>Dlicom</b></span></div>
         <h2>One app for your whole crypto life.</h2>
         <p>Encrypted messages, a social feed, DliClips, communities — and a wallet built right in, on Base. You hold your own keys.</p>
         <div class="tge"><span class="bubble">$DLI TGE</span><span>The token generation event is scheduled for <b>2027</b>. Follow <a href="https://x.com/DlicomApp" target="_blank" rel="noopener">@DlicomApp</a> for the date.</span></div>
@@ -414,77 +420,122 @@ function animateLanding(view: HTMLElement) {
 /* Hub                                                                 */
 /* ================================================================== */
 
+/** Small line glyphs for the hub's stat tiles and cards. */
+const GLYPH = {
+  star: `<svg viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.8l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" fill="currentColor"/></svg>`,
+  gem: `<svg viewBox="0 0 24 24"><path d="M12 3 21 12l-9 9-9-9z" fill="currentColor" opacity=".35"/><path d="m12 7.5 4.5 4.5-4.5 4.5L7.5 12z" fill="currentColor"/></svg>`,
+  crown: `<svg viewBox="0 0 24 24"><path d="M4 8l4 3.5L12 5l4 6.5L20 8l-1.6 10H5.6z" fill="currentColor"/></svg>`,
+  clock: `<svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="7.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 9.5V13l2.5 1.8M10 3h4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`,
+  arrow: `<svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  check: `<svg viewBox="0 0 24 24"><path d="m6 12.5 4 4 8-9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  chevron: `<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
 function hub() {
   const p = api.player();
   if (!p) return auth();
   const next = nextTier(p.points);
+  const floor = [...TIERS].reverse().find((t) => p.points >= t.at)?.at ?? 0;
+  const tierPct = next ? Math.min(1, Math.max(0, (p.points - floor) / (next.at - floor))) : 1;
 
-  const squad = CHAR_IDS.map((id) => {
+  const squad = CHAR_IDS.map((id, k) => {
     const need = CHAR_UNLOCK[id];
     const open = p.points >= need;
     const on = p.char === id;
     const pct = open ? 100 : Math.floor((p.points / need) * 100);
-    return `<button class="driver ${on ? "on" : ""} ${open ? "" : "locked"}" data-char="${id}" ${open ? "" : "aria-disabled=\"true\""}>
+    return `<button class="driver glass ${on ? "on" : ""} ${open ? "" : "locked"}" data-char="${id}" style="--i:${k}; --tint:${CHAR_INFO[id].color}" ${open ? "" : "aria-disabled=\"true\""}>
       <span class="pic">${face(id)}${open ? "" : `<i class="lock">${ICON.lock}</i>`}</span>
       <b>${CHAR_INFO[id].name}</b>
       <small>${open ? CHAR_INFO[id].rarity : `${fmt(need)} pts`}</small>
       ${open ? "" : `<span class="bar"><i style="width:${pct}%"></i></span>`}
+      <i class="tick">${GLYPH.check}</i>
     </button>`;
   }).join("");
 
+  const stat = (k: number, icon: string, tone: string, value: string, count: number | null, label: string) =>
+    `<div class="stat glass rise" style="--i:${4 + k * 0.5}; --tone:${tone}"><i>${icon}</i><b ${count !== null ? `data-count="${count}"` : ""}>${count !== null ? "0" : value}</b><span>${label}</span></div>`;
+
+  // Letters of the wordmark, each with its own spring-in and shine.
+  const letters = (word: string, from: number) =>
+    [...word].map((c, i) => `<span class="wm-l" style="--i:${from + i}" data-l="${c}">${c}</span>`).join("");
+
+  const streakLine = p.streak >= 2
+    ? `You're on a <b>${p.streak}-day</b> streak. Race daily for up to <b>2×</b> points.`
+    : `Race every day to build a streak: up to <b>2×</b> points by day seven.`;
+  const news = [
+    p.guest ? { tag: "Guest mode", tone: "#6fb2ff", html: `Scores stay on this device. <button class="link" id="claim2">Create an account</button> to join the global board.` } : null,
+    { tag: "$DLI TGE", tone: "#ffd84a", html: `The Dlicom token generation event is scheduled for <b>2027</b>. Follow <a href="https://x.com/DlicomApp" target="_blank" rel="noopener">@DlicomApp</a> for the date.` },
+    { tag: "Daily streak", tone: "#ff7ad9", html: streakLine },
+    { tag: "Ad space · $5", tone: "#5fe3a1", html: `Your ad on a stadium billboard, in front of every racer. DM <a href="https://x.com/00xmado" target="_blank" rel="noopener">@00xmado</a> on X.` },
+  ].filter((x): x is { tag: string; tone: string; html: string } => !!x);
+
   const view = h(`<div class="screen hub">
-    <header class="bar">${brand()}
+    <header class="bar hub-bar">${brand()}
       <div class="bar-right">
         ${soundButton()}
         ${canFullscreen() ? `<button class="iconbtn" data-act="full" title="Fullscreen" aria-label="Fullscreen">${ICON.full}</button>` : ""}
-        <div class="who">
-          <span class="pic">${face(p.char)}</span>
-          <span class="name">${p.guest ? "Guest" : "@" + esc(p.handle)}<small>${p.tier}${next ? ` · ${fmt(next.at - p.points)} to ${next.name}` : ""}</small></span>
+        <div class="who glass">
+          <span class="who-pic" style="--p:${tierPct.toFixed(3)}"><span>${face(p.char)}</span></span>
+          <span class="who-name"><b>${p.guest ? "Guest" : "@" + esc(p.handle)}</b><small>${p.tier}${next ? ` · ${fmt(next.at - p.points)} to ${next.name}` : " · top tier"}</small></span>
           <button class="pill-btn" id="out">${p.guest ? "Sign up" : "Log out"}</button>
         </div>
       </div>
     </header>
     <main class="hub-grid">
       <section class="hub-copy">
-        <div class="chip">Dlicom Grand Prix · 3 laps · 8 racers</div>
-        <h1 class="title"><span class="t1">DILI</span> <em class="t2">CART</em></h1>
-        <p class="lead">Seven Custodians want the crown. Drift, boost, glide over the lake — and bring it home for Dlicom.</p>
+        <div class="chip live-chip rise" style="--i:1"><i class="live-dot"></i>Dlicom Grand Prix · 3 laps · 8 racers</div>
+        <h1 class="wm" aria-label="Dili Cart">
+          <span class="wm-row" aria-hidden="true">${letters("DILI", 0)}</span>
+          <span class="wm-row wm-gold" aria-hidden="true">${letters("CART", 4)}</span>
+        </h1>
+        <p class="lead rise" style="--i:3">Seven Custodians want the crown. Drift, boost, glide over the lake — and bring it home for Dlicom.</p>
         <div class="stats">
-          <div><b>${p.best ? fmt(p.best) : "—"}</b><span>Best score</span></div>
-          <div><b>${fmt(p.points)}</b><span>Points</span></div>
-          <div><b>${p.wins}</b><span>Wins</span></div>
-          <div><b>${fmtTime(p.bestTime)}</b><span>Best time</span></div>
+          ${stat(0, GLYPH.star, "#ffd84a", "—", p.best ? p.best : null, "Best score")}
+          ${stat(1, GLYPH.gem, "#8fa8ff", "0", p.points, "Points")}
+          ${stat(2, GLYPH.crown, "#ff9f5a", "0", p.wins, "Wins")}
+          ${stat(3, GLYPH.clock, "#5fe3c1", fmtTime(p.bestTime), null, "Best time")}
         </div>
-        <div class="race-wrap">
-          <span class="rb-ring" aria-hidden="true"></span>
+        <div class="race-wrap rise" style="--i:6">
+          <span class="rb-glow" aria-hidden="true"></span>
           <button class="race-btn" id="race">
-            <span class="rb-check" aria-hidden="true"></span>
-            <span class="rb-flag" aria-hidden="true">${FLAG}</span>
-            <span class="rb-text"><b>RACE</b><small>Dili Circuit · 3 laps</small></span>
-            <kbd>Enter ↵</kbd>
+            <span class="rb-icon" aria-hidden="true">${FLAG}</span>
+            <span class="rb-text"><b>Race</b><small>Dili Circuit · 3 laps</small></span>
+            <span class="rb-go" aria-hidden="true"><kbd>Enter ↵</kbd><i class="rb-arrow">${GLYPH.arrow}</i></span>
             <i class="rb-shine" aria-hidden="true"></i>
           </button>
         </div>
-        <div class="cta">
-          <button class="btn ghost" id="board">${ICON.trophy} Leaderboard</button>
+        <div class="cta rise" style="--i:7">
+          <button class="btn ghost sm" id="board">${ICON.trophy} Leaderboard</button>
+          ${p.guest ? `<button class="btn ghost sm" id="claim">Create account</button>` : ""}
         </div>
-        ${p.guest ? `<p class="guestnote">You're playing as a guest — scores stay on this device. <button class="link" id="claim">Create an account</button> to join the global board.</p>` : ""}
-        <div class="tge"><span class="bubble">$DLI TGE</span><span>The Dlicom token generation event is scheduled for <b>2027</b>. Follow <b>@DlicomApp</b> for the date.</span></div>
-        <a class="adnote" href="https://x.com/00xmado" target="_blank" rel="noopener">📣 Your ad on a stadium billboard — <b>$5</b>. DM <b>@00xmado</b></a>
       </section>
       <section class="hub-stage">
         <div class="stage3d" id="stage3d" title="Drag to spin · click to wave"></div>
-        <div class="squad"><p class="eyebrow">Your driver</p><div class="drivers">${squad}</div></div>
+        <div class="squad rise" style="--i:5"><p class="eyebrow">Choose your driver <span>← →</span></p><div class="drivers">${squad}</div></div>
       </section>
-      <aside class="panel mini-board">
-        <div class="mini-head"><b>Top racers</b><button class="link" id="board2">See all</button></div>
-        <ol id="mini"><li class="muted">Loading…</li></ol>
+      <aside class="hub-side">
+        <div class="mini-board glass rise" style="--i:4">
+          <div class="mini-head"><b>Top racers</b><button class="link" id="board2">See all ${GLYPH.chevron}</button></div>
+          <ol id="mini"><li class="muted">Loading…</li></ol>
+        </div>
+        <div class="news glass rise" style="--i:6" aria-live="polite">
+          <div class="news-slides">${news.map((n, i) => `<div class="news-slide ${i ? "" : "on"}" style="--tone:${n.tone}"><span class="news-tag">${n.tag}</span><p>${n.html}</p></div>`).join("")}</div>
+          <div class="news-dots">${news.map((_, i) => `<button class="${i ? "" : "on"}" aria-label="Show news ${i + 1}"><i></i></button>`).join("")}</div>
+        </div>
       </aside>
     </main>
   </div>`);
 
-  const go = () => { sfx.start(); race(); };
-  view.querySelector("#race")!.addEventListener("click", go);
+  let leaving = false;
+  const go = () => {
+    if (leaving) return;
+    leaving = true;
+    sfx.start();
+    view.classList.add("launch");
+    setTimeout(race, calm ? 0 : 320);
+  };
+  const raceBtn = view.querySelector<HTMLButtonElement>("#race")!;
+  raceBtn.addEventListener("click", go);
   for (const id of ["#board", "#board2"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); void board("best"); });
   view.querySelector("#out")!.addEventListener("click", async () => {
     sfx.ui();
@@ -492,9 +543,9 @@ function hub() {
     await api.logout();
     auth("login");
   });
-  view.querySelector("#claim")?.addEventListener("click", () => { sfx.ui(); auth("signup"); });
+  for (const id of ["#claim", "#claim2"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); auth("signup"); });
 
-  view.querySelectorAll<HTMLElement>("[data-char]").forEach((b) => b.addEventListener("click", async () => {
+  const pick = async (b: HTMLElement) => {
     const c = b.dataset.char as CharId;
     if (b.classList.contains("locked")) {
       sfx.miss();
@@ -503,26 +554,130 @@ function hub() {
       b.classList.add("nope");
       return;
     }
+    if (b.classList.contains("on")) return;
     sfx.pop();
     view.querySelectorAll(".driver").forEach((x) => x.classList.toggle("on", x === b));
     stage3d?.setChar(c);
-    view.querySelector<HTMLElement>(".who .pic")!.innerHTML = face(c);
+    const pic = view.querySelector<HTMLElement>(".who-pic span")!;
+    pic.innerHTML = face(c);
+    pic.animate([{ transform: "scale(.6)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], { duration: 450, easing: "cubic-bezier(.34,1.56,.64,1)" });
     try { await api.chooseChar(c); } catch { /* keep the local choice; the server will catch up */ }
-  }));
+  };
+  const drivers = [...view.querySelectorAll<HTMLElement>("[data-char]")];
+  drivers.forEach((b) => b.addEventListener("click", () => void pick(b)));
 
   wireCommon(view);
   show(view, true);
   stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", char: p.char }, () => sfx.pop());
 
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Enter") go(); };
+  // Enter races; ← → flip through the unlocked drivers.
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Enter") go();
+    else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      const open = drivers.filter((d) => !d.classList.contains("locked"));
+      const at = open.findIndex((d) => d.classList.contains("on"));
+      const nextD = open[(at + (e.key === "ArrowRight" ? 1 : open.length - 1)) % open.length];
+      if (nextD && open.length > 1) void pick(nextD);
+    }
+  };
   addEventListener("keydown", onKey);
-  cleanup = () => removeEventListener("keydown", onKey);
+  const stopMotion = animateHub(view, raceBtn);
+  const stopNews = rotateNews(view);
+  cleanup = () => { removeEventListener("keydown", onKey); stopMotion(); stopNews(); };
+
+  // Numbers count up once the tiles have landed.
+  setTimeout(() => view.querySelectorAll<HTMLElement>(".stat [data-count]").forEach((b) => countUp(b, Number(b.dataset.count), 1100)), calm ? 0 : 450);
 
   void miniBoard(view.querySelector<HTMLElement>("#mini")!, p);
   // Races that finished offline get sent now; refresh the board if any did.
   if (!p.guest && api.pendingCount()) {
     void api.syncPending().then((n) => { if (n && view.isConnected) hub(); });
   }
+}
+
+/**
+ * Hub motion: the layers drift against each other with the pointer, glass
+ * catches a highlight where the pointer is, and the Race button leans
+ * toward it and ripples when pressed.
+ */
+function animateHub(view: HTMLElement, btn: HTMLElement) {
+  const fine = matchMedia("(pointer: fine)").matches && !calm;
+  let raf = 0, tx = 0, ty = 0, x = 0, y = 0;
+  const loop = () => {
+    x += (tx - x) * 0.08;
+    y += (ty - y) * 0.08;
+    view.style.setProperty("--px", x.toFixed(4));
+    view.style.setProperty("--py", y.toFixed(4));
+    liveEl.style.setProperty("--px", x.toFixed(4));
+    liveEl.style.setProperty("--py", y.toFixed(4));
+    raf = Math.abs(tx - x) + Math.abs(ty - y) > 0.001 ? requestAnimationFrame(loop) : 0;
+  };
+  const onMove = (e: PointerEvent) => {
+    tx = (e.clientX / innerWidth) * 2 - 1;
+    ty = (e.clientY / innerHeight) * 2 - 1;
+    if (!raf) raf = requestAnimationFrame(loop);
+    const card = (e.target as HTMLElement).closest<HTMLElement>(".glass");
+    if (card) {
+      const r = card.getBoundingClientRect();
+      card.style.setProperty("--mx", `${e.clientX - r.left}px`);
+      card.style.setProperty("--my", `${e.clientY - r.top}px`);
+    }
+  };
+  const onBtnMove = (e: PointerEvent) => {
+    const r = btn.getBoundingClientRect();
+    const dx = (e.clientX - r.left) / r.width - 0.5, dy = (e.clientY - r.top) / r.height - 0.5;
+    btn.style.setProperty("--tx", `${dx * 8}px`);
+    btn.style.setProperty("--ty", `${dy * 6}px`);
+    btn.style.setProperty("--ry", `${dx * 6}deg`);
+    btn.style.setProperty("--rx", `${-dy * 8}deg`);
+    btn.style.setProperty("--sx", `${e.clientX - r.left}px`);
+    btn.style.setProperty("--sy", `${e.clientY - r.top}px`);
+  };
+  const onBtnLeave = () => { for (const k of ["--tx", "--ty", "--rx", "--ry"]) btn.style.removeProperty(k); };
+  const ripple = (e: PointerEvent) => {
+    const r = btn.getBoundingClientRect();
+    const d = document.createElement("i");
+    d.className = "rb-ripple";
+    d.style.left = `${e.clientX - r.left}px`;
+    d.style.top = `${e.clientY - r.top}px`;
+    btn.appendChild(d);
+    d.addEventListener("animationend", () => d.remove());
+  };
+  if (fine) {
+    view.addEventListener("pointermove", onMove);
+    btn.addEventListener("pointermove", onBtnMove);
+    btn.addEventListener("pointerleave", onBtnLeave);
+  }
+  btn.addEventListener("pointerdown", ripple);
+  return () => {
+    cancelAnimationFrame(raf);
+    liveEl.style.removeProperty("--px");
+    liveEl.style.removeProperty("--py");
+  };
+}
+
+/**
+ * The news card flips to its next story when the active dot's progress bar
+ * fills; hovering the card pauses the bar, and the dots jump straight to a story.
+ */
+function rotateNews(view: HTMLElement) {
+  const slides = [...view.querySelectorAll<HTMLElement>(".news-slide")];
+  const dots = [...view.querySelectorAll<HTMLElement>(".news-dots button")];
+  const card = view.querySelector<HTMLElement>(".news");
+  if (!card || slides.length < 2) return () => {};
+  let at = 0;
+  const set = (i: number) => {
+    at = (i + slides.length) % slides.length;
+    slides.forEach((s, k) => s.classList.toggle("on", k === at));
+    dots.forEach((d, k) => d.classList.toggle("on", k === at));
+  };
+  dots.forEach((d, k) => d.addEventListener("click", () => { sfx.ui(); set(k); }));
+  card.addEventListener("pointerenter", () => card.classList.add("hold"));
+  card.addEventListener("pointerleave", () => card.classList.remove("hold"));
+  card.addEventListener("animationend", (e) => { if ((e.target as HTMLElement).parentElement?.classList.contains("on")) set(at + 1); });
+  // With reduced motion there's no progress bar to wait on.
+  const id = calm ? setInterval(() => set(at + 1), 6000) : 0;
+  return () => clearInterval(id);
 }
 
 async function miniBoard(el: HTMLElement, p: api.Player) {
@@ -533,9 +688,9 @@ async function miniBoard(el: HTMLElement, p: api.Player) {
       el.innerHTML = `<li class="muted">No races yet. Be the first on the board.</li>`;
       return;
     }
-    el.innerHTML = entries.slice(0, 5).map((e, i) => `<li class="${e.handle === p.handle && !p.guest ? "me" : ""}">
+    el.innerHTML = entries.slice(0, 5).map((e, i) => `<li class="${e.handle === p.handle && !p.guest ? "me" : ""}" style="--i:${i}">
       <i>${i + 1}</i><span>@${esc(e.handle)}</span><b>${fmt(e.best)}</b></li>`).join("")
-      + (me && me.rank > 5 ? `<li class="me"><i>${me.rank}</i><span>You</span><b>${fmt(me.value)}</b></li>` : "");
+      + (me && me.rank > 5 ? `<li class="me" style="--i:5"><i>${me.rank}</i><span>You</span><b>${fmt(me.value)}</b></li>` : "");
   } catch {
     if (el.isConnected) el.innerHTML = `<li class="muted">The global board is offline right now.</li>`;
   }
@@ -718,7 +873,7 @@ async function board(by: "best" | "points") {
 /* ================================================================== */
 
 void (async () => {
-  app.innerHTML = `<div class="boot">${LOGO}</div>`;
+  app.innerHTML = `<div class="boot">${appIcon("xl")}</div>`;
   const p = await api.restore();
   if (import.meta.env.DEV && location.hash === "#race") {
     if (!p) api.playAsGuest();

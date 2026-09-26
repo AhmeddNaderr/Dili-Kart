@@ -159,6 +159,7 @@ export class DiliCart {
   private hazards: Hazard[] = [];
   private orbs: Orb[] = [];
   private shield!: THREE.Mesh;
+  private magnet!: THREE.Group;
 
   // Player state
   private input = { left: false, right: false, gas: false, down: false };
@@ -305,6 +306,9 @@ export class DiliCart {
     this.shield = M.shieldBubble();
     this.shield.visible = false;
     this.racers[0].model.body.add(this.shield);
+    this.magnet = M.magnetAura();
+    this.magnet.visible = false;
+    this.racers[0].model.body.add(this.magnet);
 
     this.hud.buildMap(this.track.outline(10), this.racers.length);
 
@@ -461,10 +465,11 @@ export class DiliCart {
     }
 
     // Item box rows: one per lane.
-    const glyph = T.itemGlyphTex();
+    const face = T.itemFaceTex();
+    const spark = T.sparkleTex();
     for (const u of [tr.startU + 120, c[10] + 18, c[16] - 12]) {
       for (let l = 0; l < 4; l++) {
-        const obj = M.itemBox(glyph);
+        const obj = M.itemBox(face, spark);
         this.scene.add(obj);
         this.boxes.push({ u: tr.wrap(u), lat: laneX(l), obj, alive: true, respawn: 0, phase: l * 0.7 });
       }
@@ -1000,6 +1005,16 @@ export class DiliCart {
     if (this.shield.visible) {
       (this.shield.material as THREE.ShaderMaterial).uniforms.uTime.value = this.time;
       this.shield.scale.setScalar(this.shieldT < 2 ? 0.9 + Math.sin(this.time * 30) * 0.1 : 1);
+    }
+    this.magnet.visible = this.magnetT > 0;
+    if (this.magnet.visible) {
+      const ud = this.magnet.userData;
+      (ud.a as THREE.Mesh).rotation.z = this.time * 2.4;
+      (ud.b as THREE.Mesh).rotation.z = -this.time * 1.6;
+      (ud.dash as THREE.Group).rotation.y = -this.time * 3.2;
+      const pulse = 1 + Math.sin(this.time * 6) * 0.05;
+      // Flicker for the last two seconds, like the shield.
+      this.magnet.scale.setScalar(this.magnetT < 2 ? pulse * (0.9 + Math.sin(this.time * 30) * 0.1) : pulse);
     }
 
     // Laps.
@@ -1681,14 +1696,24 @@ export class DiliCart {
         continue;
       }
       tr.frame(b.u, this.f);
-      this.orient(b.obj, this.f, b.lat, 1.3 + Math.sin(t * 2 + b.phase) * 0.2);
-      const cube = b.obj.userData.cube as THREE.Mesh;
+      const lift = 1.3 + Math.sin(t * 2 + b.phase) * 0.2;
+      this.orient(b.obj, this.f, b.lat, lift);
+      const ud = b.obj.userData;
+      const cube = ud.cube as THREE.Mesh;
       cube.rotation.set(t * 0.9 + b.phase, t * 1.3 + b.phase, 0);
+      (ud.core as THREE.Mesh).rotation.set(-t * 0.6, -t * 2.2 + b.phase, 0);
+      const orbit = ud.orbit as THREE.Group;
+      orbit.rotation.y = t * 1.4 + b.phase;
+      for (const s of orbit.children) s.scale.setScalar(0.3 + 0.28 * Math.max(0, Math.sin(t * 5 + (s.userData.k as number) * 1.9 + b.phase)));
+      const pool = ud.pool as THREE.Mesh;
+      pool.position.y = 0.06 - lift;
       const cm = cube.material as THREE.MeshPhysicalMaterial;
       const hue = (t * 0.25 + b.phase * 0.2) % 1;
-      cm.color.setHSL(hue, 0.9, 0.62);
-      cm.emissive.setHSL((hue + 0.08) % 1, 1, 0.45);
-      (b.obj.userData.frame as THREE.MeshStandardMaterial).emissive.setHSL((hue + 0.5) % 1, 1, 0.55);
+      cm.color.setHSL(hue, 0.95, 0.56);
+      cm.emissive.setHSL((hue + 0.08) % 1, 1, 0.42);
+      (ud.inner as THREE.MeshBasicMaterial).color.setHSL((hue + 0.15) % 1, 1, 0.55);
+      (pool.material as THREE.MeshBasicMaterial).color.setHSL(hue, 1, 0.6);
+      (ud.frame as THREE.MeshStandardMaterial).emissive.setHSL((hue + 0.5) % 1, 1, 0.55);
       let k = 1;
       if (b.phase < 0) {
         b.phase = Math.min(0, b.phase + dt);
