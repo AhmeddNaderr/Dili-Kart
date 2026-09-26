@@ -1,0 +1,11 @@
+# Cloudflare Pages: serves the built game from dist/ and the API from functions/.
+name = "dili-cart"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dili-cart"
+# The production database (created with `npx wrangler d1 create dili-cart`).
+database_id = "41a60118-3c4c-4e31-a7fd-d451d022827e"
+migrations_dir = "migrations"

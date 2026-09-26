@@ -1,0 +1,27 @@
+node_modules
+dist
+.DS_Store
+.env
+.env.local
+.dev.vars
+.wrangler
+
+# Generated media: re-render with /trailer.html on the dev server.
+trailer/*.mp4
+trailer/*.wav
+
+# Python helpers' cache
+__pycache__/
+*.pyc
+
+# Not part of the game: notes, guides, reference art, PDF helpers.
+assets/
+*.pdf
+ARCHITECTURE.md
+ART-LIST.md
+ART-NEXT.md
+BACKEND.md
+DESIGN.md
+PROMPTS.md
+NEXT-PROMPTS.md
+tools/*.py

@@ -1,0 +1,25 @@
+{
+  "name": "dlicom-arcade",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node tools/dev.mjs",
+    "dev:web": "vite",
+    "dev:api": "wrangler pages dev public --port 8788 --ip 127.0.0.1",
+    "db:local": "wrangler d1 migrations apply dili-cart --local",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler d1 migrations apply dili-cart --remote && wrangler pages deploy dist --project-name dili-cart --branch main --commit-dirty=true"
+  },
+  "devDependencies": {
+    "mp4-muxer": "^5.2.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "wrangler": "^4.140.0"
+  },
+  "dependencies": {
+    "@types/three": "^0.186.0",
+    "three": "^0.186.1"
+  }
+}
