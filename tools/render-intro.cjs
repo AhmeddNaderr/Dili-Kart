@@ -68,15 +68,18 @@ const FROM = Number(process.env.FROM ?? 0);
 
   console.log("encoding…");
   const input = ["-y", "-framerate", String(fps), "-i", path.join(FRAMES, "%05d.jpg"), "-i", path.join(FRAMES, "score.wav")];
-  const enc = (scale, crf, file) => execFileSync(FFMPEG, [
+  // Quality-based, with a bitrate cap so each file stays well under
+  // Cloudflare Pages' 25 MiB limit per asset.
+  const enc = (scale, crf, maxrate, audio, file) => execFileSync(FFMPEG, [
     ...input, ...(scale ? ["-vf", `scale=${scale}:flags=lanczos`] : []),
-    "-c:v", "libx264", "-preset", "slow", "-crf", String(crf), "-pix_fmt", "yuv420p", "-profile:v", "high",
-    "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", path.join(OUT, file),
+    "-c:v", "libx264", "-preset", "slow", "-crf", String(crf), "-maxrate", maxrate, "-bufsize", `${parseFloat(maxrate) * 2}M`,
+    "-pix_fmt", "yuv420p", "-profile:v", "high",
+    "-c:a", "aac", "-b:a", audio, "-shortest", "-movflags", "+faststart", path.join(OUT, file),
   ], { stdio: "inherit" });
-  enc(null, 20, "dili-intro.mp4");
-  enc("1280:720", 22, "dili-intro-720.mp4");
+  enc(null, 21, "5M", "160k", "dili-intro.mp4");
+  enc("1280:720", 22, "2.6M", "128k", "dili-intro-720.mp4");
   // Poster: the logo, from near the end.
   const poster = String(Math.round(frames - fps * 2.2)).padStart(5, "0");
-  execFileSync(FFMPEG, ["-y", "-i", path.join(FRAMES, `${poster}.jpg`), "-vf", "scale=1280:720", "-q:v", "3", path.join(OUT, "poster.jpg")], { stdio: "inherit" });
+  execFileSync(FFMPEG, ["-y", "-i", path.join(FRAMES, `${poster}.jpg`), "-vf", "scale=1280:720", "-q:v", "3", "-update", "1", "-frames:v", "1", path.join(OUT, "poster.jpg")], { stdio: "inherit" });
   console.log("done");
 })().catch((e) => { console.error(e); process.exit(1); });
