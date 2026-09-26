@@ -389,6 +389,9 @@ export class MascotModel {
   readonly root = new THREE.Group();
   readonly rig: MascotRig;
   pose: Pose = "idle";
+  /** 0..1 blend into a walk cycle; `stride` advances it (radians of leg swing). */
+  walk = 0;
+  stride = 0;
   private w = { wave: 0, cheer: 0, talk: 0, sad: 0, point: 0 };
   private seed: number;
 
@@ -433,6 +436,22 @@ export class MascotModel {
       r.legL.rotation.x = -cheer * Math.max(0, Math.sin(t * 6)) * 0.3;
       r.legR.rotation.x = -cheer * Math.max(0, Math.sin(t * 6 + Math.PI)) * 0.3;
     }
-    animateCape(r, t, 0.25 + cheer * 0.5, 0);
+    // Walk: legs swing, arms swing against them, the body bobs and leans in.
+    const w = this.walk;
+    if (w > 0.001 && r.legL && r.legR) {
+      const ph = this.stride;
+      r.legL.rotation.x = r.legL.rotation.x * (1 - w) + Math.sin(ph) * 0.62 * w;
+      r.legR.rotation.x = r.legR.rotation.x * (1 - w) - Math.sin(ph) * 0.62 * w;
+      r.armL.rotation.x = r.armL.rotation.x * (1 - w) - Math.sin(ph) * 0.55 * w;
+      r.armR.rotation.x = r.armR.rotation.x * (1 - w) + Math.sin(ph) * 0.55 * w;
+      r.root.position.y += Math.abs(Math.cos(ph)) * 0.07 * w;
+      r.root.rotation.x = 0.07 * w;
+      r.head.rotation.z += Math.sin(ph) * 0.05 * w;
+      r.torso.rotation.y = Math.sin(ph) * 0.08 * w;
+    } else {
+      r.root.rotation.x = 0;
+      r.torso.rotation.y = 0;
+    }
+    animateCape(r, t, 0.25 + cheer * 0.5 + w * 0.35, 0);
   }
 }

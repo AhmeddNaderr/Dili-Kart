@@ -129,6 +129,8 @@ export interface KartPose {
   pitch?: number;       // nose up (+) / down (−) in the air, radians
   wave: number;         // 0 driving, 1 one-arm wave, 2 both arms up
   time: number;
+  /** Extra head turn for directed shots: yaw (+ left) and nod (+ down), radians. */
+  look?: { yaw: number; nod: number };
 }
 
 /** Glossy clear-coated car paint. */
@@ -225,7 +227,8 @@ export class KartModel {
   private chassis = new THREE.Group();
   /** Fine parts, hidden when the kart is far from the camera. */
   private detail = new THREE.Group();
-  private driver = new THREE.Group();
+  /** The seated driver; the intro film hides it and drops it into the seat. */
+  readonly driver = new THREE.Group();
   private steerGroups: THREE.Object3D[] = [];
   private flames: THREE.Mesh[] = [];
   private exhaustGlow: THREE.Mesh[] = [];
@@ -621,7 +624,8 @@ export class KartModel {
 
     // Head leans into the turn and looks where it's going.
     this.head.rotation.z = -p.steer * 0.12;
-    this.head.rotation.y = -p.steer * 0.25;
+    this.head.rotation.y = -p.steer * 0.25 + (p.look?.yaw ?? 0);
+    this.head.rotation.x = p.look?.nod ?? 0;
 
     // Arms hang along -Y from the shoulder. X pitch swings them forward and
     // up; Z swings them in toward the wheel or out to the side. Driving:

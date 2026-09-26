@@ -319,9 +319,9 @@
   inset: 0;
   opacity: 0;
   transition: opacity 0.3s;
-  background: radial-gradient(ellipse at center, transparent 55%, var(--vig, transparent) 130%);
+  background: radial-gradient(ellipse at center, transparent 68%, var(--vig, transparent) 140%);
 }
-.kh-vignette.on { opacity: 1; }
+.kh-vignette.on { opacity: 0.55; }
 
 .kh-flash { position: absolute; inset: 0; mix-blend-mode: screen; }
 

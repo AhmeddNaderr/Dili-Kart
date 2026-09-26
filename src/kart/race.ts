@@ -13,7 +13,7 @@ import { Hud, ITEM_NAME, type ItemKind } from "./hud";
 import type { CharId } from "../../shared/rules";
 import { MASCOT } from "./mascot";
 import { tickNature } from "./nature";
-import { gradePass } from "./grade";
+import { ContactAO, gradePass } from "./grade";
 import { portrait } from "../ui/icons";
 
 /**
@@ -130,6 +130,8 @@ export class DiliCart {
   private renderer!: THREE.WebGLRenderer;
   private composer!: EffectComposer;
   private bloom!: UnrealBloomPass;
+  /** Ambient occlusion, on capable machines during a real race only. */
+  private ao: ContactAO | null = null;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(64, 1, 0.4, 4000);
   private track = new Track();
@@ -228,6 +230,8 @@ export class DiliCart {
   private trailer = false;
   /** Trailer: films the frame instead of the game's own cameras; returns the fov. */
   director: ((cam: THREE.PerspectiveCamera, dt: number) => number) | null = null;
+  /** Intro film (dev only): adjust a kart's pose before it's applied. */
+  poseOverride: ((i: number, pose: M.KartPose) => M.KartPose) | null = null;
   private shot = { kind: "heli" as ShotKind, t: 0, dur: 0, who: 0, n: 0, pos: V(), look: V(), side: 1 };
   private frameSkip = false;
   private skipped = 0;
@@ -315,6 +319,12 @@ export class DiliCart {
     const composerTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: this.quality === "low" ? 2 : 4 });
     this.composer = new EffectComposer(this.renderer, composerTarget);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+    if (this.quality === "high" && !this.attract && !this.trailer) {
+      this.ao = new ContactAO(this.scene, this.camera, 256, 256);
+      this.composer.addPass(this.ao);
+      // Softer sun shadows to go with it.
+      this.world.sun.shadow.radius = 2.5;
+    }
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.45, 2.9);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
@@ -1768,7 +1778,7 @@ export class DiliCart {
         : this.phase === "intro" && this.phaseT > 2.2 && this.phaseT < 4.9 ? 1 : 0;
       // Distant karts drop their fine detail.
       r.model.setDetail(r.player || r.model.root.position.distanceToSquared(this.camera.position) < 48 * 48);
-      r.model.update({
+      const pose: M.KartPose = {
         speed: r.speed,
         steer: r.steer,
         slide: yaw,
@@ -1781,7 +1791,8 @@ export class DiliCart {
         pitch: r.air ? THREE.MathUtils.clamp(r.vy * 0.035, -0.28, 0.3) : 0,
         wave,
         time: this.time + r.i,
-      }, dt);
+      };
+      r.model.update(this.poseOverride ? this.poseOverride(r.i, pose) : pose, dt);
     }
   }
 
@@ -2042,6 +2053,9 @@ export class DiliCart {
     return {
       camera: this.camera,
       canvas: this.renderer.domElement,
+      scene: this.scene,
+      renderer: this.renderer,
+      models: this.racers.map((r) => r.model),
       track: this.track,
       world: this.world,
       karts: this.racers.map((r) => ({
@@ -2107,6 +2121,11 @@ export class DiliCart {
     if (this.frameMs.length < 120) return;
     const avg = this.frameMs.reduce((a, b) => a + b, 0) / this.frameMs.length;
     this.frameMs.length = 0;
+    if (avg > 23 && this.ao?.enabled) {
+      // First, drop the ambient occlusion and measure again.
+      this.ao.enabled = false;
+      return;
+    }
     if (avg > 23) {
       this.lowered = true;
       this.renderer.setPixelRatio(1);
@@ -2143,6 +2162,7 @@ export class DiliCart {
     T.disposeTextures();
     M.disposeModels();
     this.scene.environment?.dispose();
+    this.ao?.dispose();
     this.composer?.dispose();
     this.renderer?.dispose();
     this.renderer?.domElement.remove();
