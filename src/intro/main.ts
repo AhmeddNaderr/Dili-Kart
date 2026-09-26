@@ -95,13 +95,6 @@ interface Shot {
 }
 
 const kartPos = () => rig.models[0].root.position;
-const cam = { pos: V(), look: V(), ready: false };
-function follow(pos: THREE.Vector3, look: THREE.Vector3, rate: number, dt: number) {
-  if (!cam.ready) { cam.pos.copy(pos); cam.look.copy(look); cam.ready = true; }
-  cam.pos.lerp(pos, 1 - Math.exp(-dt * rate));
-  cam.look.lerp(look, 1 - Math.exp(-dt * rate * 1.3));
-  return { pos: cam.pos.clone(), look: cam.look.clone() };
-}
 
 /** Where Dili stands beside the cockpit before he hops in. */
 const STAND = () => G(-0.3, 1.9, 0);
@@ -185,7 +178,6 @@ const SHOTS: Shot[] = [
   },
   {
     name: "launch", from: CUE.launch, to: CUE.fly, subs: 6,
-    enter() { cam.ready = false; },
     cam(lt) {
       // A low camera by the barrier that pans with the kart as it rockets past.
       const k = kartPos().clone().add(V(0, 0.85, 0));
@@ -198,7 +190,6 @@ const SHOTS: Shot[] = [
     enter() {
       const lip = rig.track.wrap(rig.track.lipU - rig.track.startU);
       for (let i = 0; i < 60 * 60 && rig.karts[0].dist < lip - 21; i++) game.advance(1 / 60, false);
-      cam.ready = false;
     },
     speed(lt) {
       const t = CUE.fly + lt;
@@ -218,14 +209,15 @@ const SHOTS: Shot[] = [
   },
   {
     name: "logo", from: CUE.logo, to: CUE.end, subs: 3,
-    cam(lt, dt) {
+    cam(lt) {
+      // Carries straight on from the flight camera (same offset from the
+      // kart), then cranes up and back, tilting into the sky for the logo.
       const kp = kartPos();
       const f = rig.track.frame(rig.track.wrap(rig.track.startU + rig.karts[0].dist), newFrame());
-      const k = inOut(lt / 3.2);
-      const pos = kp.clone().addScaledVector(f.side, -6 - 5 * k).addScaledVector(f.tan, -3.5 - 6 * k).add(V(0, 3.1 + 11 * k, 0));
-      const look = kp.clone().addScaledVector(f.tan, 14 + 50 * k).add(V(0, 1.5 + 30 * k, 0));
-      const s = follow(pos, look, 4, dt);
-      return { pos: s.pos, look: s.look, fov: 44 + 8 * k, focus: kp, aperture: 0.55 };
+      const k = inOut(lt / 3.4);
+      const pos = kp.clone().addScaledVector(f.side, -6 - 3 * k).addScaledVector(f.tan, -3.5 - 5 * k).add(V(0, 3.1 + 8 * k, 0));
+      const look = kp.clone().addScaledVector(f.tan, 1.5 + 36 * k).add(V(0, 1.4 + 24 * k, 0));
+      return { pos, look, fov: 42 + 8 * k, focus: kp.clone().add(V(0, 1.2, 0)), aperture: 0.6 * (1 - k) + 0.15 };
     },
     look: (lt) => ({ black: smooth((lt - (CUE.end - CUE.logo - 0.7)) / 0.7) }),
     lights: () => [0.4, 0.8],
@@ -428,6 +420,9 @@ async function main() {
   await new Promise<void>((resolve) => game.mount(stage, { onEnd() {}, onRestart() {}, onQuit() {}, onReady: resolve }, "dili", { trailer: true }));
   rig = game.rig();
   game.director = (c) => c.fov;
+  // No power-ups in the film: a shield bubble or a stunt mid-flight would
+  // change from one render to the next.
+  game.autoItems = false;
   game.advance(1 / 60, false);
 
   // Dili's slot on the grid, and the frame of the track there.

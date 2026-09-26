@@ -230,6 +230,8 @@ export class DiliCart {
   private trailer = false;
   /** Trailer: films the frame instead of the game's own cameras; returns the fov. */
   director: ((cam: THREE.PerspectiveCamera, dt: number) => number) | null = null;
+  /** Trailer autopilot: fire items as they come. The intro film turns this off. */
+  autoItems = true;
   /** Intro film (dev only): adjust a kart's pose before it's applied. */
   poseOverride: ((i: number, pose: M.KartPose) => M.KartPose) | null = null;
   private shot = { kind: "heli" as ShotKind, t: 0, dur: 0, who: 0, n: 0, pos: V(), look: V(), side: 1 };
@@ -2025,7 +2027,7 @@ export class DiliCart {
     }
     this.input.left = want < 0;
     this.input.right = want > 0;
-    if (this.item && !this.rolling && Math.random() < dt * 0.7) this.pressed.add("ArrowDown");
+    if (this.autoItems && this.item && !this.rolling && Math.random() < dt * 0.7) this.pressed.add("ArrowDown");
   }
 
   /** Trailer: run the race forward one step and (optionally) draw it. */
