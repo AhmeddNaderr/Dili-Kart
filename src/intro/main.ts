@@ -304,6 +304,9 @@ function actDriver(T: number) {
       q.wave = bump(lt, 0.5, 1.5);
       q.look = { yaw: -0.5 * bump(lt, 0.05, 2.35, 0.35), nod: 0.16 * bump(lt, 1.8, 2.3, 0.15) };
     }
+    // The autopilot fires items in the air, and any key just after the ramp
+    // counts as a trick; keep Dili upright for the flight and the logo.
+    if (T >= CUE.fly) { q.flip = 0; q.roll = 0; }
     if (T >= CUE.lights && T < CUE.go) {
       const beat = (T - CUE.lights) % 1;
       q.boost = Math.max(q.boost, 0.75 * Math.exp(-beat * 5) * (beat < 0.6 ? 1 : 0));
