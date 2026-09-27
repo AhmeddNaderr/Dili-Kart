@@ -18,7 +18,37 @@ function pickSource() {
   return px >= 1500 ? "intro/dili-intro.mp4" : "intro/dili-intro-720.mp4";
 }
 
-export function playFilm(done: () => void) {
+/**
+ * Start downloading the film before it's shown, reporting how much is
+ * buffered (0..1). Resolves with the element once it can play through, or
+ * after `maxMs` with whatever has arrived; playFilm takes it from there.
+ */
+export function prepareFilm(onProgress: (k: number) => void, maxMs = 8000): Promise<HTMLVideoElement> {
+  const v = document.createElement("video");
+  v.className = "film-v";
+  v.playsInline = true;
+  v.muted = true;
+  v.preload = "auto";
+  v.poster = "intro/poster.jpg";
+  v.src = pickSource();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; clearInterval(poll); resolve(v); } };
+    const poll = setInterval(() => {
+      if (!v.duration || !v.buffered.length) return;
+      const k = v.buffered.end(v.buffered.length - 1) / v.duration;
+      onProgress(Math.min(1, k / 0.45));
+      // Enough to start playing without a stall on most connections.
+      if (k >= 0.45) done();
+    }, 120);
+    v.addEventListener("canplaythrough", done, { once: true });
+    v.addEventListener("error", done, { once: true });
+    setTimeout(done, maxMs);
+    v.load();
+  });
+}
+
+export function playFilm(done: () => void, ready?: HTMLVideoElement) {
   try { sessionStorage.setItem(SEEN_KEY, "1"); } catch { /* storage blocked */ }
   const el = document.createElement("div");
   el.className = "film";
@@ -34,7 +64,12 @@ export function playFilm(done: () => void) {
     </div>
     <div class="film-bar"><i></i></div>`;
   document.body.appendChild(el);
-  const v = el.querySelector<HTMLVideoElement>("video")!;
+  let v = el.querySelector<HTMLVideoElement>("video")!;
+  if (ready) {
+    // Use the element that's already been buffering.
+    v.replaceWith(ready);
+    v = ready;
+  }
   const bar = el.querySelector<HTMLElement>(".film-bar i")!;
   const soundBtn = el.querySelector<HTMLButtonElement>("[data-f=sound]")!;
 
@@ -87,10 +122,12 @@ export function playFilm(done: () => void) {
 
   v.addEventListener("ended", finish);
   v.addEventListener("error", finish);
+  // A preloaded film that already failed (no network, no codec) won't fire again.
+  if (v.error) { finish(); return; }
   v.addEventListener("timeupdate", () => { if (v.duration) bar.style.transform = `scaleX(${v.currentTime / v.duration})`; });
   v.addEventListener("playing", () => el.classList.add("on"));
 
-  v.src = pickSource();
+  if (!ready) v.src = pickSource();
   setSound(wantSound);
   void v.play().catch(() => {
     // Sound-on autoplay needs a gesture: try again muted.

@@ -2,7 +2,8 @@ import "./style.css";
 import "./ui/console.css";
 import { DiliCart, LAPS, type RaceResult } from "./kart/race";
 import { buildIntro, greetedThisSession } from "./ui/intro";
-import { filmSeen, playFilm } from "./ui/film";
+import { filmSeen, playFilm, prepareFilm } from "./ui/film";
+import { dropLoader, finishLoader, progress } from "./ui/loader";
 import { mountStage, type MenuStage } from "./ui/stage3d";
 import { ICON, LOGO, portrait } from "./ui/icons";
 import { MASCOT } from "./kart/mascot";
@@ -663,32 +664,42 @@ async function board(by: "best" | "points") {
 /* ================================================================== */
 
 void (async () => {
-  app.innerHTML = `<div class="boot">${appIcon("xl")}</div>`;
+  progress(0.12, "Checking your garage");
   const p = await api.restore();
-  if (import.meta.env.DEV && location.hash === "#race") {
+  const dev = import.meta.env.DEV ? location.hash : "";
+  if (dev === "#race") {
+    dropLoader();
     if (!p) api.playAsGuest();
     return race();
   }
   // Dev shortcuts for screenshots: open a screen directly.
-  if (import.meta.env.DEV && location.hash.startsWith("#auth")) {
-    auth();
-    // "#auth@1200" scrolls the page down, for screenshots of the sections.
-    const y = Number(location.hash.split("@")[1] ?? 0);
-    if (y) setTimeout(() => { const sc = document.querySelector<HTMLElement>(".screen"); if (sc) { sc.style.scrollBehavior = "auto"; sc.scrollTop = y; } }, 300);
-    return;
-  }
-  if (import.meta.env.DEV && location.hash === "#hub") {
+  if (dev.startsWith("#auth")) { dropLoader(); return auth(); }
+  if (dev === "#hub") {
+    dropLoader();
     if (!p) api.playAsGuest();
     return hub();
   }
-  if (import.meta.env.DEV && location.hash === "#intro") return intro(hub);
-  // First visit this session: the intro film, then the title screen.
-  // Logged in from last time: Dili says hello once per visit, then the hub.
-  if (!p) {
-    // The title screen (and its live stadium) mounts as the film fades out,
-    // so a phone never has to play the film and run the race at once.
-    if (!filmSeen() && !calm) playFilm(() => auth());
-    else auth();
-  } else if (!greetedThisSession()) intro(hub, false);
-  else hub();
+  if (dev === "#intro") { dropLoader(); return intro(hub); }
+
+  // Fonts, then the film: the loader's kart drives as they arrive.
+  progress(0.3, "Painting the karts");
+  await Promise.race([document.fonts?.ready, new Promise((r) => setTimeout(r, 2500))]);
+  const showFilm = !filmSeen() && !calm;
+  let film: HTMLVideoElement | undefined;
+  if (showFilm) {
+    progress(0.42, "Loading the intro film");
+    film = await prepareFilm((k) => progress(0.42 + 0.53 * k));
+  }
+  await finishLoader();
+
+  // First visit this session: the film, then sign-in (or Dili's hello for
+  // someone already signed in), then the hub. The next screen mounts as the
+  // film fades out, so a phone never plays the film and runs the race at once.
+  const next = () => {
+    if (!p) auth();
+    else if (!greetedThisSession()) intro(hub, false);
+    else hub();
+  };
+  if (showFilm) playFilm(next, film);
+  else next();
 })();
