@@ -8,6 +8,8 @@
  *   GET  /api/me                                       → { player }
  *   POST /api/race         { score, position, time, coins } → RaceReply
  *   POST /api/char         { char }                    → { player }
+ *   POST /api/skin/buy     { skin }                    → { player }
+ *   POST /api/skin/equip   { skin | null }             → { player }
  *   GET  /api/leaderboard?by=best|points               → { entries, me }
  *   GET  /api/stats                                    → { players, races }
  *
@@ -16,7 +18,7 @@
  */
 
 import {
-  CHAR_UNLOCK, PASSWORD_MAX, PASSWORD_MIN, RACE_LIMITS, isCharId, normaliseHandle,
+  CHAR_UNLOCK, PASSWORD_MAX, PASSWORD_MIN, RACE_LIMITS, SKIN_INFO, isCharId, isSkinId, normaliseHandle, parseSkins,
   streakMultiplier, tierOf, type BoardEntry, type PlayerDTO, type RaceReply,
 } from "../../shared/rules";
 
@@ -25,7 +27,7 @@ interface D1Stmt {
   bind(...values: unknown[]): D1Stmt;
   first<T = Record<string, unknown>>(): Promise<T | null>;
   all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
-  run(): Promise<unknown>;
+  run(): Promise<{ meta?: { changes?: number } }>;
 }
 interface D1Database {
   prepare(sql: string): D1Stmt;
@@ -55,6 +57,9 @@ interface PlayerRow {
   last_day: string;
   last_race_at: number;
   char: string;
+  coins: number;
+  skins: string;
+  skin: string;
 }
 
 const SESSION_DAYS = 60;
@@ -90,6 +95,8 @@ async function route({ request, env }: Ctx): Promise<Response> {
   }
   if (m === "POST" && path === "race") return race(request, env);
   if (m === "POST" && path === "char") return setChar(request, env);
+  if (m === "POST" && path === "skin/buy") return buySkin(request, env);
+  if (m === "POST" && path === "skin/equip") return equipSkin(request, env);
   if (m === "GET" && path === "leaderboard") return board(request, env, url);
   if (m === "GET" && path === "stats") return json({ ok: true, ...(await stats(env, url)) });
   if (m === "GET" && path === "health") {
@@ -162,6 +169,32 @@ async function setChar(req: Request, env: Env) {
   return json({ ok: true, player: dto({ ...p, char: body.char }) });
 }
 
+async function buySkin(req: Request, env: Env) {
+  const p = await authed(req, env);
+  const body = await readJson(req);
+  if (!isSkinId(body.skin)) throw new HttpError(400, "Unknown skin.");
+  const skin = body.skin;
+  if (parseSkins(p.skins).includes(skin)) throw new HttpError(409, "You already own that skin.");
+  const price = SKIN_INFO[skin].price;
+  if (p.coins < price) throw new HttpError(402, "Not enough Dili coins yet.");
+  // One conditional update, so two quick taps can't spend the coins twice.
+  const r = await env.DB.prepare(
+    `UPDATE players SET coins = coins - ?, skins = CASE WHEN skins = '' THEN ? ELSE skins || ',' || ? END, skin = ?
+     WHERE handle = ? AND coins >= ? AND instr(',' || skins || ',', ',' || ? || ',') = 0`,
+  ).bind(price, skin, skin, skin, p.handle, price, skin).run();
+  if (!r.meta?.changes) throw new HttpError(409, "That purchase didn't go through. Try again.");
+  return json({ ok: true, player: dto((await getPlayer(env, p.handle))!) });
+}
+
+async function equipSkin(req: Request, env: Env) {
+  const p = await authed(req, env);
+  const body = await readJson(req);
+  const skin = body.skin === null || body.skin === "" ? "" : body.skin;
+  if (skin !== "" && (!isSkinId(skin) || !parseSkins(p.skins).includes(skin))) throw new HttpError(403, "You don't own that skin.");
+  await env.DB.prepare("UPDATE players SET skin = ? WHERE handle = ?").bind(skin, p.handle).run();
+  return json({ ok: true, player: dto({ ...p, skin: skin as string }) });
+}
+
 /* ------------------------------------------------------------------ */
 /* Races and the board                                                 */
 /* ------------------------------------------------------------------ */
@@ -204,9 +237,9 @@ async function race(req: Request, env: Env) {
   await env.DB.batch([
     env.DB.prepare(
       `UPDATE players SET points = points + ?, best = MAX(best, ?), best_time = ?, races = races + 1,
-         wins = wins + ?, podiums = podiums + ?, streak = ?, last_day = ?, last_race_at = ?
+         wins = wins + ?, podiums = podiums + ?, streak = ?, last_day = ?, last_race_at = ?, coins = coins + ?
        WHERE handle = ?`,
-    ).bind(earned, score, bestTime, position === 1 ? 1 : 0, position <= 3 ? 1 : 0, streak, today, now, p.handle),
+    ).bind(earned, score, bestTime, position === 1 ? 1 : 0, position <= 3 ? 1 : 0, streak, today, now, coins, p.handle),
     env.DB.prepare(
       "INSERT INTO races (handle, score, position, time, coins, earned, created_at, rid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ).bind(p.handle, score, position, time, coins, earned, now, rid),
@@ -372,6 +405,9 @@ function dto(p: PlayerRow): PlayerDTO {
     streak: p.streak,
     char: isCharId(p.char) ? p.char : "dili",
     tier: tierOf(p.points),
+    coins: p.coins ?? 0,
+    skins: parseSkins(p.skins),
+    skin: isSkinId(p.skin) && parseSkins(p.skins).includes(p.skin) ? p.skin : null,
   };
 }
 

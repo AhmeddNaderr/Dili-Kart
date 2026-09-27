@@ -43,6 +43,23 @@ export const CHAR_INFO: Record<CharId, { name: string; rarity: string; color: st
 };
 export const isCharId = (c: unknown): c is CharId => typeof c === "string" && (CHAR_IDS as readonly string[]).includes(c);
 
+/**
+ * Kart skins, bought with the Dili coins picked up on track. Driver skins
+ * put a new character in the seat with their own kart; liveries repaint the
+ * kart of whichever squad driver is picked.
+ */
+export const SKIN_IDS = ["quang", "cipher", "gold", "carbon"] as const;
+export type SkinId = (typeof SKIN_IDS)[number];
+export const SKIN_INFO: Record<SkinId, { name: string; kind: "driver" | "livery"; price: number; rarity: string; blurb: string; color: string }> = {
+  quang: { name: "Quang", kind: "driver", price: 300, rarity: "Epic", blurb: "Sky-blue wave racer. Glasses on, smile on.", color: "#3fc7ff" },
+  cipher: { name: "Cipher", kind: "driver", price: 500, rarity: "Legendary", blurb: "Code in the dome, stars in the sweater.", color: "#2f4dff" },
+  gold: { name: "Gold Rush", kind: "livery", price: 200, rarity: "Rare", blurb: "Polished gold paint with black pinstripes.", color: "#ffc21a" },
+  carbon: { name: "Carbon Ghost", kind: "livery", price: 120, rarity: "Rare", blurb: "Bare carbon weave and ice-blue neon.", color: "#8fe3ff" },
+};
+export const isSkinId = (s: unknown): s is SkinId => typeof s === "string" && (SKIN_IDS as readonly string[]).includes(s);
+/** Owned skins are stored as a comma list. */
+export const parseSkins = (s: string | null | undefined): SkinId[] => (s ?? "").split(",").filter(isSkinId);
+
 /** Daily streak multiplier: ×1.0 on day one, up to ×2.0 on day seven. */
 export function streakMultiplier(streak: number): number {
   return 1 + Math.min(Math.max(streak - 1, 0), 6) / 6;
@@ -73,6 +90,10 @@ export interface PlayerDTO {
   streak: number;
   char: CharId;
   tier: string;
+  /** Dili coins to spend in the shop. */
+  coins: number;
+  skins: SkinId[];
+  skin: SkinId | null;
 }
 
 export interface BoardEntry {
