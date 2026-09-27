@@ -404,6 +404,13 @@ export class KartModel {
     dash.rotation.x = -0.5;
     dash.rotation.y = Math.PI;
 
+    // A small tinted windscreen wrapping round in front of the wheel.
+    const screenMat = texMat(`ws${L.glow}`, () => new THREE.MeshPhysicalMaterial({
+      color: L.glow, transparent: true, opacity: 0.28, roughness: 0.05, clearcoat: 1, side: THREE.DoubleSide, depthWrite: false,
+    }));
+    const ws = add(c, cached("windscreen", () => new THREE.CylinderGeometry(0.44, 0.47, 0.24, 28, 1, true, -0.95, 1.9)), screenMat, 0, 0.93, 0.2, false);
+    ws.rotation.x = -0.32;
+
     // Engine: block, valve covers, intake trumpets, curved exhausts.
     add(c, rbox(0.82, 0.38, 0.56, 0.1), metal, 0, 0.72, -0.94);
     for (const s of [1, -1]) {

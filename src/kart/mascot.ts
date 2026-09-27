@@ -263,7 +263,7 @@ export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): M
       eye.position.set(0.2 * s, 0.07, 0.232);
       eye.rotation.z = 0.42 * s;
       head.add(eye);
-      mesh(once("evilEye", () => new THREE.BoxGeometry(0.2, 0.075, 0.04)), glowMat(evil.glow, 2.6), eye);
+      mesh(once("evilEye", () => new THREE.BoxGeometry(0.2, 0.075, 0.04)), glowMat(evil.glow, 3.6), eye);
       mesh(once("evilCore", () => new THREE.BoxGeometry(0.12, 0.022, 0.02)), glowMat("#ffffff", 1.6), eye, 0.01 * s, 0, 0.022);
       eyes.push(eye);
     }
@@ -312,7 +312,7 @@ export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): M
     if (c.mouth === "smile") mouth.rotation.z = Math.PI;
     else mouth.scale.z = 0.5;
   }
-  const d = evil ? dome(darken(evil.team, 0.7), 0.68, 0.3, evil.glow) : dome(c.dome, 0.68);
+  const d = evil ? dome(darken(evil.team, 0.7), 0.68, 0.2, evil.glow) : dome(c.dome, 0.68);
   d.position.y = 0.02;
   head.add(d);
   keep.add(d);
