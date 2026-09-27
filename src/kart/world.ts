@@ -7,6 +7,7 @@ import { CURB_W, EDGE, ROAD_HALF, WALL, Track, newFrame } from "./track";
 import { grassTufts, plantAll, type Plant } from "./nature";
 import { buildSky, type Sky } from "./sky";
 import { billboards, streetLamps } from "./trackside";
+import { blimp, floodMasts, pitBuilding } from "./circuit";
 
 export type Quality = "high" | "low";
 
@@ -213,13 +214,17 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
 
   /* ---------- stadium ---------- */
   buildStadium(scene, track, diliImg);
+  pitBuilding(scene, track, keep);
+  const bowlC = new THREE.Vector3(bw.cx, 0, bw.cz);
+  floodMasts(scene, bowlC, bw.rx, bw.rz, keep);
+  const airship = blimp(scene, bowlC, Math.min(bw.rx, bw.rz) * 0.55);
 
   /* ---------- props ---------- */
   const props = dressInfield(scene, track, quality);
   mergeStatic(scene, STATIC, true);
   STATIC = [];
 
-  return { sun, gateLamps, sky, water, ...props, center: new THREE.Vector3(bw.cx, 0, bw.cz) };
+  return { sun, gateLamps, sky, water, ...props, center: new THREE.Vector3(bw.cx, 0, bw.cz), animate: (t: number) => airship.update(t) };
 }
 
 /* ================================================================== */
