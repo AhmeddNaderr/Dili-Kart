@@ -7,10 +7,11 @@ import "./hud.css";
  * top-right, coins and score bottom-left, position bottom-right.
  */
 
-export type ItemKind = "turbo" | "shield" | "magnet" | "zap";
+export type ItemKind = "turbo" | "shield" | "magnet" | "zap" | "seeker" | "ghost" | "goo";
 
 export const ITEM_NAME: Record<ItemKind, string> = {
   turbo: "DLI Rocket", shield: "D-Shield", magnet: "Coin Magnet", zap: "Freeze Zap",
+  seeker: "Seeker Orb", ghost: "Ghost Mode", goo: "Goo Bomb",
 };
 
 /**
@@ -71,7 +72,44 @@ const ICON: Record<ItemKind, string> = {
     <g stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M52 6v12M46 12h12M47.8 7.8l8.4 8.4M56.2 7.8l-8.4 8.4"/></g>
     <g stroke="#dff9ff" stroke-width="1.8" stroke-linecap="round"><path d="M10 48v8M6 52h8"/></g>
   </svg>`,
+  seeker: `<svg viewBox="0 0 64 64"><defs>
+      <radialGradient id="ik-core" cx=".38" cy=".32"><stop offset="0" stop-color="#ffffff"/><stop offset=".35" stop-color="#fff0a0"/><stop offset=".75" stop-color="#ffb81c"/><stop offset="1" stop-color="#e07a00"/></radialGradient>
+      <radialGradient id="ik-glow"><stop offset="0" stop-color="#ffd84a" stop-opacity=".6"/><stop offset="1" stop-color="#ffd84a" stop-opacity="0"/></radialGradient>
+      <linearGradient id="ik-ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9fc0ff"/><stop offset="1" stop-color="#2f4dff"/></linearGradient>
+    </defs>
+    <circle cx="34" cy="30" r="29" fill="url(#ik-glow)"/>
+    <g stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".6"><path d="M4 46l10-6M6 56l12-8M16 60l8-6"/></g>
+    <ellipse cx="36" cy="28" rx="21" ry="8" fill="none" stroke="url(#ik-ring)" stroke-width="3.2" transform="rotate(-24 36 28)"/>
+    <circle cx="36" cy="28" r="14" fill="url(#ik-core)" stroke="#fff" stroke-width="2.4"/>
+    <path d="M30.5 21h5.2c4.4 0 7.3 2.8 7.3 7s-2.9 7-7.3 7h-5.2z" fill="#fff" opacity=".95"/>
+    <path d="M34 24.6h1.4c2 0 3.3 1.3 3.3 3.4s-1.3 3.4-3.3 3.4H34z" fill="#ffb81c"/>
+    <circle cx="31" cy="22.5" r="2.6" fill="#fff" opacity=".8"/>
+    <path d="M52 8l2.4 5 5 2.4-5 2.4L52 23l-2.4-5-5-2.4 5-2.4z" fill="#fff"/>
+  </svg>`,
+  ghost: `<svg viewBox="0 0 64 64"><defs>
+      <linearGradient id="ig-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#d9c8ff"/><stop offset="1" stop-color="#8f6bff"/></linearGradient>
+      <radialGradient id="ig-g"><stop offset="0" stop-color="#b58cff" stop-opacity=".7"/><stop offset="1" stop-color="#b58cff" stop-opacity="0"/></radialGradient>
+    </defs>
+    <circle cx="32" cy="32" r="30" fill="url(#ig-g)"/>
+    <path d="M32 6c11 0 19 8.4 19 19.5V56l-6-4.5-6.3 5-6.7-5-6.7 5-6.3-5-6 4.5V25.5C13 14.4 21 6 32 6z" fill="url(#ig-b)" stroke="#6a4bd6" stroke-width="2.4" stroke-linejoin="round"/>
+    <ellipse cx="25" cy="27" rx="4" ry="5.4" fill="#2a1a5e"/><ellipse cx="39" cy="27" rx="4" ry="5.4" fill="#2a1a5e"/>
+    <circle cx="23.8" cy="25.2" r="1.5" fill="#fff"/><circle cx="37.8" cy="25.2" r="1.5" fill="#fff"/>
+    <path d="M28 37q4 3 8 0" fill="none" stroke="#2a1a5e" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M19 16c2.5-4 6.5-6 10-6" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none" opacity=".8"/>
+  </svg>`,
+  goo: `<svg viewBox="0 0 64 64"><defs>
+      <radialGradient id="ib-g" cx=".35" cy=".3"><stop offset="0" stop-color="#d6ffe4"/><stop offset=".45" stop-color="#39ff9e"/><stop offset="1" stop-color="#0f9a52"/></radialGradient>
+    </defs>
+    <ellipse cx="32" cy="54" rx="26" ry="6" fill="#0f9a52" opacity=".45"/>
+    <path d="M14 50c-6 0-6-7 0-8 1-8 6-12 10-12 1-9 7-16 14-15 7 1 10 8 9 15 6 1 9 6 8 12 6 2 5 8-1 8z" fill="url(#ib-g)" stroke="#0a7a40" stroke-width="2.4" stroke-linejoin="round"/>
+    <circle cx="26" cy="38" r="3.6" fill="#0a3a22"/><circle cx="40" cy="38" r="3.6" fill="#0a3a22"/>
+    <circle cx="25" cy="37" r="1.2" fill="#fff"/><circle cx="39" cy="37" r="1.2" fill="#fff"/>
+    <path d="M28 45q5 3 10 0" fill="none" stroke="#0a3a22" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="33" cy="22" r="3" fill="#fff" opacity=".7"/>
+    <circle cx="52" cy="14" r="4" fill="url(#ib-g)"/><circle cx="12" cy="20" r="3" fill="url(#ib-g)"/>
+  </svg>`,
 };
+
 
 const COIN = `<svg viewBox="0 0 40 40"><defs><radialGradient id="hc-g" cx=".35" cy=".3"><stop offset="0" stop-color="#fff6b8"/><stop offset=".55" stop-color="#ffc21f"/><stop offset="1" stop-color="#e08600"/></radialGradient></defs><circle cx="20" cy="20" r="18" fill="url(#hc-g)"/><circle cx="20" cy="20" r="13.5" fill="none" stroke="#fff3b0" stroke-width="2" opacity=".9"/><path d="M15 12.5h5.2c4.6 0 7.5 2.9 7.5 7.5s-2.9 7.5-7.5 7.5H15zm4.4 3.9v7.2h.9c2 0 3.2-1.4 3.2-3.6s-1.2-3.6-3.2-3.6z" fill="#fff"/></svg>`;
 

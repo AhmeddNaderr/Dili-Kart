@@ -92,7 +92,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   // Sidewalks between the curbs and the barriers.
   const walkTex = T.pavingTex();
   walkTex.repeat.set(1, 1);
-  const walk = new THREE.MeshStandardMaterial({ map: walkTex, color: "#9aa0b8", roughness: 0.62, roughnessMap: wet, envMapIntensity: 0.9 });
+  const walk = new THREE.MeshStandardMaterial({ map: walkTex, color: "#9aa0b8", roughness: 1, roughnessMap: wet, envMapIntensity: 0.7 });
   for (const s of [-1, 1]) {
     const inner: [number, number] = [(EDGE - 0.05) * s, 0.12];
     const outer: [number, number] = [WALL * s, 0.12];

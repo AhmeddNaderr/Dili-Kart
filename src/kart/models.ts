@@ -1338,3 +1338,26 @@ export function bunting(a: THREE.Vector3, b: THREE.Vector3, sag: number) {
 
 /** Rounded rectangle helper for other modules. */
 export { rbox, sphere, cyl, torus, add };
+
+/**
+ * The player's Seeker Orb: a golden core with the Dlicom D, a blue ring
+ * orbiting it, and a warm halo, so it reads as "ours" next to the
+ * Custodians' red freeze orbs.
+ */
+export function seeker() {
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(sphere(0.42, 24, 16), texMat("seekerCore", () => new THREE.MeshStandardMaterial({
+    color: "#000000", emissive: "#ffc21a", emissiveIntensity: 3, roughness: 0.3,
+  })));
+  g.add(core);
+  const em = new THREE.Mesh(cached("seekerEm", () => new THREE.CircleGeometry(0.3, 24)), texMat("seekerEmMat", () => new THREE.MeshBasicMaterial({
+    map: T.emblemTex("#ffc21a", "#ffffff", "#ffffff"), toneMapped: false,
+  })));
+  em.position.z = 0.43;
+  g.add(em);
+  const ringMat = glow("#6f93ff", 3);
+  add(g, torus(0.72, 0.045), ringMat, 0, 0, 0, false).rotation.set(1.2, 0, 0.4);
+  add(g, torus(0.62, 0.03), glow("#ffe680", 2.6), 0, 0, 0, false).rotation.set(-0.5, 0.8, 0);
+  g.add(haloSprite("#ffc21a", 3.4, 0.75));
+  return g;
+}

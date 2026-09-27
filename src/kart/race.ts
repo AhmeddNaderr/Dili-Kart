@@ -129,6 +129,8 @@ interface Hazard {
   ring: THREE.Mesh | null;
 }
 interface Orb { u: number; lat: number; speed: number; life: number; obj: THREE.Object3D; }
+/** The player's Seeker Orb: flies up the track and homes in on the racer ahead. */
+interface Seeker { u: number; lat: number; speed: number; life: number; obj: THREE.Object3D; target: Racer | null; }
 
 const V = () => new THREE.Vector3();
 
@@ -166,6 +168,9 @@ export class DiliCart {
   private pads: Pad[] = [];
   private hazards: Hazard[] = [];
   private orbs: Orb[] = [];
+  private seekers: Seeker[] = [];
+  /** Ghost Mode: the player phases through karts, hazards and orbs. */
+  private ghostT = 0;
   private shield!: THREE.Mesh;
   private magnet!: THREE.Group;
 
@@ -377,6 +382,7 @@ export class DiliCart {
       };
       w.__keys = (k: Partial<typeof this.input>) => Object.assign(this.input, k);
       w.__press = (code: string) => this.pressed.add(code);
+      w.__use = (k: ItemKind) => { this.item = k; this.useItem(this.racers[0]); };
       // Free camera for inspection: render from anywhere and save the frame.
       w.__cam = async (px: number, py: number, pz: number, tx: number, ty: number, tz: number, name = "cam") => {
         this.camera.position.set(px, py, pz);
@@ -697,6 +703,7 @@ export class DiliCart {
       this.bumps(dt);
       this.collide(player, dt);
       this.updateOrbs(dt);
+      this.updateSeekers(dt);
       this.standings();
     }
     this.updateHazards(dt);
@@ -1065,6 +1072,17 @@ export class DiliCart {
 
     // Timers.
     this.shieldT = Math.max(0, this.shieldT - dt);
+    // Ghost Mode: the kart flickers like a hologram and trails violet wisps.
+    if (this.ghostT > 0) {
+      this.ghostT = Math.max(0, this.ghostT - dt);
+      const on = this.ghostT > 0;
+      p.model.body.visible = !on || Math.sin(this.time * 38) > (this.ghostT < 1.2 ? -0.2 : 0.35);
+      if (on && Math.random() < 0.7) {
+        const q = p.model.root.position;
+        this.puffs.spawn(q.x + (Math.random() - 0.5) * 1.6, q.y + 0.6 + Math.random(), q.z + (Math.random() - 0.5) * 1.6, 0, 0.6, 0,
+          this.col.set("#b58cff"), 0.5, 0.4, { grow: 1.3, drag: 2 });
+      }
+    }
     this.magnetT = Math.max(0, this.magnetT - dt);
     this.hitCool = Math.max(0, this.hitCool - dt);
     this.attackCool = Math.max(0, this.attackCool - dt);
@@ -1154,6 +1172,32 @@ export class DiliCart {
         this.audio.get();
         this.hud.flash("#ff3d5a");
         break;
+      case "seeker": {
+        // Lock onto the nearest racer ahead.
+        let target: Racer | null = null, best = 160;
+        for (let k = 1; k < this.racers.length; k++) {
+          const r = this.racers[k];
+          const d = r.dist - p.dist;
+          if (d > 2 && d < best && !r.finished) { best = d; target = r; }
+        }
+        const obj = M.seeker();
+        this.scene.add(obj);
+        this.seekers.push({ u: this.track.wrap(this.track.startU + p.dist + 2.5), lat: p.lat, speed: p.speed + 14, life: 6, obj, target });
+        this.audio.boost();
+        this.hud.flash("#ffd84a");
+        break;
+      }
+      case "ghost":
+        this.ghostT = 5;
+        p.boostT = Math.max(p.boostT, 0.8);
+        this.audio.shield();
+        this.hud.flash("#b58cff");
+        break;
+      case "goo":
+        this.dropGoo(p);
+        this.audio.land();
+        this.hud.flash("#6dff9e");
+        break;
       case "zap": {
         let n = 0;
         for (let k = 1; k < this.racers.length; k++) {
@@ -1179,10 +1223,10 @@ export class DiliCart {
     if (this.item || this.rolling) return;
     const pos = this.lastPos;
     const table: [ItemKind, number][] = pos === 1
-      ? [["shield", 4], ["magnet", 4], ["turbo", 2]]
+      ? [["shield", 4], ["magnet", 3.5], ["goo", 3], ["turbo", 2]]
       : pos <= 3
-        ? [["turbo", 3.5], ["shield", 2.5], ["magnet", 2.5], ["zap", 1.5]]
-        : [["turbo", 4], ["zap", 3], ["magnet", 1.5], ["shield", 1.5]];
+        ? [["turbo", 3], ["seeker", 2.5], ["shield", 2], ["magnet", 2], ["goo", 2], ["zap", 1.2], ["ghost", 1.2]]
+        : [["turbo", 3.5], ["seeker", 3], ["zap", 2.5], ["ghost", 2], ["magnet", 1.2], ["shield", 1.2]];
     let roll = Math.random() * table.reduce((s, [, w]) => s + w, 0);
     let pick: ItemKind = "turbo";
     for (const [k, w] of table) { if ((roll -= w) <= 0) { pick = k; break; } }
@@ -1460,7 +1504,7 @@ export class DiliCart {
         const q = o.obj.position;
         this.sparks.spawn(q.x, q.y, q.z, (Math.random() - 0.5), Math.random(), (Math.random() - 0.5), this.col.set("#ff4a5e"), 0.9, 0.35);
       }
-      if (Math.abs(d) < 1.5 && Math.abs(o.lat - p.lat) < 1.5 && !p.air) {
+      if (Math.abs(d) < 1.5 && Math.abs(o.lat - p.lat) < 1.5 && !p.air && this.ghostT <= 0) {
         o.life = 0;
         this.hitPlayer(p, "FROZEN!");
         this.burst(o.obj.position, "#ff4a5e", 30, 8);
@@ -1474,6 +1518,47 @@ export class DiliCart {
     this.hud.warn(warn && this.phase === "race");
   }
 
+  private updateSeekers(dt: number) {
+    const tr = this.track;
+    for (const o of this.seekers) {
+      o.life -= dt;
+      o.speed = Math.min(52, o.speed + dt * 20);
+      o.u = tr.wrap(o.u + o.speed * dt);
+      const t = o.target;
+      if (t) {
+        o.lat += THREE.MathUtils.clamp(t.lat - o.lat, -7 * dt, 7 * dt);
+        const tu = tr.wrap(tr.startU + t.dist);
+        const d = tr.delta(o.u, tu);
+        if (Math.abs(d) < 1.8 && Math.abs(o.lat - t.lat) < 1.8 && !t.air) {
+          o.life = 0;
+          t.spin = 1.4;
+          t.frozen = 1.1;
+          t.speed *= 0.4;
+          this.takedowns++;
+          this.addScore(60, "takedowns");
+          this.hud.pop("SEEKER HIT! +60", "gold big");
+          this.audio.bonk();
+          this.burst(t.model.root.position, "#ffd84a", 34, 9);
+        } else if (d < -6) {
+          // Overshot (the target jumped or dodged): pick them up again next lap.
+          o.target = null;
+        }
+      }
+      tr.point(o.u, o.lat, 1.2 + Math.sin(this.time * 10) * 0.12, o.obj.position);
+      o.obj.rotation.y += dt * 10;
+      o.obj.rotation.x += dt * 4;
+      if (Math.random() < 0.9) {
+        const q = o.obj.position;
+        this.sparks.spawn(q.x, q.y, q.z, (Math.random() - 0.5) * 2, Math.random(), (Math.random() - 0.5) * 2, this.col.set(Math.random() < 0.5 ? "#ffd84a" : "#7fb0ff"), 1.0, 0.4);
+      }
+    }
+    this.seekers = this.seekers.filter((o) => {
+      if (o.life > 0) return true;
+      this.scene.remove(o.obj);
+      return false;
+    });
+  }
+
   /** Kart-to-kart contact. */
   private bumps(dt: number) {
     const tr = this.track;
@@ -1483,6 +1568,7 @@ export class DiliCart {
       for (let b = a + 1; b < rs.length; b++) {
         const A = rs[a], B = rs[b];
         if (A.air || B.air) continue;
+        if (this.ghostT > 0 && (A.player || B.player)) continue;
         const du = tr.delta(tr.wrap(tr.startU + A.dist), tr.wrap(tr.startU + B.dist));
         const dl = B.lat - A.lat;
         if (Math.abs(du) > 2.7 || Math.abs(dl) > 1.95) continue;
@@ -1604,7 +1690,7 @@ export class DiliCart {
     }
 
     for (const h of this.hazards) {
-      if (h.knocked > 0) continue;
+      if (h.knocked > 0 || this.ghostT > 0) continue;
       const du = tr.delta(pu, h.u);
       if (Math.abs(du) > h.r + 1.3 || Math.abs(h.lat - p.lat) > h.r + 0.9) continue;
       if (p.air && h.kind !== "drone") continue;
@@ -2153,7 +2239,7 @@ export class DiliCart {
     }
     const boosting = p.boostT > 0 && (this.phase === "race");
     hud.speedLines(boosting ? 0.9 : p.speed > 23 && this.phase === "race" ? 0.18 : 0);
-    hud.vignette(this.shieldT > 0 ? "rgba(94,200,255,.55)" : this.magnetT > 0 ? "rgba(255,61,90,.4)" : null);
+    hud.vignette(this.ghostT > 0 ? "rgba(181,140,255,.55)" : this.shieldT > 0 ? "rgba(94,200,255,.55)" : this.magnetT > 0 ? "rgba(255,61,90,.4)" : null);
   }
 
   /* ================================================================ */
