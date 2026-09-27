@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { CharId } from "../../shared/rules";
 import { rimLight } from "./rim";
 
@@ -32,9 +33,103 @@ function once<T extends THREE.BufferGeometry | THREE.Material>(key: string, make
   if (!v) { v = make(); cache.set(key, v); }
   return v;
 }
+const texCache = new Map<string, THREE.Texture>();
+function onceTex(key: string, make: () => THREE.Texture) {
+  let t = texCache.get(key);
+  if (!t) { t = make(); texCache.set(key, t); }
+  return t;
+}
 export function disposeMascots() {
   for (const v of cache.values()) v.dispose();
   cache.clear();
+  for (const t of texCache.values()) t.dispose();
+  texCache.clear();
+}
+
+const lighten = (hex: string, k: number) => "#" + new THREE.Color(hex).lerp(new THREE.Color("#ffffff"), k).getHexString();
+
+/** A fine twill weave as a normal map, so the suits read as fabric up close. */
+function fabricNormal() {
+  return onceTex("fabricN", () => {
+    const S = 128;
+    const c = document.createElement("canvas");
+    c.width = c.height = S;
+    const g = c.getContext("2d")!;
+    const h = (x: number, y: number) => {
+      // Whole periods across the tile so it wraps without a seam.
+      const t = ((x + y * 0.5) / 8) * Math.PI * 2;
+      return 0.5 + 0.35 * Math.sin(t) + 0.15 * Math.sin(((x - y) / 16) * Math.PI * 2);
+    };
+    const img = g.createImageData(S, S);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const dx = h(x + 1, y) - h(x - 1, y), dy = h(x, y + 1) - h(x, y - 1);
+      const n = new THREE.Vector3(-dx * 1.6, -dy * 1.6, 1).normalize();
+      const i = (y * S + x) * 4;
+      img.data[i] = (n.x * 0.5 + 0.5) * 255;
+      img.data[i + 1] = (n.y * 0.5 + 0.5) * 255;
+      img.data[i + 2] = (n.z * 0.5 + 0.5) * 255;
+      img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(5, 5);
+    t.anisotropy = 4;
+    return t;
+  });
+}
+
+/** Racing-suit fabric: soft sheen, a woven normal, the same rim light as the vinyl. */
+const suitMat = (color: string) => once(`suit${color}`, () => rimLight(new THREE.MeshPhysicalMaterial({
+  color, roughness: 0.6, metalness: 0, sheen: 0.6, sheenRoughness: 0.45,
+  sheenColor: new THREE.Color(color).lerp(new THREE.Color("#ffffff"), 0.5),
+  normalMap: fabricNormal(), normalScale: new THREE.Vector2(0.16, 0.16),
+}), 0.3));
+
+/** Polished trim metal: badges, buckles, collar rings. */
+const chromeTrim = () => once("chromeTrim", () => new THREE.MeshPhysicalMaterial({
+  color: "#eef1f8", metalness: 0.9, roughness: 0.18, clearcoat: 0.7, clearcoatRoughness: 0.1,
+}));
+
+/** The cape, printed: a trim border and the squad emblem (drawn mirrored, since it's seen from behind). */
+function capeTex(color: string, trim: string, emblem: boolean) {
+  return onceTex(`cape${color}${trim}${emblem}`, () => {
+    const W = 256, H = 320;
+    const c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const g = c.getContext("2d")!;
+    const grd = g.createLinearGradient(0, 0, 0, H);
+    grd.addColorStop(0, lighten(color, 0.08));
+    grd.addColorStop(1, "#" + new THREE.Color(color).multiplyScalar(0.72).getHexString());
+    g.fillStyle = grd;
+    g.fillRect(0, 0, W, H);
+    g.strokeStyle = trim;
+    g.lineWidth = 12;
+    g.strokeRect(14, -10, W - 28, H - 4);
+    g.globalAlpha = 0.5;
+    g.lineWidth = 3;
+    g.strokeRect(30, -10, W - 60, H - 22);
+    g.globalAlpha = 1;
+    if (emblem) {
+      g.save();
+      g.translate(W / 2, 96);
+      g.scale(-1, 1);
+      g.fillStyle = trim;
+      g.beginPath();
+      g.arc(0, 0, 50, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = color;
+      g.font = "900 64px Inter, 'Arial Black', sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText("D", 2, 4);
+      g.restore();
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 4;
+    return t;
+  });
 }
 
 /** Soft vinyl-toy finish, like the renders. */
@@ -168,12 +263,17 @@ export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): Mas
     : MASCOT[char];
   const root = new THREE.Group();
   const keep = new Set<THREE.Object3D>();
-  const suit = vinyl(c.suit);
+  const suit = suitMat(c.suit);
   const headMat = vinyl(c.head);
   const glove = vinyl(c.glove);
   const white = vinyl("#f6f7fb");
   const ink = flat("#15161f", 0.35);
-  const silver = once("silver", () => new THREE.MeshStandardMaterial({ color: "#e9ecf5", metalness: 0.55, roughness: 0.28 }));
+  const silver = chromeTrim();
+  // Pads, cuffs and heel tabs in the cape's deeper shade; piping in white
+  // (the Custodians pipe theirs in their neon).
+  const pad = suitMat(c.cape);
+  const piping = evil ? glowMat(evil.glow, 1.4) : white;
+  const sole = flat(evil ? "#15141f" : "#3a4058", 0.6);
 
   const mesh = (geo: THREE.BufferGeometry, mat: THREE.Material, parent: THREE.Object3D, x = 0, y = 0, z = 0) => {
     const m = new THREE.Mesh(geo, mat);
@@ -191,6 +291,14 @@ export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): Mas
     return new THREE.LatheGeometry(new THREE.SplineCurve(pts).getPoints(20), 32);
   }), suit, root, 0, 1.12, -0.18);
   torso.scale.set(1, 1, 0.82);
+  // Belt with a polished buckle, and piping down each side of the suit.
+  const belt = mesh(once("belt", () => new THREE.TorusGeometry(0.405, 0.042, 12, 56).rotateX(Math.PI / 2)), flat(evil ? "#0f0e17" : "#1e2236", 0.45), root, 0, 0.86, -0.18);
+  belt.scale.z = 0.82;
+  mesh(once("buckle", () => new RoundedBoxGeometry(0.15, 0.1, 0.05, 3, 0.02)), silver, root, 0, 0.86, 0.19);
+  for (const sx of [-1, 1]) {
+    const pipe = mesh(once("pipeT", () => new THREE.CapsuleGeometry(0.016, 0.46, 4, 8)), piping, root, 0.437 * sx, 1.13, -0.18);
+    pipe.rotation.z = -0.04 * sx;
+  }
   if (evil) {
     // Padlock: body, shackle and a glowing keyhole.
     const lockMat = once(`lock${evil.team}`, () => new THREE.MeshStandardMaterial({
@@ -218,6 +326,11 @@ export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): Mas
   } else {
     const badge = mesh(dLetterGeo(0.26, 0.05), silver, root, 0.01, 1.2, 0.2);
     badge.rotation.x = -0.12;
+    for (const sx of [-1, 1]) {
+      const sp = mesh(once("spadH", () => new THREE.SphereGeometry(0.16, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2)), pad, root, 0.37 * sx, 1.44, -0.18);
+      sp.rotation.z = -0.5 * sx;
+      sp.scale.set(1, 0.8, 1.05);
+    }
   }
 
   // Collar ring the dome seats into.
@@ -225,6 +338,11 @@ export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): Mas
     color: c.dome, transparent: true, opacity: 0.75, roughness: 0.1, clearcoat: 1,
   })), root, 0, 1.54, -0.18);
   collar.rotation.x = Math.PI / 2;
+  mesh(once("collarRing", () => new THREE.TorusGeometry(0.335, 0.028, 10, 48).rotateX(Math.PI / 2)), silver, root, 0, 1.585, -0.18);
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2;
+    mesh(once("bolt", () => new THREE.SphereGeometry(0.02, 8, 6)), silver, root, Math.cos(a) * 0.335, 1.615, -0.18 + Math.sin(a) * 0.335);
+  }
 
   // Head: bubble, pixel eyes, mouth, dome.
   const head = new THREE.Group();
@@ -256,7 +374,16 @@ export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): Mas
     w.rotation.z = Math.PI / 4;
     const b = mesh(once("eyeB", () => new THREE.BoxGeometry(0.095, 0.095, 0.05)), ink, eye, -0.035 * s, 0, 0.012);
     b.rotation.z = Math.PI / 4;
+    // A glint in each eye: the thing that makes a toy look alive.
+    const hi = mesh(once("eyeHi", () => new THREE.BoxGeometry(0.03, 0.03, 0.02)), once("glint", () => new THREE.MeshBasicMaterial({ color: "#ffffff" })), eye, -0.035 * s - 0.018, 0.022, 0.04);
+    hi.rotation.z = Math.PI / 4;
+    hi.castShadow = false;
     eyes.push(eye);
+    const cheek = mesh(once("cheek", () => new THREE.CircleGeometry(0.058, 24)), once("blush", () => new THREE.MeshBasicMaterial({
+      color: "#ff8fb8", transparent: true, opacity: 0.45, depthWrite: false,
+    })), head, 0.34 * s, -0.09, 0.239);
+    cheek.castShadow = false;
+    cheek.scale.y = 0.7;
   }
   let mouth: THREE.Mesh;
   if (evil) {
@@ -296,32 +423,62 @@ export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): Mas
     trim.castShadow = false;
   }
 
-  // Arms: pivot at the shoulder, hanging down −Y. Mitten gloves.
+  // Arms: pivot at the shoulder, hanging down −Y. A tapered sleeve with
+  // white piping, a flared glove cuff, and a cartoon glove: palm, three
+  // fingers and a thumb.
   const arm = (s: number) => {
     const g = new THREE.Group();
     g.position.set(0.4 * s, 1.36, -0.16);
     root.add(g);
-    mesh(once("sleeve", () => new THREE.CapsuleGeometry(0.12, 0.32, 6, 14)), suit, g, 0, -0.26, 0);
-    const mitt = mesh(once("mitt", () => new THREE.SphereGeometry(0.15, 16, 12)), glove, g, 0, -0.58, 0);
-    mitt.scale.set(1, 1.1, 0.82);
-    mesh(once("thumb", () => new THREE.SphereGeometry(0.065, 10, 8)), glove, g, -0.1 * s, -0.52, 0.06);
+    mesh(once("sleeve2", () => new THREE.LatheGeometry([
+      [0, 0.07], [0.08, 0.065], [0.12, 0.03], [0.128, -0.04], [0.118, -0.25], [0.106, -0.44], [0.098, -0.47], [0, -0.47],
+    ].map(([x, y]) => new THREE.Vector2(x, y)), 24)), suit, g);
+    mesh(once("pipeA", () => new THREE.BoxGeometry(0.022, 0.4, 0.03)), piping, g, 0.116 * s, -0.24, 0).rotation.z = 0.025 * s;
+    mesh(once("gcuff", () => new THREE.CylinderGeometry(0.128, 0.1, 0.1, 24, 1, true)), glove, g, 0, -0.475, 0);
+    mesh(once("gcuffRim", () => new THREE.TorusGeometry(0.126, 0.018, 8, 28).rotateX(Math.PI / 2)), glove, g, 0, -0.43, 0);
+    const palm = mesh(once("palm", () => new THREE.SphereGeometry(0.13, 24, 18)), glove, g, 0, -0.59, 0.01);
+    palm.scale.set(1, 1.02, 0.8);
+    for (let f = 0; f < 3; f++) {
+      const fx = (f - 1) * 0.056;
+      const finger = mesh(once("finger", () => new THREE.CapsuleGeometry(0.041, 0.075, 6, 12)), glove, g, fx, -0.7, 0.045);
+      finger.rotation.set(-0.45, 0, (f - 1) * -0.12);
+    }
+    const thumb = mesh(once("thumb2", () => new THREE.CapsuleGeometry(0.046, 0.07, 6, 12)), glove, g, -0.105 * s, -0.56, 0.07);
+    thumb.rotation.set(0.5, 0, 0.75 * s);
     return g;
   };
   const armL = arm(1);
   const armR = arm(-1);
 
-  // Legs and boots, standing only.
+  // Legs and sneaker boots, standing only.
   let legL: THREE.Group | null = null, legR: THREE.Group | null = null;
   if (!seated) {
     const leg = (s: number) => {
       const g = new THREE.Group();
       g.position.set(0.19 * s, 0.72, -0.18);
       root.add(g);
-      mesh(once("leg", () => new THREE.CapsuleGeometry(0.14, 0.26, 6, 14)), suit, g, 0, -0.2, 0);
-      const boot = mesh(once("boot", () => new THREE.SphereGeometry(0.2, 18, 12)), white, g, 0, -0.52, 0.05);
-      boot.scale.set(0.95, 0.72, 1.25);
-      const sole = mesh(once("sole", () => new THREE.CylinderGeometry(0.19, 0.2, 0.06, 18)), flat("#d8dbe6"), g, 0, -0.64, 0.05);
-      sole.scale.z = 1.25;
+      mesh(once("leg2", () => new THREE.LatheGeometry([
+        [0, 0.08], [0.1, 0.07], [0.15, 0.02], [0.145, -0.12], [0.132, -0.3], [0.125, -0.4], [0, -0.4],
+      ].map(([x, y]) => new THREE.Vector2(x, y)), 24)), suit, g);
+      const knee = mesh(once("knee", () => new THREE.SphereGeometry(0.08, 18, 12)), pad, g, 0, -0.2, 0.1);
+      knee.scale.set(1.25, 1, 0.42);
+      mesh(once("pipeL", () => new THREE.BoxGeometry(0.022, 0.34, 0.03)), piping, g, 0.14 * s, -0.16, 0);
+      // Boot: sole, upper, toe cap, laces, ankle cuff, heel tab.
+      // Rounded rubber sole that follows the upper, with a tread band.
+      const soleM = mesh(once("sole3", () => new THREE.CylinderGeometry(0.182, 0.17, 0.07, 32)), sole, g, 0, -0.625, 0.075);
+      soleM.scale.set(1, 1, 1.42);
+      const band = mesh(once("soleBand", () => new THREE.CylinderGeometry(0.186, 0.186, 0.022, 32, 1, true)), pad, g, 0, -0.603, 0.075);
+      band.scale.set(1, 1, 1.42);
+      const upper = mesh(once("boot2", () => new THREE.SphereGeometry(0.19, 26, 16)), white, g, 0, -0.5, 0.06);
+      upper.scale.set(0.93, 0.7, 1.28);
+      const toe = mesh(once("toe", () => new THREE.SphereGeometry(0.12, 20, 12)), flat("#dfe3ee", 0.45), g, 0, -0.555, 0.215);
+      toe.scale.set(1.15, 0.62, 1);
+      for (let k = 0; k < 3; k++) {
+        const lace = mesh(once("lace", () => new RoundedBoxGeometry(0.11, 0.018, 0.024, 2, 0.008)), sole, g, 0, -0.43 - k * 0.032, 0.17 + k * 0.02);
+        lace.rotation.x = -0.9;
+      }
+      mesh(once("ankle", () => new THREE.TorusGeometry(0.132, 0.034, 10, 28).rotateX(Math.PI / 2)), pad, g, 0, -0.395, 0.005);
+      mesh(once("heelTab", () => new RoundedBoxGeometry(0.08, 0.11, 0.04, 2, 0.015)), pad, g, 0, -0.47, -0.17);
       return g;
     };
     legL = leg(1);
@@ -340,8 +497,9 @@ export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): Mas
       }
     }
   }
-  const cape = new THREE.Mesh(capeGeo, once(`cape${c.cape}`, () => new THREE.MeshPhysicalMaterial({
-    color: c.cape, roughness: 0.5, sheen: 0.6, sheenColor: new THREE.Color("#ffffff"), side: THREE.DoubleSide,
+  const cape = new THREE.Mesh(capeGeo, once(`cape2${c.cape}${!!evil}`, () => new THREE.MeshPhysicalMaterial({
+    map: capeTex(c.cape, evil ? evil.glow : lighten(c.cape, 0.72), !evil),
+    roughness: 0.5, sheen: 0.7, sheenRoughness: 0.4, sheenColor: new THREE.Color("#ffffff"), side: THREE.DoubleSide,
   })));
   cape.position.set(0, 1.5, -0.56);
   cape.castShadow = true;
