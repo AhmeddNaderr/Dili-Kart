@@ -177,9 +177,6 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   // Intro props: each pops in beside Dili with a spring, the old one shrinks away.
   const props = new Map<Prop, THREE.Object3D>();
   let prop: Prop = "none";
-  let propK = 0;
-  let prevProp: THREE.Object3D | null = null;
-  let prevK = 0;
   let custodian: MascotModel | null = null;
   let introKart: KartModel | null = null;
   const makeProp = (p: Prop): THREE.Object3D => {
@@ -305,23 +302,23 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       m.update(t, dt);
     }
     if (mode.kind === "solo") {
-      const cur = props.get(prop);
-      propK = Math.min(1, propK + dt * 1.8);
-      if (cur) {
-        cur.visible = true;
-        const e = propK >= 1 ? 1 : 1 - Math.pow(2, -9 * propK) * Math.cos(propK * 9);
-        cur.scale.setScalar(Math.max(0.001, e) * (prop === "kart" ? 0.72 : prop === "phone" ? 0.9 : 1));
-        const sp = cur.getObjectByName("spin");
+      // Every prop eases toward its own target: the current one springs in,
+      // the rest shrink away, however quickly the lines are skipped.
+      for (const [name, obj] of props) {
+        const on = name === prop;
+        let k = (obj.userData.k as number | undefined) ?? 0;
+        k = on ? Math.min(1, k + dt * 1.8) : Math.max(0, k - dt * 4);
+        obj.userData.k = k;
+        obj.visible = k > 0.001;
+        if (!obj.visible) continue;
+        const e = on ? (k >= 1 ? 1 : 1 - Math.pow(2, -9 * k) * Math.cos(k * 9)) : k;
+        obj.scale.setScalar(Math.max(0.001, e) * (name === "kart" ? 0.72 : name === "phone" ? 0.9 : 1));
+        const sp = obj.getObjectByName("spin");
         if (sp) {
-          sp.rotation.y = prop === "coin" ? t * 1.6 : Math.sin(t * 0.8) * 0.35 - 0.3;
+          sp.rotation.y = name === "coin" ? t * 1.6 : Math.sin(t * 0.8) * 0.35 - 0.3;
           sp.position.y = Math.sin(t * 1.7) * 0.08;
         }
-        if (prop === "keys") cur.children.forEach((c, i) => { c.position.y = (c.userData.base as number) + Math.max(0, Math.sin(t * 5 - i * 0.9)) * 0.1; });
-      }
-      if (prevProp) {
-        prevK = Math.max(0, prevK - dt * 4);
-        prevProp.scale.setScalar(Math.max(0.001, prevK));
-        if (prevK <= 0) { prevProp.visible = false; prevProp = null; }
+        if (name === "keys") obj.children.forEach((c, i) => { c.position.y = (c.userData.base as number) + Math.max(0, Math.sin(t * 5 - i * 0.9)) * 0.1; });
       }
       custodian?.update(t, dt);
       introKart?.update({ speed: 3, steer: Math.sin(t) * 0.2, slide: 0, hop: 0, squash: 1, roll: 0, flip: 0, boost: Math.max(0, Math.sin(t * 1.3)) * 0.6, glide: 0, wave: 0, time: t }, dt);
@@ -359,10 +356,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
     },
     setProp(p: Prop) {
       if (mode.kind !== "solo" || p === prop) return;
-      const old = props.get(prop);
-      if (old) { prevProp = old; prevK = 1; }
       prop = p;
-      propK = 0;
       if (p !== "none" && !props.has(p)) props.set(p, makeProp(p));
     },
     setSpeaking(on: boolean) {
