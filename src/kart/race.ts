@@ -14,7 +14,7 @@ import { Hud, ITEM_NAME, type ItemKind } from "./hud";
 import { TRACK_INFO, type CharId, type SkinId, type TrackId } from "../../shared/rules";
 import { MASCOT } from "./mascot";
 import { tickNature } from "./nature";
-import { ContactAO, gradePass } from "./grade";
+import { ContactAO, gradePass, sanitizePass } from "./grade";
 import { portrait, skinPortrait } from "../ui/icons";
 
 /**
@@ -244,6 +244,8 @@ export class DiliCart {
   private trailer = false;
   /** Trailer: films the frame instead of the game's own cameras; returns the fov. */
   director: ((cam: THREE.PerspectiveCamera, dt: number) => number) | null = null;
+  /** Dev: let the player's kart drive itself (for soak tests). */
+  autopilot = false;
   /** Trailer autopilot: fire items as they come. The intro film turns this off. */
   autoItems = true;
   /** Intro film (dev only): adjust a kart's pose before it's applied. */
@@ -291,6 +293,10 @@ export class DiliCart {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     const cv = this.renderer.domElement;
+    // If the GPU drops the context (driver reset, memory pressure), don't sit
+    // on a black canvas: let it come back, then restart the race cleanly.
+    cv.addEventListener("webglcontextlost", (e) => { e.preventDefault(); cancelAnimationFrame(this.raf); }, false);
+    cv.addEventListener("webglcontextrestored", () => { if (this.alive && !this.attract && !this.trailer) this.hooks.onRestart(); }, false);
     Object.assign(cv.style, { width: "100%", height: "100%", display: "block", position: "absolute", inset: "0" });
     el.prepend(cv);
 
@@ -344,12 +350,15 @@ export class DiliCart {
     const composerTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: this.quality === "low" ? 2 : 4 });
     this.composer = new EffectComposer(this.renderer, composerTarget);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    if (this.quality === "high" && !this.attract && !this.trailer) {
+    // AO pays off in the sunlit stadium; at night the city is lit by neon
+    // and the frame budget goes further without it.
+    if (this.quality === "high" && !this.attract && !this.trailer && this.trackId !== "town") {
       this.ao = new ContactAO(this.scene, this.camera, 256, 256);
       this.composer.addPass(this.ao);
       // Softer sun shadows to go with it.
       this.world.sun.shadow.radius = 2.5;
     }
+    this.composer.addPass(sanitizePass());
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.45, 2.9);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
@@ -384,6 +393,18 @@ export class DiliCart {
       w.__keys = (k: Partial<typeof this.input>) => Object.assign(this.input, k);
       w.__press = (code: string) => this.pressed.add(code);
       w.__nearFinish = () => { const p = this.racers[0]; p.dist = this.laps * this.track.length - 12; this.lap = this.laps; this.camReady = false; };
+      // Average brightness of a freshly rendered frame (0..255), to catch black frames.
+      w.__lum = () => {
+        this.composer.render();
+        const c = document.createElement("canvas");
+        c.width = 32; c.height = 18;
+        const g = c.getContext("2d")!;
+        g.drawImage(this.renderer.domElement, 0, 0, 32, 18);
+        const d = g.getImageData(0, 0, 32, 18).data;
+        let s = 0;
+        for (let i = 0; i < d.length; i += 4) s += (d[i] + d[i + 1] + d[i + 2]) / 3;
+        return s / (d.length / 4);
+      };
       w.__use = (k: ItemKind) => { this.item = k; this.useItem(this.racers[0]); };
       // Free camera for inspection: render from anywhere and save the frame.
       w.__cam = async (px: number, py: number, pz: number, tx: number, ty: number, tz: number, name = "cam") => {
@@ -1011,7 +1032,7 @@ export class DiliCart {
   /* ================================================================ */
 
   private updatePlayer(p: Racer, dt: number) {
-    if (this.trailer) this.autoDrive(p, dt);
+    if (this.trailer || this.autopilot) this.autoDrive(p, dt);
     const auto = this.phase === "finish";
     let want = 0;
     if (!auto) {
@@ -1885,7 +1906,7 @@ export class DiliCart {
     w.water.offset.x += dt * 0.02;
     w.water.offset.y += dt * 0.012;
     w.sky.update(t);
-    w.weather?.update(this.camera, dt);
+    w.weather?.update(this.camera, dt, this.racers[0]?.model.root.position);
     crowdTime.value = t;
     for (const b of w.balloons) b.position.y = (b.userData.base as number) + Math.sin(t * 0.8 + b.position.x) * 1.2;
     for (const sp of w.spinners) sp.rotation.y += dt * 0.6;
@@ -2263,24 +2284,35 @@ export class DiliCart {
     this.camera.updateProjectionMatrix();
   };
 
-  /** If the machine can't hold ~45 fps, drop resolution and bloom once. */
+  /**
+   * Keep the frame rate up: every couple of seconds, if frames average over
+   * ~23 ms, step down — AO first, then the pixel ratio in stages, and only
+   * as a last resort a cheaper bloom. Once lowered it stays lowered.
+   */
+  private perfStep = 0;
   private watchPerf(raw: number) {
     if (this.lowered || this.phase === "load" || this.paused) return;
     this.frameMs.push(raw * 1000);
     if (this.frameMs.length < 120) return;
-    const avg = this.frameMs.reduce((a, b) => a + b, 0) / this.frameMs.length;
+    const sorted = [...this.frameMs].sort((a, b) => a - b);
+    // The median ignores one-off hitches (a tab switch, a GC pause).
+    const avg = sorted[sorted.length >> 1];
     this.frameMs.length = 0;
-    if (avg > 23 && this.ao?.enabled) {
-      // First, drop the ambient occlusion and measure again.
-      this.ao.enabled = false;
+    if (avg <= 23) return;
+    if (this.ao?.enabled) { this.ao.enabled = false; return; }
+    const steps = [1.25, 1, 0.85, 0.75];
+    const cur = this.renderer.getPixelRatio();
+    const next = steps.find((r) => r < cur - 0.01);
+    if (next !== undefined && this.perfStep < steps.length) {
+      this.perfStep++;
+      this.renderer.setPixelRatio(next);
+      this.resize();
       return;
     }
-    if (avg > 23) {
-      this.lowered = true;
-      this.renderer.setPixelRatio(1);
-      this.bloom.enabled = avg > 30 ? false : this.bloom.enabled;
-      this.resize();
-    }
+    // Bloom at quarter resolution keeps the neon glow for a fraction of the cost.
+    this.lowered = true;
+    const r = this.mountEl.getBoundingClientRect();
+    this.bloom.resolution.set(r.width / 4, r.height / 4);
   }
 
   stats() {

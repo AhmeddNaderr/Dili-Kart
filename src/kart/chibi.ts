@@ -12,7 +12,7 @@ import { rimLight } from "./rim";
  *   Quang  — black hair with a white streak in the bangs, thin glasses over
  *            big teal eyes, an open smile, a white mandarin-collar shirt
  *            with two chest pockets.
- *   Cipher — a charcoal face in a glass bubble, a spiky black mop, round
+ *   Retree — a charcoal face in a glass bubble, a spiky black mop, round
  *            white eyes behind blue dotted pixel glasses, a dark sweater
  *            speckled with stars.
  */
@@ -316,7 +316,7 @@ export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
       tuft.rotation.set(-0.6, 0, r);
     }
   } else {
-    // Cipher: round white eyes with a dark outline and a ring of star
+    // Retree: round white eyes with a dark outline and a ring of star
     // specks, a small flat mouth, pixel glasses of glowing blue dots.
     for (const s of [-1, 1]) {
       const eye = onHead(new THREE.Group(), 0.155 * s, 0.02, -0.01);
@@ -463,7 +463,7 @@ export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
 
   // Seated drivers are posed for the kart; menus lift the standing ones.
   if (!quang) {
-    // Cipher's stars glint a little in the dark.
+    // Retree's stars glint a little in the dark.
     const glintMat = glowMat(lighten("#8fb0ff", 0.4), 0.8);
     for (const [x, y, z] of [[0.18, 1.3, 0.1], [-0.22, 1.05, 0.12], [0.1, 0.9, 0.14]]) {
       const st = mesh(onceC("starGlint", () => new THREE.OctahedronGeometry(0.018, 0)), glintMat, root, x, y, z);

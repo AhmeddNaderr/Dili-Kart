@@ -346,7 +346,7 @@ export type Livery = "waves" | "matrix" | "gold" | "carbon";
 
 /**
  * Paint jobs for the shop skins, tiled over the kart shell (about one tile
- * per metre): Quang's sky and surf, Cipher's falling code, gold flake with
+ * per metre): Quang's sky and surf, Retree's falling code, gold flake with
  * pinstripes, and bare carbon weave.
  */
 export function liveryTex(kind: Livery) {
@@ -1211,6 +1211,10 @@ export function facadeTex(variant: number) {
   const S = 512;
   const [c, g] = canvas(S, S);
   const [c2, g2] = canvas(S, S);
+  // Roughness (green): matte cladding, glossy glass that mirrors the neon.
+  const [c3, g3] = canvas(S, S);
+  g3.fillStyle = "rgb(0,215,0)";
+  g3.fillRect(0, 0, S, S);
   const clad = ["#23273d", "#3a2c3e", "#1f2c3a", "#34323f"][variant];
   const glassC = ["#0b1130", "#140d22", "#0a1822", "#12121d"][variant];
   g.fillStyle = clad;
@@ -1230,6 +1234,8 @@ export function facadeTex(variant: number) {
       const px = x * cw + inset, py = y * rh + 12, w = cw - inset * 2, h = rh - 30;
       g.fillStyle = glassC;
       g.fillRect(px, py, w, h);
+      g3.fillStyle = "rgb(0,28,0)";
+      g3.fillRect(px, py, w, h);
       g.fillStyle = "rgba(150,170,255,.07)";
       g.beginPath();
       g.moveTo(px, py + h); g.lineTo(px + w * 0.5, py); g.lineTo(px + w * 0.75, py); g.lineTo(px + w * 0.25, py + h);
@@ -1271,7 +1277,7 @@ export function facadeTex(variant: number) {
     g.fillStyle = "rgba(255,255,255,.08)";
     for (let x = 0; x < cols; x++) g.fillRect(x * cw - 3, 0, 6, S);
   }
-  return { map: tex(c), glow: tex(c2) };
+  return { map: tex(c), glow: tex(c2), rough: tex(c3, true, false) };
 }
 
 /** A street-level shopfront: two lit shop windows, each with a neon name. */

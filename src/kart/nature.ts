@@ -391,7 +391,7 @@ function buildKinds(): Record<Species, Kind> {
 }
 
 /** Build every plant as instanced meshes. Returns the meshes, already added to the scene. */
-export function plantAll(scene: THREE.Scene, plants: Plant[], detail = 3): THREE.Object3D[] {
+export function plantAll(scene: THREE.Scene, plants: Plant[], detail = 3, shadows = true): THREE.Object3D[] {
   DETAIL = detail;
   const kinds = buildKinds();
   const out: THREE.Object3D[] = [];
@@ -403,7 +403,7 @@ export function plantAll(scene: THREE.Scene, plants: Plant[], detail = 3): THREE
     if (!list.length) continue;
     kinds[sp].parts.forEach((part, pi) => {
       const im = new THREE.InstancedMesh(part.geo, part.mat, list.length);
-      im.castShadow = part.shadow;
+      im.castShadow = part.shadow && shadows;
       im.receiveShadow = true;
       list.forEach((pl, i) => {
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), pl.rot);

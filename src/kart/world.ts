@@ -44,7 +44,7 @@ export interface World {
   /** Middle of the stadium bowl, at ground level. */
   center: THREE.Vector3;
   /** Weather that follows the camera (Neon Town's drizzle). */
-  weather?: { update(cam: THREE.Camera, dt: number): void };
+  weather?: { update(cam: THREE.Camera, dt: number, focus?: THREE.Vector3): void };
 }
 
 export const WALL_T = 0.7;
@@ -746,6 +746,9 @@ function dressInfield(scene: THREE.Scene, track: Track, quality: Quality) {
       for (let k = 0; k < 4; k++) tufts.push({ x: x + (rnd(n, 10 + k) - 0.5) * 6, y: 0, z: z + (rnd(n, 20 + k) - 0.5) * 6, s: 0.8 + rnd(n, 30 + k) * 0.7 });
     }
   }
+  // Trees by the track keep full detail and shadows; the groves further out
+  // are lighter and don't cast (they're rarely inside the shadow box anyway).
+  const nearCount = plants.length;
   // Groves across the open ground: clusters read as natural, even spacing doesn't.
   for (let gI = 0; gI < 70 * density; gI++) {
     const cx = bowlE.cx + (rnd(gI, 40) - 0.5) * bowlE.rx * 1.8;
@@ -762,7 +765,8 @@ function dressInfield(scene: THREE.Scene, track: Track, quality: Quality) {
       for (let t = 0; t < 3; t++) tufts.push({ x: x + (rnd(gI * 7 + k, t) - 0.5) * 5, y: 0, z: z + (rnd(gI * 5 + k, t + 9) - 0.5) * 5, s: 0.7 + rnd(k, t) * 0.8 });
     }
   }
-  plantAll(scene, plants, quality === "low" ? 2 : 3);
+  plantAll(scene, plants.slice(0, nearCount), quality === "low" ? 2 : 3);
+  plantAll(scene, plants.slice(nearCount), 2, false);
   if (quality !== "low") grassTufts(scene, tufts);
 
   // The giant Dlicom "D" in the infield, like the landmark letter in the reference.

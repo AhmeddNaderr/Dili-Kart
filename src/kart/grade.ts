@@ -83,3 +83,25 @@ export class ContactAO extends GTAOPass {
     });
   }
 }
+
+/**
+ * Scrubs invalid pixels (NaN or infinity) out of the HDR frame and caps
+ * extreme highlights before bloom. A single bad pixel from a shader edge
+ * case would otherwise be smeared across the whole screen by the bloom blur
+ * and flash the frame black — which some GPUs (Apple's especially) hit and
+ * others never do.
+ */
+export function sanitizePass() {
+  return new ShaderPass({
+    uniforms: { tDiffuse: { value: null } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform sampler2D tDiffuse; varying vec2 vUv;
+      void main(){
+        vec4 c = texture2D(tDiffuse, vUv);
+        // NaN is the only value not equal to itself; infinities fail the range test.
+        bool bad = !(c.r == c.r && c.g == c.g && c.b == c.b) || max(max(abs(c.r), abs(c.g)), abs(c.b)) > 60000.0;
+        gl_FragColor = bad ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(min(c.rgb, vec3(48.0)), c.a);
+      }`,
+  });
+}

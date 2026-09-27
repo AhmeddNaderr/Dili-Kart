@@ -106,7 +106,7 @@ export interface KartLook {
   letter?: string;
 }
 
-/** Karts for the shop skins: Quang and Cipher bring their own; liveries repaint the squad kart. */
+/** Karts for the shop skins: Quang and Retree bring their own; liveries repaint the squad kart. */
 export const SKIN_LOOKS: Record<SkinDriver, KartLook> = {
   quang: { body: "#ffffff", trim: "#1fb2ef", accent: "#0b7fc4", glow: "#7fe6ff", number: "8", driver: "quang", livery: "waves", letter: "Q" },
   cipher: { body: "#ffffff", trim: "#2f4dff", accent: "#1a2cc2", glow: "#4d7bff", number: "01", driver: "cipher", livery: "matrix", letter: "C" },

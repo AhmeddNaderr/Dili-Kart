@@ -348,7 +348,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   ], WALL + 2, keep);
   streetLamps(scene, track, quality === "low" ? 34 : 22, WALL, ROAD_HALF, keep, (u) =>
     Math.abs(track.delta(u, track.startU)) < 14
-    || (track.delta(track.lipU - 10, u) > 0 && track.delta(track.landU + 8, u) < 0), 0.36);
+    || (track.delta(track.lipU - 10, u) > 0 && track.delta(track.landU + 8, u) < 0), 0.24);
   // Vending machines, planters and hydrants on the sidewalk behind the barrier.
   for (let k = 0; k < 40; k++) {
     const u = track.wrap(k * (track.length / 40) + rnd(k, 1) * 8);
@@ -373,40 +373,109 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
 }
 
 /**
- * A light drizzle: short streaks in a box that travels with the camera,
- * falling and slanting a little, lit only by the city (additive, faint).
+ * Rain: tapered streaks (bright at the tip, fading up the tail) in a box
+ * that rides just ahead of the camera, slanting against the camera's
+ * motion, plus splashes popping on the tarmac around the player.
  */
 function drizzle(scene: THREE.Scene) {
-  const N = 1400, BOX = 36, H = 22;
+  const N = 2600, BOX = 44, H = 26;
   const pos = new Float32Array(N * 6);
-  const seeds = new Float32Array(N * 3);
+  const col = new Float32Array(N * 6);
+  const seeds = new Float32Array(N * 4);
   for (let i = 0; i < N; i++) {
-    seeds[i * 3] = (rnd(i, 60) - 0.5) * BOX;
-    seeds[i * 3 + 1] = rnd(i, 61) * H;
-    seeds[i * 3 + 2] = (rnd(i, 62) - 0.5) * BOX;
+    seeds[i * 4] = (rnd(i, 60) - 0.5) * BOX;
+    seeds[i * 4 + 1] = rnd(i, 61) * H;
+    seeds[i * 4 + 2] = (rnd(i, 62) - 0.5) * BOX;
+    seeds[i * 4 + 3] = 0.55 + rnd(i, 63) * 0.9;   // length and brightness
+    const k = 0.35 + rnd(i, 64) * 0.65;
+    // Tail (first vertex) black = invisible under additive blending; tip lit.
+    col.set([0, 0, 0, 0.62 * k, 0.72 * k, 1.0 * k], i * 6);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
   const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
-    color: new THREE.Color(0.55, 0.65, 1.0), transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    vertexColors: true, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
   }));
   lines.frustumCulled = false;
   scene.add(lines);
+
+  // Splashes: little rings that grow and fade on the road.
+  const S = 180;
+  const sp = new Float32Array(S * 3), age = new Float32Array(S);
+  for (let i = 0; i < S; i++) age[i] = rnd(i, 70);
+  const sgeo = new THREE.BufferGeometry();
+  sgeo.setAttribute("position", new THREE.BufferAttribute(sp, 3));
+  sgeo.setAttribute("aAge", new THREE.BufferAttribute(age, 1));
+  const splashes = new THREE.Points(sgeo, new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `attribute float aAge; varying float vAge;
+      void main(){ vAge = aAge; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv;
+        gl_PointSize = min(40.0, (1.5 + aAge * 7.0) * (40.0 / max(1.0, -mv.z))); }`,
+    fragmentShader: `varying float vAge;
+      void main(){ vec2 d = gl_PointCoord - 0.5; float r = length(d) * 2.0;
+        float ring = smoothstep(0.55, 0.8, r) * (1.0 - smoothstep(0.8, 1.0, r));
+        gl_FragColor = vec4(vec3(0.55, 0.65, 0.95) * ring * (1.0 - vAge) * 0.55, 1.0); }`,
+  }));
+  splashes.frustumCulled = false;
+  scene.add(splashes);
+
   let fall = 0;
+  const prev = new THREE.Vector3(), vel = new THREE.Vector3(), fwd = new THREE.Vector3();
+  let first = true;
   return {
-    update(cam: THREE.Camera, dt: number) {
-      fall += dt * 26;
+    update(cam: THREE.Camera, dt: number, focus?: THREE.Vector3) {
+      fall += dt * 30;
       const c = cam.position;
+      if (first) { prev.copy(c); first = false; }
+      // Camera velocity, smoothed: rain appears to slant into the direction of travel.
+      vel.lerp(new THREE.Vector3().subVectors(c, prev).divideScalar(Math.max(dt, 1e-3)), Math.min(1, dt * 6));
+      prev.copy(c);
+      cam.getWorldDirection(fwd);
+      const ox = c.x + fwd.x * 14, oz = c.z + fwd.z * 14;
+      const sx = -vel.x * 0.035, sz = -vel.z * 0.035;
       for (let i = 0; i < N; i++) {
-        const x = c.x + seeds[i * 3], z = c.z + seeds[i * 3 + 2];
-        const y = c.y - 6 + H - ((seeds[i * 3 + 1] + fall) % H);
+        const x = ox + seeds[i * 4], z = oz + seeds[i * 4 + 2];
+        const len = seeds[i * 4 + 3];
+        const y = c.y - 8 + H - ((seeds[i * 4 + 1] + fall * (0.8 + len * 0.3)) % H);
         const o = i * 6;
-        pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
-        pos[o + 3] = x + 0.12; pos[o + 4] = y - 0.9; pos[o + 5] = z + 0.05;
+        pos[o] = x - sx * len; pos[o + 1] = y + 1.1 * len; pos[o + 2] = z - sz * len;
+        pos[o + 3] = x; pos[o + 4] = y; pos[o + 5] = z;
       }
       geo.attributes.position.needsUpdate = true;
+      if (focus) {
+        for (let i = 0; i < S; i++) {
+          age[i] += dt * (2.2 + (i % 5) * 0.3);
+          if (age[i] >= 1) {
+            age[i] -= 1;
+            const a = Math.random() * Math.PI * 2, r = 3 + Math.random() * 18;
+            sp[i * 3] = focus.x + Math.cos(a) * r + fwd.x * 10;
+            sp[i * 3 + 1] = focus.y + 0.06;
+            sp[i * 3 + 2] = focus.z + Math.sin(a) * r + fwd.z * 10;
+          }
+        }
+        sgeo.attributes.position.needsUpdate = true;
+        sgeo.attributes.aAge.needsUpdate = true;
+      }
     },
   };
+}
+
+/**
+ * Darkens surfaces toward the ground: the grime and bounce-shadow at the
+ * foot of real buildings, which makes them sit in the street.
+ */
+function grounded<M extends THREE.MeshStandardMaterial>(m: M): M {
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying float vWorldY;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvWorldY = (modelMatrix * vec4(transformed, 1.0)).y;");
+    sh.fragmentShader = sh.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying float vWorldY;")
+      .replace("#include <color_fragment>", "#include <color_fragment>\ndiffuseColor.rgb *= mix(0.42, 1.0, smoothstep(0.0, 9.0, vWorldY));");
+  };
+  m.customProgramCacheKey = () => "grounded";
+  return m;
 }
 
 /** Is a rotated w×d footprint centred at (x, z) clear of the street? */
@@ -429,10 +498,18 @@ class CityBlocks {
   /** Rooftop tanks and antennas; skipped on phones. */
   constructor(private detail: boolean) {}
   private facades = [0, 1, 2, 3].map((v) => {
-    const { map, glow } = T.facadeTex(v);
-    return { mat: new THREE.MeshStandardMaterial({ map, emissive: "#ffffff", emissiveMap: glow, emissiveIntensity: 1.0, roughness: 0.55, metalness: 0.3 }), geos: [] as THREE.BufferGeometry[] };
+    const { map, glow, rough } = T.facadeTex(v);
+    return {
+      mat: grounded(new THREE.MeshStandardMaterial({
+        map, emissive: "#ffffff", emissiveMap: glow, emissiveIntensity: 1.0,
+        roughness: 1, roughnessMap: rough, metalness: 0.35, envMapIntensity: 1.3,
+      })),
+      geos: [] as THREE.BufferGeometry[],
+    };
   });
   private roof = { mat: M.plastic("#23263a", 0.85), geos: [] as THREE.BufferGeometry[] };
+  private plinth = { mat: grounded(new THREE.MeshStandardMaterial({ map: T.stoneTex(), color: "#6d6f80", roughness: 0.8 })), geos: [] as THREE.BufferGeometry[] };
+  private ac = { mat: M.plastic("#b9bdcb", 0.6, 0.3), geos: [] as THREE.BufferGeometry[] };
   private shops = [0, 1, 2, 3, 4, 5].map((v) => {
     const tex = T.shopfrontTex(SHOPS[v * 2], SHOPS[v * 2 + 1], NEON[v % NEON.length]);
     return { mat: new THREE.MeshStandardMaterial({ map: tex, emissive: "#ffffff", emissiveMap: tex, emissiveIntensity: 1.1, roughness: 0.4 }), geos: [] as THREE.BufferGeometry[] };
@@ -449,6 +526,11 @@ class CityBlocks {
       g.translate(lx, ly, lz);
       g.rotateY(yaw);
       g.translate(x, 0, z);
+      // Remember which block it belongs to (for culling chunks) and whether
+      // it lines the street (only those are worth a shadow).
+      g.userData.cx = x;
+      g.userData.cz = z;
+      g.userData.front = front;
       return g;
     };
     // Body, UVs scaled so windows keep a constant size.
@@ -461,25 +543,57 @@ class CityBlocks {
       else uv.setXY(k, (uv.getX(k) * side) / 14, (uv.getY(k) * h) / 16);
     }
     const v = Math.floor(rnd(seed, 20) * 4);
-    this.facades[v].geos.push(place(body, 0, h / 2, 0));
-    // Parapet and a roof slab.
-    this.roof.geos.push(place(new THREE.BoxGeometry(w + 0.6, 0.8, d + 0.6), 0, h + 0.4, 0));
+    // Tall towers step back near the top, like real ones.
+    const setback = h > 34 && rnd(seed, 40) < 0.7;
+    const hb = setback ? Math.round(h * (0.62 + rnd(seed, 41) * 0.15)) : h;
+    if (setback) {
+      body.dispose();
+      const lower = new THREE.BoxGeometry(w, hb, d);
+      const upper = new THREE.BoxGeometry(w * 0.74, h - hb, d * 0.74);
+      for (const [g, gw, gh, gd] of [[lower, w, hb, d], [upper, w * 0.74, h - hb, d * 0.74]] as const) {
+        const u = g.attributes.uv as THREE.BufferAttribute, nn = g.attributes.normal as THREE.BufferAttribute;
+        for (let k = 0; k < u.count; k++) {
+          const side = Math.abs(nn.getX(k)) > 0.5 ? gd : gw;
+          if (Math.abs(nn.getY(k)) > 0.5) u.setXY(k, 0, 0);
+          else u.setXY(k, (u.getX(k) * side) / 14, (u.getY(k) * gh) / 16);
+        }
+      }
+      this.facades[v].geos.push(place(lower, 0, hb / 2, 0));
+      this.facades[v].geos.push(place(upper, 0, hb + (h - hb) / 2, 0));
+      // Cornice where it steps back.
+      this.roof.geos.push(place(new THREE.BoxGeometry(w + 0.8, 0.7, d + 0.8), 0, hb + 0.35, 0));
+    } else {
+      this.facades[v].geos.push(place(body, 0, h / 2, 0));
+    }
+    // A stone plinth at street level, and a cornice at the roof.
+    this.plinth.geos.push(place(new THREE.BoxGeometry(w + 0.5, 4.8, d + 0.5), 0, 2.4, 0));
+    const tw = setback ? w * 0.74 : w, td = setback ? d * 0.74 : d;
+    this.roof.geos.push(place(new THREE.BoxGeometry(tw + 0.6, 0.8, td + 0.6), 0, h + 0.4, 0));
+    // Air-con units hung under windows on the street side.
+    if (front) {
+      const n = Math.floor(rnd(seed, 42) * 5);
+      for (let k = 0; k < n; k++) {
+        const ax = (rnd(seed, 43 + k) - 0.5) * (w - 3);
+        const ay = 7 + Math.floor(rnd(seed, 50 + k) * Math.max(1, (hb - 9) / 4)) * 4;
+        this.ac.geos.push(place(new THREE.BoxGeometry(1.0, 0.7, 0.55), ax, ay, -(d / 2 + 0.28)));
+      }
+    }
     if (this.detail && rnd(seed, 21) < 0.5) {
       const tank = new THREE.CylinderGeometry(1.6, 1.6, 3, 12);
-      this.tanks.geos.push(place(tank, (rnd(seed, 22) - 0.5) * w * 0.5, h + 2.3, (rnd(seed, 23) - 0.5) * d * 0.5));
-      this.tanks.geos.push(place(new THREE.ConeGeometry(1.8, 1, 12), (rnd(seed, 22) - 0.5) * w * 0.5, h + 4.3, (rnd(seed, 23) - 0.5) * d * 0.5));
+      this.tanks.geos.push(place(tank, (rnd(seed, 22) - 0.5) * tw * 0.5, h + 2.3, (rnd(seed, 23) - 0.5) * td * 0.5));
+      this.tanks.geos.push(place(new THREE.ConeGeometry(1.8, 1, 12), (rnd(seed, 22) - 0.5) * tw * 0.5, h + 4.3, (rnd(seed, 23) - 0.5) * td * 0.5));
     }
     if (this.detail && (h > 40 || rnd(seed, 24) < 0.3)) {
       const ah = 4 + rnd(seed, 25) * 8;
-      this.roof.geos.push(place(new THREE.CylinderGeometry(0.12, 0.2, ah, 6), w * 0.25, h + ah / 2, -d * 0.2));
-      this.beacons.geos.push(place(new THREE.SphereGeometry(0.4, 8, 6), w * 0.25, h + ah, -d * 0.2));
+      this.roof.geos.push(place(new THREE.CylinderGeometry(0.12, 0.2, ah, 6), tw * 0.25, h + ah / 2, -td * 0.2));
+      this.beacons.geos.push(place(new THREE.SphereGeometry(0.4, 8, 6), tw * 0.25, h + ah, -td * 0.2));
     }
     // Neon edge on some roofs.
     if (rnd(seed, 26) < 0.45) {
       const c = Math.floor(rnd(seed, 27) * NEON.length);
-      this.neon[c].geos.push(place(new THREE.BoxGeometry(w + 0.7, 0.14, 0.14), 0, h + 0.85, -(d / 2 + 0.3)));
-      this.neon[c].geos.push(place(new THREE.BoxGeometry(0.14, 0.14, d + 0.7), w / 2 + 0.3, h + 0.85, 0));
-      this.neon[c].geos.push(place(new THREE.BoxGeometry(0.14, 0.14, d + 0.7), -(w / 2 + 0.3), h + 0.85, 0));
+      this.neon[c].geos.push(place(new THREE.BoxGeometry(tw + 0.7, 0.14, 0.14), 0, h + 0.85, -(td / 2 + 0.3)));
+      this.neon[c].geos.push(place(new THREE.BoxGeometry(0.14, 0.14, td + 0.7), tw / 2 + 0.3, h + 0.85, 0));
+      this.neon[c].geos.push(place(new THREE.BoxGeometry(0.14, 0.14, td + 0.7), -(tw / 2 + 0.3), h + 0.85, 0));
     }
     if (!front) return;
     // Street level (local −Z faces the road): shopfront, awning, blade sign.
@@ -510,17 +624,31 @@ class CityBlocks {
   }
 
   build(scene: THREE.Scene) {
-    const all = [...this.facades, this.roof, ...this.shops, ...this.awnings, ...this.signs.values(), ...this.neon, this.tanks, this.beacons];
+    // Merged per material and per 120 m chunk, so blocks off-screen (and out
+    // of the moon's shadow box) are culled instead of drawn every frame.
+    const CHUNK = 120;
+    const all = [...this.facades, this.roof, this.plinth, this.ac, ...this.shops, ...this.awnings, ...this.signs.values(), ...this.neon, this.tanks, this.beacons];
     for (const b of all) {
-      if (!b.geos.length) continue;
-      const g = mergeGeometries(b.geos.map((x) => (x.index ? x.toNonIndexed() : x)), false);
-      b.geos.forEach((x) => x.dispose());
-      if (!g) continue;
-      const mesh = new THREE.Mesh(g, b.mat);
+      const groups = new Map<string, { geos: THREE.BufferGeometry[]; front: boolean }>();
+      for (const g of b.geos) {
+        const front = g.userData.front === true;
+        const key = `${Math.floor((g.userData.cx as number) / CHUNK)}:${Math.floor((g.userData.cz as number) / CHUNK)}:${front}`;
+        let grp = groups.get(key);
+        if (!grp) { grp = { geos: [], front }; groups.set(key, grp); }
+        grp.geos.push(g.index ? g.toNonIndexed() : g);
+      }
       const glow = b.mat instanceof THREE.MeshBasicMaterial;
-      mesh.castShadow = !glow;
-      mesh.receiveShadow = !glow;
-      scene.add(mesh);
+      for (const grp of groups.values()) {
+        const g = mergeGeometries(grp.geos, false);
+        grp.geos.forEach((x) => x.dispose());
+        if (!g) continue;
+        g.computeBoundingSphere();
+        const mesh = new THREE.Mesh(g, b.mat);
+        mesh.castShadow = !glow && grp.front;
+        mesh.receiveShadow = !glow;
+        scene.add(mesh);
+      }
+      b.geos.forEach((x) => x.dispose());
     }
   }
 }
