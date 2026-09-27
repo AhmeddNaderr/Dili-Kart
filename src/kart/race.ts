@@ -10,11 +10,11 @@ import * as T from "./textures";
 import { Confetti, Particles } from "./fx";
 import { RaceAudio } from "./sound";
 import { Hud, ITEM_NAME, type ItemKind } from "./hud";
-import type { CharId } from "../../shared/rules";
+import type { CharId, SkinId } from "../../shared/rules";
 import { MASCOT } from "./mascot";
 import { tickNature } from "./nature";
 import { ContactAO, gradePass } from "./grade";
-import { portrait } from "../ui/icons";
+import { portrait, skinPortrait } from "../ui/icons";
 
 /**
  * DILI CART — a three-lap Grand Prix against the Custodians.
@@ -70,6 +70,8 @@ export interface MountOptions {
    * kart drive itself. Silent, no HUD.
    */
   trailer?: boolean;
+  /** The player's equipped shop skin. */
+  skin?: SkinId | null;
 }
 
 type ShotKind = "heli" | "chase" | "front" | "trackside" | "jump" | "low";
@@ -226,6 +228,7 @@ export class DiliCart {
   /* ================================================================ */
 
   private char: CharId = "dili";
+  private skin: SkinId | null = null;
   private attract = false;
   private trailer = false;
   /** Trailer: films the frame instead of the game's own cameras; returns the fov. */
@@ -249,6 +252,7 @@ export class DiliCart {
     this.mountEl = el;
     this.hooks = hooks;
     this.char = char;
+    this.skin = opts.skin ?? null;
     this.attract = opts.attract === true;
     this.trailer = opts.trailer === true;
     if (this.attract || this.trailer) {
@@ -294,7 +298,8 @@ export class DiliCart {
     // SVG portrait the menus use.
     const c = MASCOT[this.char];
     const img = new Image();
-    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(portrait(c.head, c.dome, c.mouth).replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" '));
+    const svg = this.skin === "quang" || this.skin === "cipher" ? skinPortrait(this.skin) : portrait(c.head, c.dome, c.mouth);
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg.replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" '));
     await Promise.race([
       Promise.all([
         document.fonts?.load("900 64px 'Inter'").catch(() => undefined),
@@ -413,7 +418,7 @@ export class DiliCart {
     };
     // The player starts at the back of the grid, like the reference — the
     // whole race is a climb through the field.
-    make(0, M.DRIVER_LOOKS[this.char], RIVALS);
+    make(0, M.lookFor(this.char, this.skin), RIVALS);
     // Front of the grid is quickest. All of them are a touch slower than a
     // player holding the gas, so passes come steadily rather than in a burst.
     const skills = [0.955, 0.94, 0.925, 0.91, 0.895, 0.88, 0.865];

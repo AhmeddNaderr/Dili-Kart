@@ -5,13 +5,14 @@ import { buildIntro, greetedThisSession } from "./ui/intro";
 import { filmSeen, playFilm, prepareFilm } from "./ui/film";
 import { dropLoader, finishLoader, progress } from "./ui/loader";
 import { mountStage, type MenuStage } from "./ui/stage3d";
-import { ICON, LOGO, portrait } from "./ui/icons";
+import { ICON, LOGO, portrait, skinPortrait } from "./ui/icons";
+import { lookFor } from "./kart/models";
 import { MASCOT } from "./kart/mascot";
 import { sfx, setMuted, isMuted } from "./engine/audio";
 import * as api from "./app/api";
 import {
-  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, TIERS, nextTier, normaliseHandle,
-  type BoardEntry, type CharId, type RaceReply,
+  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, SKIN_IDS, SKIN_INFO, TIERS, nextTier, normaliseHandle,
+  type BoardEntry, type CharId, type RaceReply, type SkinId,
 } from "../shared/rules";
 
 /**
@@ -90,6 +91,9 @@ const fmtTime = (t: number | null) => {
 };
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const face = (c: CharId) => portrait(MASCOT[c].head, MASCOT[c].dome, MASCOT[c].mouth);
+/** The player's portrait: a skin driver's if one is in the seat. */
+const faceOf = (p: api.Player) => (p.skin === "quang" || p.skin === "cipher" ? skinPortrait(p.skin) : face(p.char));
+const TRACK_LABEL = "Dili Circuit · 3 laps";
 
 const canFullscreen = () => document.fullscreenEnabled === true;
 
@@ -329,12 +333,13 @@ function hub() {
   const next = nextTier(p.points);
   const floor = [...TIERS].reverse().find((t) => p.points >= t.at)?.at ?? 0;
   const tierPct = next ? Math.min(1, Math.max(0, (p.points - floor) / (next.at - floor))) : 1;
+  const driverSkin = p.skin === "quang" || p.skin === "cipher" ? p.skin : null;
 
   const drivers = CHAR_IDS.map((id) => {
     const need = CHAR_UNLOCK[id];
     const open = p.points >= need;
     const pct = open ? 100 : Math.floor((p.points / need) * 100);
-    return `<button type="button" class="driver ${p.char === id ? "on" : ""} ${open ? "" : "locked"}" data-char="${id}" style="--tint:${CHAR_INFO[id].color}" ${open ? "" : "aria-disabled=\"true\""}>
+    return `<button type="button" class="driver ${p.char === id && !driverSkin ? "on" : ""} ${open ? "" : "locked"}" data-char="${id}" style="--tint:${CHAR_INFO[id].color}" ${open ? "" : "aria-disabled=\"true\""}>
       <span class="pic">${face(id)}${open ? "" : `<i class="lock">${ICON.lock}</i>`}</span>
       <span><b>${CHAR_INFO[id].name}</b><small>${open ? CHAR_INFO[id].rarity : `${fmt(need)} pts`}</small>${open ? "" : `<span class="bar"><i style="width:${pct}%"></i></span>`}</span>
       <i class="led"></i>
@@ -344,20 +349,23 @@ function hub() {
   const streak = p.streak >= 2 ? `${p.streak}-day streak · up to 2× points` : "Race daily for up to 2× points";
   const news: [string, string][] = [
     ["Dili Circuit · 3 laps · 8 racers", ""],
+    ["New: skins in the shop · pay in Dili coins", "y"],
     [streak, "g"],
     ["$DLI TGE 2027 · follow @DlicomApp", "y"],
     ["Your ad on a stadium board · $5 · DM @00xmado", "p"],
     ...(p.guest ? [["Guest mode · scores stay on this device", "y"] as [string, string]] : []),
   ];
+  const tierName = p.tier;
 
   const view = h(`<div class="screen stage-screen garage" data-scene="hub">
     <header class="bar">${brand()}
       <div class="bar-right">
         ${soundButton()}
         ${canFullscreen() ? `<button class="iconbtn" data-act="full" title="Fullscreen" aria-label="Fullscreen">${ICON.full}</button>` : ""}
+        <button type="button" class="wallet" id="wallet" title="Dili coins · open the shop">${ICON.coin}<b data-count="${p.coins}">${fmt(p.coins)}</b></button>
         <div class="plate">
-          <span class="who-pic" style="--p:${tierPct.toFixed(3)}"><span>${face(p.char)}</span></span>
-          <span class="who-name"><b>${p.guest ? "Guest" : "@" + esc(p.handle)}</b><small>${p.tier.toUpperCase()}${next ? ` · ${fmt(next.at - p.points)} TO ${next.name.toUpperCase()}` : " · TOP TIER"}</small></span>
+          <span class="who-pic" style="--p:${tierPct.toFixed(3)}"><span>${faceOf(p)}</span></span>
+          <span class="who-name"><b>${p.guest ? "Guest" : "@" + esc(p.handle)}</b><small>${tierName.toUpperCase()}${next ? ` · ${fmt(next.at - p.points)} TO ${next.name.toUpperCase()}` : " · TOP TIER"}</small></span>
           <button class="key" id="out">${p.guest ? "Sign up" : "Log out"}</button>
         </div>
       </div>
@@ -365,34 +373,47 @@ function hub() {
     <section class="garage-top">
       <div class="stage3d" id="stage3d" title="Drag to spin · click to wave"></div>
       ${wordmark()}
+      <div class="now-driving"><span>${driverSkin ? SKIN_INFO[driverSkin].rarity : CHAR_INFO[p.char].rarity}</span><b>${driverSkin ? SKIN_INFO[driverSkin].name : CHAR_INFO[p.char].name}</b>${p.skin && !driverSkin ? `<i>${SKIN_INFO[p.skin].name} livery</i>` : ""}</div>
     </section>
     <div class="console">
       <div class="con-hood">${LEDS}${ticker(news)}</div>
       <div class="con-body">
         <div class="drivers con-left" role="radiogroup" aria-label="Driver">${drivers}</div>
-        <div class="screen-bezel"><div class="crt crt-in hub-crt">
-          <i class="crt-boot"></i>
-          <div class="px-stats glow" style="--i:0">
-            <div class="px-stat"><small>BEST</small><b data-count="${p.best}">${p.best ? "0" : "—"}</b></div>
-            <div class="px-stat"><small>POINTS</small><b data-count="${p.points}">0</b></div>
-            <div class="px-stat"><small>WINS</small><b data-count="${p.wins}">0</b></div>
-            <div class="px-stat"><small>BEST TIME</small><b>${fmtTime(p.bestTime)}</b></div>
-            <div class="px-stat px-tier"><small><span>${p.tier.toUpperCase()}</span><span>${next ? next.name.toUpperCase() : "MAX"}</span></small><div class="px-bar"><i style="width:${Math.max(3, tierPct * 100).toFixed(1)}%"></i></div></div>
-          </div>
-          <div class="px-board glow" style="--i:1">
-            <div class="px-head"><span>TOP RACERS</span><button type="button" id="board2">ALL ▸</button></div>
-            <ol id="mini"><li class="muted">LOADING<span class="px-blink">_</span></li></ol>
-          </div>
+        <div class="dash-bezel"><div class="dash">
+          <section class="dash-stats">
+            <header class="dash-h"><span>Your stats</span><span class="dash-chip">${tierName}</span></header>
+            <div class="dstats">
+              <div class="dstat hero"><small>Best score</small><b data-count="${p.best}">${p.best ? "0" : "–"}</b></div>
+              <div class="dstat"><small>Points</small><b data-count="${p.points}">0</b></div>
+              <div class="dstat"><small>Wins</small><b data-count="${p.wins}">0</b></div>
+              <div class="dstat"><small>Best time</small><b>${fmtTime(p.bestTime)}</b></div>
+            </div>
+            <div class="dtier"><div class="dtier-row"><span>${tierName}</span><span>${next ? `${fmt(next.at - p.points)} to ${next.name}` : "Top tier"}</span></div>
+              <div class="dtier-bar"><i style="--w:${Math.max(3, tierPct * 100).toFixed(1)}%"></i></div></div>
+          </section>
+          <section class="dash-board">
+            <header class="dash-h"><span>Top racers</span><button type="button" id="board2">See all <svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></header>
+            <ol id="mini" class="dboard">${Array.from({ length: 4 }, () => `<li class="sk"><i></i><span></span><b></b></li>`).join("")}</ol>
+          </section>
         </div></div>
         <div class="go-wrap">
-          <button class="go-btn" id="race" aria-label="Race"><span class="go-dome"><span>RACE</span></span></button>
+          <button class="launch" id="race" aria-label="Race">
+            <span class="launch-ring"></span>
+            <span class="launch-body">
+              <span class="launch-shine"></span>
+              <span class="launch-chev"><i></i><i></i><i></i></span>
+              <b>RACE</b>
+              <small>${TRACK_LABEL}</small>
+            </span>
+          </button>
           <span class="go-label"><kbd>Enter</kbd> to race</span>
         </div>
       </div>
       <div class="con-foot">
         <span style="display:flex;gap:10px">
           <button type="button" class="key cream" id="board">${ICON.trophy} Leaderboard</button>
-          ${p.guest ? `<button type="button" class="key yellow" id="claim">Create account</button>` : ""}
+          <button type="button" class="key yellow" id="shop">${ICON.bag} Shop</button>
+          ${p.guest ? `<button type="button" class="key" id="claim">Create account</button>` : ""}
         </span>
         ${LEDS}
       </div>
@@ -406,11 +427,12 @@ function hub() {
     leaving = true;
     sfx.start();
     raceBtn.classList.add("press");
-    view.classList.add("launch");
-    setTimeout(race, calm ? 0 : 320);
+    view.classList.add("launch-out");
+    setTimeout(race, calm ? 0 : 420);
   };
   raceBtn.addEventListener("click", go);
   for (const id of ["#board", "#board2"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); void board("best"); });
+  for (const id of ["#shop", "#wallet"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); shop(); });
   view.querySelector("#out")!.addEventListener("click", async () => {
     sfx.ui();
     if (p.guest) return auth("signup");
@@ -431,18 +453,27 @@ function hub() {
     if (b.classList.contains("on")) return;
     sfx.pop();
     view.querySelectorAll(".driver").forEach((x) => x.classList.toggle("on", x === b));
-    stage3d?.setChar(c);
+    // A squad driver takes the seat back from a skin driver; liveries stay.
+    const cur = api.player()!;
+    const keepSkin = cur.skin === "quang" || cur.skin === "cipher" ? null : cur.skin;
+    stage3d?.setLook(lookFor(c, keepSkin));
+    const nd = view.querySelector<HTMLElement>(".now-driving")!;
+    nd.innerHTML = `<span>${CHAR_INFO[c].rarity}</span><b>${CHAR_INFO[c].name}</b>${keepSkin ? `<i>${SKIN_INFO[keepSkin].name} livery</i>` : ""}`;
+    nd.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 400, easing: "cubic-bezier(.22,1,.36,1)" });
     const pic = view.querySelector<HTMLElement>(".who-pic span")!;
     pic.innerHTML = face(c);
     pic.animate([{ transform: "scale(.6)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], { duration: 450, easing: "cubic-bezier(.34,1.56,.64,1)" });
-    try { await api.chooseChar(c); } catch { /* keep the local choice; the server will catch up */ }
+    try {
+      if (cur.skin !== keepSkin) await api.equipSkin(keepSkin);
+      await api.chooseChar(c);
+    } catch { /* keep the local choice; the server will catch up */ }
   };
   const keys = [...view.querySelectorAll<HTMLElement>("[data-char]")];
   keys.forEach((b) => b.addEventListener("click", () => void pick(b)));
 
   wireCommon(view);
   show(view, true);
-  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", char: p.char }, () => sfx.pop());
+  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", look: lookFor(p.char, p.skin) }, () => sfx.pop());
 
   // Enter races; ← → flip through the unlocked drivers.
   const onKey = (e: KeyboardEvent) => {
@@ -458,11 +489,11 @@ function hub() {
   const stopParallax = parallax(view);
   cleanup = () => { removeEventListener("keydown", onKey); stopParallax(); };
 
-  // The screen boots, then the numbers count up.
-  setTimeout(() => view.querySelectorAll<HTMLElement>(".px-stat [data-count]").forEach((b) => {
+  // The numbers count up once the console has landed.
+  setTimeout(() => view.querySelectorAll<HTMLElement>(".dstat [data-count]").forEach((b) => {
     const n = Number(b.dataset.count);
     if (n) countUp(b, n, 1100);
-  }), calm ? 0 : 1500);
+  }), calm ? 0 : 1100);
 
   void miniBoard(view.querySelector<HTMLElement>("#mini")!, p);
   // Races that finished offline get sent now; refresh the board if any did.
@@ -472,18 +503,156 @@ function hub() {
 }
 
 async function miniBoard(el: HTMLElement, p: api.Player) {
+  const row = (rank: number, handle: string, sub: string, value: number, me: boolean) => `<li class="${rank <= 3 ? `r${rank}` : ""} ${me ? "me" : ""}" style="--d:${rank * 0.06}s">
+      <i class="medal">${rank}</i>
+      <span class="av" style="--h:${[...handle].reduce((a, c) => a + c.charCodeAt(0), 0) % 360}">${esc(handle.slice(0, 1).toUpperCase())}</span>
+      <span class="nm"><b>${esc(handle)}</b><small>${sub}</small></span>
+      <b class="sc">${fmt(value)}</b></li>`;
   try {
     const { entries, me } = await api.leaderboard("best");
     if (!el.isConnected) return;
     if (!entries.length) {
-      el.innerHTML = `<li class="muted">NO RACES YET. BE THE FIRST.</li>`;
+      el.innerHTML = `<li class="empty">No races yet. Be the first on the board.</li>`;
       return;
     }
-    el.innerHTML = entries.slice(0, 5).map((e, i) => `<li class="${e.handle === p.handle && !p.guest ? "me" : ""}">
-      <i>${i + 1}</i><span>${esc(e.handle)}</span><b>${fmt(e.best)}</b></li>`).join("")
-      + (me && me.rank > 5 ? `<li class="me"><i>${me.rank}</i><span>YOU</span><b>${fmt(me.value)}</b></li>` : "");
+    el.innerHTML = entries.slice(0, 4).map((e, i) => row(i + 1, e.handle, `${e.tier} · ${e.wins} win${e.wins === 1 ? "" : "s"}`, e.best, e.handle === p.handle && !p.guest)).join("")
+      + (me && me.rank > 4 ? row(me.rank, p.handle, "You", me.value, true) : "");
   } catch {
-    if (el.isConnected) el.innerHTML = `<li class="muted">BOARD OFFLINE</li>`;
+    if (el.isConnected) el.innerHTML = `<li class="empty">The board is offline right now.</li>`;
+  }
+}
+
+/* ================================================================== */
+/* Shop: kart skins for Dili coins                                     */
+/* ================================================================== */
+
+function shop(focus?: SkinId) {
+  const p = api.player();
+  if (!p) return auth();
+  let sel: SkinId = focus ?? (p.skin ?? "quang");
+
+  const card = (id: SkinId) => {
+    const s = SKIN_INFO[id];
+    const art = s.kind === "driver" ? skinPortrait(id as "quang" | "cipher") : `<span class="swatch ${id}"></span>`;
+    return `<button type="button" class="skin" data-skin="${id}" style="--tint:${s.color}">
+      <span class="skin-art">${art}</span>
+      <span class="skin-txt"><small>${s.rarity} · ${s.kind === "driver" ? "Driver + kart" : "Livery"}</small><b>${s.name}</b></span>
+      <span class="skin-tag"></span>
+    </button>`;
+  };
+
+  const view = h(`<div class="screen stage-screen shop" data-scene="hub">
+    <header class="bar">
+      <button class="iconbtn" id="back" aria-label="Back to the hub">${ICON.back}</button>
+      <div class="shop-title"><b>Kart Shop</b><span>Skins for Dili coins</span></div>
+      <div class="bar-right">
+        ${soundButton()}
+        <span class="wallet big" id="wallet">${ICON.coin}<b>${fmt(p.coins)}</b></span>
+      </div>
+    </header>
+    <div class="shop-body">
+      <section class="shop-stage">
+        <div class="stage3d" id="stage3d" title="Drag to spin"></div>
+        <div class="shop-info" id="info"></div>
+      </section>
+      <aside class="shop-list">
+        <div class="shop-list-h">Drivers</div>
+        ${SKIN_IDS.filter((x) => SKIN_INFO[x].kind === "driver").map(card).join("")}
+        <div class="shop-list-h">Liveries</div>
+        ${SKIN_IDS.filter((x) => SKIN_INFO[x].kind === "livery").map(card).join("")}
+        <p class="shop-fine">Every coin you grab on track goes in your wallet. Liveries repaint whichever squad driver you pick.</p>
+      </aside>
+    </div>
+  </div>`);
+
+  const info = view.querySelector<HTMLElement>("#info")!;
+  const wallet = view.querySelector<HTMLElement>("#wallet b")!;
+  const render = () => {
+    const cur = api.player()!;
+    const s = SKIN_INFO[sel];
+    const owned = cur.skins.includes(sel);
+    const on = cur.skin === sel;
+    const short = s.price - cur.coins;
+    view.querySelectorAll<HTMLElement>(".skin").forEach((b) => {
+      const id = b.dataset.skin as SkinId;
+      b.classList.toggle("sel", id === sel);
+      b.classList.toggle("owned", cur.skins.includes(id));
+      b.querySelector(".skin-tag")!.innerHTML = cur.skin === id ? "Equipped" : cur.skins.includes(id) ? "Owned" : `${ICON.coin}${fmt(SKIN_INFO[id].price)}`;
+    });
+    info.style.setProperty("--tint", s.color);
+    info.innerHTML = `<small>${s.rarity} ${s.kind === "driver" ? "driver" : "livery"}</small>
+      <h2>${s.name}</h2><p>${s.blurb}</p>
+      <div class="shop-acts">
+        ${on ? `<button class="buy ghost" data-do="unequip">Equipped · take off</button>`
+          : owned ? `<button class="buy" data-do="equip">Equip</button>`
+          : `<button class="buy" data-do="buy" ${short > 0 ? "disabled" : ""}>${ICON.coin}<span>Buy for ${fmt(s.price)}</span></button>`}
+        ${!owned && short > 0 ? `<span class="need">${fmt(short)} more coins · grab them on track</span>` : ""}
+      </div>
+      <p class="shop-msg" id="msg"></p>`;
+    info.querySelector<HTMLButtonElement>("[data-do]")?.addEventListener("click", (e) => void act((e.currentTarget as HTMLElement).dataset.do!));
+    wallet.textContent = fmt(cur.coins);
+  };
+  const preview = () => {
+    const cur = api.player()!;
+    stage3d?.setLook(lookFor(cur.char, sel));
+  };
+  const act = async (what: string) => {
+    const btn = info.querySelector<HTMLButtonElement>("[data-do]");
+    if (btn) btn.disabled = true;
+    try {
+      if (what === "buy") {
+        await api.buySkin(sel);
+        sfx.perfect(3);
+        confetti(info);
+      } else if (what === "equip") {
+        await api.equipSkin(sel);
+        sfx.pop();
+      } else {
+        await api.equipSkin(null);
+        sfx.ui();
+      }
+      render();
+    } catch (e) {
+      sfx.miss();
+      render();
+      const m = view.querySelector<HTMLElement>("#msg");
+      if (m) m.textContent = e instanceof Error ? e.message : "That didn't work. Try again.";
+    }
+  };
+  view.querySelectorAll<HTMLElement>(".skin").forEach((b) => b.addEventListener("click", () => {
+    const id = b.dataset.skin as SkinId;
+    if (id === sel) return;
+    sel = id;
+    sfx.pop();
+    render();
+    preview();
+  }));
+  view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); hub(); });
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") hub(); };
+  addEventListener("keydown", onKey);
+
+  wireCommon(view);
+  show(view, true);
+  cleanup = () => removeEventListener("keydown", onKey);
+  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", look: lookFor(p.char, sel) }, () => sfx.pop());
+  render();
+}
+
+/** A burst of coins and sparks from an element, for a purchase. */
+function confetti(from: HTMLElement) {
+  if (calm) return;
+  const r = from.getBoundingClientRect();
+  for (let i = 0; i < 26; i++) {
+    const s = document.createElement("i");
+    s.className = "coin-burst";
+    const a = Math.random() * Math.PI * 2, d = 80 + Math.random() * 160;
+    s.style.left = `${r.left + r.width / 2}px`;
+    s.style.top = `${r.top + r.height * 0.7}px`;
+    document.body.appendChild(s);
+    s.animate([
+      { transform: "translate(-50%,-50%) scale(.4)", opacity: 1 },
+      { transform: `translate(calc(-50% + ${Math.cos(a) * d}px), calc(-50% + ${Math.sin(a) * d - 60}px)) rotate(${Math.random() * 720}deg) scale(1)`, opacity: 0 },
+    ], { duration: 900 + Math.random() * 500, easing: "cubic-bezier(.22,1,.36,1)" }).onfinish = () => s.remove();
   }
 }
 
@@ -514,7 +683,7 @@ function race() {
     onEnd: (r) => void results(stageEl, r),
     onRestart: () => { sfx.ui(); race(); },
     onQuit: () => { sfx.ui(); hub(); },
-  }, p.char);
+  }, p.char, { skin: p.skin });
 }
 
 /** End-of-race card, over the still-running finish camera. */

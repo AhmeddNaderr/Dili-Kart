@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { DRIVER_LOOKS, KartModel, coinGeometry, coinMaterials } from "../kart/models";
-import { MascotModel, type Pose } from "../kart/mascot";
+import { KartModel, coinGeometry, coinMaterials, type KartLook } from "../kart/models";
+import { MascotModel, type DriverId, type Pose } from "../kart/mascot";
 import { blobTex } from "../kart/textures";
 import type { CharId } from "../../shared/rules";
 
@@ -14,11 +14,12 @@ import type { CharId } from "../../shared/rules";
 
 export interface MenuStage {
   dispose(): void;
-  setChar(c: CharId): void;
+  setChar(c: DriverId): void;
+  setLook(l: KartLook): void;
   setPose(p: Pose): void;
 }
 
-type Mode = { kind: "squad"; chars: CharId[] } | { kind: "kart"; char: CharId } | { kind: "solo"; char: CharId };
+type Mode = { kind: "squad"; chars: CharId[] } | { kind: "kart"; look: KartLook } | { kind: "solo"; char: DriverId };
 
 export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): MenuStage {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
@@ -40,7 +41,8 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   const key = new THREE.DirectionalLight("#fff3e2", 2.4);
   key.position.set(-4, 8, 7);
   key.castShadow = true;
-  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.mapSize.set(2048, 2048);
+  key.shadow.radius = 4;
   Object.assign(key.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6 });
   key.shadow.bias = -0.0005;
   scene.add(key);
@@ -74,6 +76,36 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   top.receiveShadow = true;
   plat.add(top);
   scene.add(plat);
+  if (mode.kind === "kart") {
+    // Showroom touches: a chrome lip, light ticks round the rim, and a
+    // soft beam from above.
+    const lip = new THREE.Mesh(new THREE.TorusGeometry(stageR + 0.13, 0.06, 12, 96), new THREE.MeshPhysicalMaterial({ color: "#dfe6f5", metalness: 1, roughness: 0.14, clearcoat: 1 }));
+    lip.rotation.x = Math.PI / 2;
+    lip.position.y = -0.03;
+    plat.add(lip);
+    const ticks = new THREE.InstancedMesh(new THREE.BoxGeometry(0.05, 0.02, 0.22), new THREE.MeshBasicMaterial({ color: new THREE.Color("#8fb0ff").multiplyScalar(1.8), toneMapped: false }), 60);
+    const m4 = new THREE.Matrix4(), q4 = new THREE.Quaternion(), s4 = new THREE.Vector3(1, 1, 1);
+    for (let i = 0; i < 60; i++) {
+      const a = (i / 60) * Math.PI * 2;
+      q4.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -a);
+      m4.compose(new THREE.Vector3(Math.cos(a) * (stageR - 0.25), 0.012, Math.sin(a) * (stageR - 0.25)), q4, s4.setScalar(i % 5 ? 0.6 : 1));
+      ticks.setMatrixAt(i, m4);
+    }
+    plat.add(ticks);
+    const spot = new THREE.SpotLight("#fff6ea", 45, 20, 0.42, 0.7, 1.4);
+    spot.position.set(0.5, 9, 1.5);
+    scene.add(spot, spot.target);
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.6, stageR * 1.05, 7, 48, 1, true), new THREE.ShaderMaterial({
+      // Pure additive light that leaves the canvas alpha alone (the page shows through it).
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
+      vertexShader: "varying vec2 vUv; varying vec3 vN; varying vec3 vV; void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position,1.); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }",
+      fragmentShader: "varying vec2 vUv; varying vec3 vN; varying vec3 vV; void main(){ float edge = pow(abs(dot(vN, vV)), 1.5); float fade = smoothstep(0.0, 0.35, vUv.y) * (1.0 - vUv.y * 0.6); gl_FragColor = vec4(vec3(0.55, 0.65, 1.0) * edge * fade * 0.09, 0.0); }",
+    }));
+    beam.position.y = 3.4;
+    scene.add(beam);
+  }
 
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
   const spin = new THREE.Group();
@@ -85,13 +117,13 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   const coins: THREE.Object3D[] = [];
   const shadowTex = blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)");
 
-  const buildKart = (c: CharId) => {
+  const buildKart = (l: KartLook) => {
     if (kart) spin.remove(kart.root, kart.shadowRoot);
-    kart = new KartModel(DRIVER_LOOKS[c], shadowTex);
+    kart = new KartModel(l, shadowTex);
     kart.root.rotation.y = 0.5;
     spin.add(kart.root, kart.shadowRoot);
   };
-  const buildMascots = (chars: CharId[]) => {
+  const buildMascots = (chars: DriverId[]) => {
     for (const m of mascots) spin.remove(m.root);
     mascots = chars.map((c, i) => {
       const m = new MascotModel(c, i);
@@ -106,7 +138,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   };
 
   if (mode.kind === "kart") {
-    buildKart(mode.char);
+    buildKart(mode.look);
     camera.position.set(0, 3.0, 9.6);
     camera.lookAt(0, 0.9, 0);
   } else {
@@ -181,6 +213,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
 
   let raf = 0, last = performance.now(), t = 0, waveT = mode.kind === "kart" ? 1.8 : 0;
   let heldPose: Pose = "idle";
+  let hopT = 9;
   const tick = (now: number) => {
     raf = requestAnimationFrame(tick);
     const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
@@ -197,8 +230,11 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
     if (mode.kind === "squad" && Math.floor(t / 4) % 3 === 1 && mascots[1]) mascots[1].pose = t % 4 < 2 ? "wave" : "idle";
     for (const m of mascots) m.update(t, dt);
     if (kart) {
+      hopT += dt;
+      const hop = hopT < 0.6 ? Math.sin((hopT / 0.6) * Math.PI) * 0.6 : 0;
+      const squash = hopT < 0.6 ? 1 + Math.sin((hopT / 0.6) * Math.PI) * 0.08 : hopT < 0.9 ? 1 - Math.sin(((hopT - 0.6) / 0.3) * Math.PI) * 0.1 : 1;
       kart.update({
-        speed: 5, steer: Math.sin(t * 0.9) * 0.35, slide: 0, hop: 0, squash: 1, roll: 0, flip: 0,
+        speed: 5, steer: Math.sin(t * 0.9) * 0.35, slide: 0, hop, squash, roll: 0, flip: 0,
         boost: Math.max(0, Math.sin(t * 0.7)) * 0.7, glide: 0, wave: waveT > 0 ? 1 : 0, time: t,
       }, dt);
     }
@@ -214,9 +250,15 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   raf = requestAnimationFrame(tick);
 
   return {
-    setChar(c: CharId) {
-      if (mode.kind === "kart") { buildKart(c); waveT = 1.6; }
-      else if (mode.kind === "solo") buildMascots([c]);
+    setChar(c: DriverId) {
+      if (mode.kind === "solo") buildMascots([c]);
+    },
+    setLook(l: KartLook) {
+      if (mode.kind !== "kart") return;
+      buildKart(l);
+      waveT = 1.6;
+      // A little hop onto the platform.
+      hopT = 0;
     },
     setPose(p: Pose) {
       heldPose = p;
