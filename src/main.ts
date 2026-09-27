@@ -182,7 +182,7 @@ function auth(mode: "signup" | "login" = "signup") {
     </section>
     <form class="console" id="form" novalidate>
       <div class="con-hood">${LEDS}${ticker([
-        ["8 racers · 3 laps", ""], ["Beat the Custodians", "y"], ["Drift for turbo", ""], ["$DLI TGE 2027", "y"],
+        ["New: Neon Town at night", "p"], ["8 racers · 2 tracks", ""], ["Skins for Dili coins", "y"], ["Beat the Custodians", "y"], ["Drift for turbo", ""], ["$DLI TGE 2027", "y"],
         ["Your ad on a stadium board · $5 · DM @00xmado", "p"], ["Hold your keys", "g"],
       ])}</div>
       <div class="con-body">
