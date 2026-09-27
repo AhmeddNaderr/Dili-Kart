@@ -666,7 +666,7 @@ function shop(focus?: SkinId) {
   wireCommon(view);
   show(view, true);
   cleanup = () => removeEventListener("keydown", onKey);
-  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", look: lookFor(p.char, sel) }, () => sfx.pop());
+  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", look: lookFor(p.char, sel), far: true }, () => sfx.pop());
   render();
 }
 

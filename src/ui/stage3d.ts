@@ -25,7 +25,7 @@ export interface MenuStage {
 
 export type Prop = "none" | "phone" | "coin" | "custodian" | "keys" | "kart";
 
-type Mode = { kind: "squad"; chars: CharId[] } | { kind: "kart"; look: KartLook } | { kind: "solo"; char: DriverId };
+type Mode = { kind: "squad"; chars: CharId[] } | { kind: "kart"; look: KartLook; far?: boolean } | { kind: "solo"; char: DriverId };
 
 export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): MenuStage {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
@@ -146,8 +146,10 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
 
   if (mode.kind === "kart") {
     buildKart(mode.look);
-    camera.position.set(0, 3.0, 9.6);
-    camera.lookAt(0, 0.9, 0);
+    // The shop's big preview sits further back, so the platform fits.
+    if (mode.far) camera.position.set(0, 3.6, 12.2);
+    else camera.position.set(0, 3.0, 9.6);
+    camera.lookAt(0, mode.far ? 1.1 : 0.9, 0);
   } else {
     buildMascots(mode.kind === "squad" ? mode.chars : [mode.char]);
     if (mode.kind === "squad") {
