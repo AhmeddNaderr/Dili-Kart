@@ -45,6 +45,7 @@ let live: DiliCart | null = null;
 const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 let liveTrack: TrackId = "circuit";
+let backdropTimer = 0;
 function backdrop(on: boolean) {
   // The backdrop shows whichever track is picked; switching rebuilds it.
   if (on && live && liveTrack !== trackPick) {
@@ -461,8 +462,10 @@ function hub() {
       x.setAttribute("aria-checked", String(x === b));
     });
     view.querySelector("#go-track")!.textContent = trackLabel(t);
-    // Let the click land before the backdrop rebuilds behind the console.
-    setTimeout(() => { if (view.isConnected && trackPick === t) backdrop(true); }, 250);
+    // Rebuild the backdrop only once the choice has settled, and never if
+    // the player goes straight to the race (that builds the track anyway).
+    clearTimeout(backdropTimer);
+    backdropTimer = window.setTimeout(() => { if (view.isConnected && !leaving && trackPick === t) backdrop(true); }, 1400);
   }));
   for (const id of ["#shop", "#wallet"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); shop(); });
   view.querySelector("#out")!.addEventListener("click", async () => {
