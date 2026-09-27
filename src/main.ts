@@ -847,6 +847,7 @@ async function board(by: "best" | "points") {
     }
     const row = (e: BoardEntry, i: number) => `<div class="lb-row ${p && !p.guest && e.handle === p.handle ? "me" : ""} ${i < 3 ? "top t" + i : ""}">
       <i class="rank">${i + 1}</i>
+      <span class="lb-av" style="--h:${[...e.handle].reduce((a, c) => a + c.charCodeAt(0), 0) % 360}">${esc(e.handle.slice(0, 1).toUpperCase())}</span>
       <span class="who">@${esc(e.handle)}<small>${e.tier} · ${e.races} race${e.races === 1 ? "" : "s"} · ${e.wins} win${e.wins === 1 ? "" : "s"}</small></span>
       <b>${fmt(by === "best" ? e.best : e.points)}</b>
     </div>`;
