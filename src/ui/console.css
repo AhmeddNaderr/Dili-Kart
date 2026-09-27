@@ -1000,3 +1000,17 @@
   mask: linear-gradient(90deg, transparent 0%, #000 8%, #000 92%, transparent 100%), linear-gradient(180deg, #000 80%, transparent 100%);
   mask-composite: intersect;
 }
+@media (max-width: 900px) {
+  .garage .con-body { grid-template-columns: minmax(0, 1fr); grid-template-areas: "screen" "left" "go"; gap: 10px; }
+  .garage .go-wrap { flex-direction: row; align-items: center; gap: 12px; width: 100%; }
+  .garage .go-wrap .tracks { flex-direction: column; flex: 1; min-width: 0; }
+  .garage .go-wrap .go-label { display: none; }
+  .garage .launch { --w: 150px; flex: none; }
+  .garage .con-foot .leds { display: none; }
+  .garage .con-foot > span { flex-wrap: wrap; }
+  .garage .con-foot .key { height: 36px; padding: 0 12px; font-size: 10px; }
+  .shop-info p:not(.shop-msg) { display: none; }
+}
+@media (max-width: 900px) and (max-height: 760px) {
+  .garage .garage-top { min-height: 150px; }
+}
