@@ -155,11 +155,26 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   const canalW = 30, canalLen = 480;
   const cx0 = canal.x - 36, cx1 = canal.x - 36 + canalLen;
   const waterMesh = new THREE.Mesh(new THREE.PlaneGeometry(canalLen, canalW).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({
-    map: water, color: "#1b2a55", roughness: 0.06, metalness: 0.4, envMapIntensity: 1.6,
+    map: water, color: "#243768", roughness: 0.1, metalness: 0.4, envMapIntensity: 1.8,
+    emissive: "#10286a", emissiveMap: water, emissiveIntensity: 0.4,
   }));
-  waterMesh.position.set((cx0 + cx1) / 2, -1.2, canal.z);
+  waterMesh.position.set((cx0 + cx1) / 2, 0.03, canal.z);
   waterMesh.receiveShadow = true;
   scene.add(waterMesh);
+  // The city's lights, smeared across the water in long wobbling streaks.
+  const streakTex = T.blobTex("rgba(255,255,255,.9)", "rgba(255,255,255,0)");
+  for (let k = 0; k < 26; k++) {
+    const col = k % 3 === 0 ? "#ffc873" : NEON[k % NEON.length];
+    const len = 8 + rnd(k, 40) * 14;
+    const streak = new THREE.Mesh(new THREE.PlaneGeometry(1.4 + rnd(k, 41) * 2.2, len).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({
+      map: streakTex, color: hot(col, 1.8), transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    }));
+    const x = cx0 + 10 + rnd(k, 42) * (canalLen - 20);
+    if (Math.abs(x - canal.x) < WALL + 2) continue;
+    streak.position.set(x, 0.06, canal.z + (rnd(k, 43) - 0.5) * (canalW - 6));
+    streak.renderOrder = 2;
+    scene.add(streak);
+  }
   // Canal walls, a quay edge with bollards and railings, and lamp posts.
   const quay = M.plastic("#4a4f66", 0.85);
   const rail = new THREE.MeshStandardMaterial({ color: "#c9cfdf", roughness: 0.35, metalness: 0.8 });
@@ -187,7 +202,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
     const x = canal.x + 40 + k * 55 + rnd(k, 1) * 20;
     if (x > cx1 - 20) break;
     const boat = houseboat(k);
-    boat.position.set(x, -1.2, canal.z + (k % 2 ? 1 : -1) * (canalW / 2 - 4));
+    boat.position.set(x, -0.35, canal.z + (k % 2 ? 1 : -1) * (canalW / 2 - 4));
     boat.rotation.y = Math.PI / 2 + (rnd(k, 2) - 0.5) * 0.1;
     scene.add(keep(boat));
   }
