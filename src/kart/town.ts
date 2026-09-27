@@ -257,6 +257,63 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   }
   blocks.build(scene);
 
+  // Landmark: the Dlicom tower at the top of the boulevard, crowned with a
+  // giant sign you drive straight at off the start line.
+  {
+    track.frame(track.ctrlU[2], f);
+    const ahead = new THREE.Vector3(f.tan.x, 0, f.tan.z).normalize();
+    let spot = f.pos.clone().addScaledVector(ahead, 80);
+    for (let k = 0; k < 12 && !clearOfRoad(spot.x, spot.z, WALL + 22); k++) spot = spot.addScaledVector(ahead, 10);
+    const tower = new THREE.Group();
+    tower.position.set(spot.x, 0, spot.z);
+    tower.rotation.y = Math.atan2(-ahead.x, -ahead.z);
+    const { map, glow } = T.facadeTex(0);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(26, 96, 22), new THREE.MeshStandardMaterial({
+      map, emissive: "#ffffff", emissiveMap: glow, emissiveIntensity: 1.1, roughness: 0.4, metalness: 0.5,
+    }));
+    const uv = body.geometry.attributes.uv as THREE.BufferAttribute;
+    for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) * 2, uv.getY(k) * 6);
+    body.position.y = 48;
+    tower.add(body);
+    // Crown: stepped top, blue light bands, and the sign.
+    M.add(tower, new THREE.BoxGeometry(22, 8, 18), M.plastic("#1b1e2c", 0.4, 0.6), 0, 100, 0);
+    const band = new THREE.MeshBasicMaterial({ color: hot("#3d63ff", 2.4), toneMapped: false });
+    for (const y of [96.2, 104.2]) M.add(tower, new THREE.BoxGeometry(26.4, 0.4, 22.4), band, 0, y, 0, false);
+    const signTex = T.bladeSignTex("DLICOM", "#5f86ff", true);
+    for (const sd of [1, -1]) {
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(40, 7.5), new THREE.MeshBasicMaterial({ map: signTex, color: new THREE.Color(1.8, 1.8, 1.8), toneMapped: false }));
+      face.position.set(0, 114, 0.3 * sd);
+      if (sd < 0) face.rotation.y = Math.PI;
+      tower.add(face);
+    }
+    M.add(tower, new THREE.BoxGeometry(41, 8.3, 0.5), M.plastic("#0b0c14", 0.4), 0, 114, 0);
+    for (const x of [-14, 14]) M.add(tower, M.cyl(0.4, 0.4, 6, 8), M.plastic("#2a2f45", 0.4, 0.6), x, 107, 0);
+    const beacon = new THREE.Mesh(M.sphere(0.8, 12, 8), new THREE.MeshBasicMaterial({ color: hot("#ff2d55", 3), toneMapped: false }));
+    beacon.position.set(0, 126, 0);
+    M.add(tower, M.cyl(0.25, 0.4, 8, 8), M.plastic("#2a2f45", 0.4, 0.6), 0, 122, 0);
+    tower.add(beacon);
+    scene.add(keep(tower));
+  }
+
+  // Traffic lights on the corners, stuck on amber-flash for race night.
+  for (const i of [3, 7, 12, 16]) {
+    track.frame(track.ctrlU[i], f);
+    const flat = new THREE.Vector3(f.side.x, 0, f.side.z).normalize();
+    const s = f.curv > 0 ? -1 : 1;   // the outside of the bend
+    const base = f.pos.clone().addScaledVector(flat, (WALL + WALL_T + 1.6) * s);
+    const tl = new THREE.Group();
+    tl.position.set(base.x, Math.max(0, f.pos.y - 0.2), base.z);
+    tl.rotation.y = Math.atan2(-f.tan.x, -f.tan.z);
+    M.add(tl, M.cyl(0.14, 0.18, 6.2, 8), M.plastic("#2a2f45", 0.4, 0.6), 0, 3.1, 0);
+    M.add(tl, M.rbox(0.8, 2.2, 0.6, 0.12), M.plastic("#15161f", 0.5), 0, 5.6, 0);
+    [["#ff2d3a", 0.2], ["#ffb31c", 2.6], ["#1bff6a", 0.2]].forEach(([c, k], j) => {
+      const lamp = new THREE.Mesh(M.sphere(0.2, 12, 8), new THREE.MeshBasicMaterial({ color: hot(c as string, k as number), toneMapped: false }));
+      lamp.position.set(0, 6.25 - j * 0.65, 0.32);
+      tl.add(lamp);
+    });
+    scene.add(keep(tl));
+  }
+
   /* ---------- over the street ---------- */
   const spinners: THREE.Object3D[] = [];
   // Neon gates: rounded frames of light spanning the road.
