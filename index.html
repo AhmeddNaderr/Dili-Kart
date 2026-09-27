@@ -7,7 +7,11 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no"
     />
     <meta name="theme-color" content="#04050b" />
-    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <meta property="og:title" content="Dili Cart · Dlicom Arcade" />
+    <meta property="og:image" content="logo-400.jpg" />
+    <meta name="twitter:card" content="summary" />
     <title>Dili Cart · Dlicom Arcade</title>
     <meta name="description" content="Dili Cart — a 3D kart racer from the Dlicom universe. Drift, boost and glide past the Custodians in the Dlicom Grand Prix." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -40,6 +44,8 @@
         -webkit-mask: linear-gradient(180deg, #000, transparent); mask: linear-gradient(180deg, #000, transparent);
       }
       .ld-inner { position: relative; width: min(760px, 88vw); }
+      .ld-logo { display: block; margin: 0 auto 18px; width: 84px; height: 84px; border-radius: 22px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 18px 40px -12px rgba(47, 91, 255, 0.8); animation: ld-pulse 2.4s ease-in-out infinite; }
+      @keyframes ld-pulse { 50% { transform: scale(1.04); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 22px 50px -10px rgba(47, 200, 255, 0.9); } }
       .ld-title { text-align: center; font-weight: 900; font-style: italic; letter-spacing: -0.05em; font-size: clamp(42px, 8vw, 84px); line-height: 0.9; margin-bottom: 44px; }
       .ld-title b { color: transparent; background: linear-gradient(180deg, #fff 0%, #c8d1f2 100%); -webkit-background-clip: text; background-clip: text; padding-right: 0.08em; }
       .ld-title i { font-style: italic; color: transparent; background: linear-gradient(180deg, #fffbe6 0%, #ffe680 30%, #ffc21f 65%, #ff9500 100%); -webkit-background-clip: text; background-clip: text; padding-right: 0.08em; }
@@ -93,6 +99,7 @@
   <body>
     <div id="loader" role="progressbar" aria-label="Loading Dili Cart">
       <div class="ld-inner">
+        <img class="ld-logo" src="logo.jpg" alt="" width="84" height="84" />
         <div class="ld-title"><b>DILI</b> <i>CART</i></div>
         <div class="ld-road">
           <div class="ld-track"><div class="ld-fill"></div></div>

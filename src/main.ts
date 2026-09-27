@@ -5,7 +5,7 @@ import { buildIntro, greetedThisSession } from "./ui/intro";
 import { filmSeen, playFilm, prepareFilm } from "./ui/film";
 import { dropLoader, finishLoader, progress } from "./ui/loader";
 import { mountStage, type MenuStage } from "./ui/stage3d";
-import { ICON, LOGO, portrait, skinPortrait } from "./ui/icons";
+import { ICON, portrait, skinPortrait } from "./ui/icons";
 import { lookFor } from "./kart/models";
 import { MASCOT } from "./kart/mascot";
 import { sfx, setMuted, isMuted } from "./engine/audio";
@@ -115,7 +115,7 @@ const canFullscreen = () => document.fullscreenEnabled === true;
 
 /** The app mark: the Dlicom swoosh on a glossy squircle, like a home-screen icon. */
 function appIcon(size = "") {
-  return `<span class="app-icon ${size}" aria-hidden="true"><i class="ai-gloss"></i>${LOGO}<i class="ai-shine"></i></span>`;
+  return `<span class="app-icon ${size}" aria-hidden="true"><img src="logo.jpg" alt="" draggable="false" /><i class="ai-shine"></i></span>`;
 }
 
 function brand(name = "Dili Cart", by = "by Dlicom") {
@@ -721,39 +721,77 @@ function race() {
   }, p.char, { skin: p.skin, track: trackPick });
 }
 
+const RI = {
+  coin: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="currentColor"/><path d="M9.5 7.5h2.6a4.5 4.5 0 0 1 0 9H9.5z" fill="#0b0d1c" opacity=".55"/></svg>`,
+  turbo: `<svg viewBox="0 0 24 24"><path d="M13 2 5 13h6l-1 9 8-11h-6z" fill="currentColor"/></svg>`,
+  star: `<svg viewBox="0 0 24 24"><path d="m12 2.5 2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z" fill="currentColor"/></svg>`,
+  pass: `<svg viewBox="0 0 24 24"><path d="M4 17 10 11l4 4 6-7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 8h5v5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  hit: `<svg viewBox="0 0 24 24"><path d="M12 2v5M12 17v5M2 12h5M17 12h5M5 5l3.5 3.5M15.5 15.5 19 19M19 5l-3.5 3.5M8.5 15.5 5 19" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>`,
+  flag: `<svg viewBox="0 0 24 24"><path d="M5 3v18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M6 4h12l-2.5 4L18 12H6z" fill="currentColor"/></svg>`,
+  clock: `<svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 9v4l3 2M9 2h6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`,
+  home: `<svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>`,
+  share: `<svg viewBox="0 0 24 24"><path d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  replay: `<svg viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v4h4" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
 /** End-of-race card, over the still-running finish camera. */
 async function results(stageEl: HTMLElement, r: RaceResult) {
   const p = api.player()!;
   const podium = r.position <= 3;
-  const rows: [string, number, string][] = [
-    ["Coins", r.tally.coins, `${r.coins} grabbed`],
-    ["Mini-turbos", r.tally.turbos, `${r.turbos} fired`],
-    ["Stunts", r.tally.stunts, `${r.tricks} tricks`],
-    ["Overtakes", r.tally.passes, ""],
-    ["Takedowns", r.tally.takedowns, r.takedowns ? `${r.takedowns} Custodians` : ""],
-    ["Laps", r.tally.laps, `${r.laps} laps`],
-    [`${ORD(r.position)} place`, r.finishBonus, "finish bonus"],
-    ["Time bonus", r.timeBonus, fmtTime(r.time)],
+  const tiles: [string, string, number, string, string][] = [
+    // icon, label, points, detail, accent
+    [RI.coin, "Coins", r.tally.coins, `${r.coins} grabbed`, "#ffc21a"],
+    [RI.turbo, "Mini-turbos", r.tally.turbos, `${r.turbos} fired`, "#2ee6ff"],
+    [RI.star, "Stunts", r.tally.stunts, `${r.tricks} tricks`, "#b58cff"],
+    [RI.pass, "Overtakes", r.tally.passes, "passes", "#39ff9e"],
+    [RI.hit, "Takedowns", r.tally.takedowns, `${r.takedowns} Custodians`, "#ff5c7a"],
+    [RI.flag, "Laps", r.tally.laps, `${r.laps} laps`, "#9db4ff"],
   ];
-  const over = h(`<div class="rr ${podium ? "podium" : ""}">
+  const title = r.position === 1 ? "Custodians defeated!" : podium ? "On the podium!" : "Good race. Go again!";
+  const over = h(`<div class="rr ${podium ? "podium" : ""} p${r.position}">
     <div class="rr-card">
-      <div class="rr-top">
-        <div class="rr-place" data-t="${ORD(r.position)}">${ORD(r.position)}</div>
-        <div class="rr-cap"><b>${r.position === 1 ? "Custodians defeated!" : podium ? "On the podium!" : "Good race — go again!"}</b>
-          <span>${fmtTime(r.time)} · best lap ${fmtTime(r.bestLap)}</span></div>
+      <header class="rr-head">
+        <div class="rr-medal"><b>${r.position}</b><sup>${ORD(r.position).replace(/\d+/, "")}</sup></div>
+        <div class="rr-cap">
+          <small>${TRACK_INFO[r.track].name} · ${r.laps} laps</small>
+          <b>${title}</b>
+          <div class="rr-chips">
+            <span>${RI.clock}${fmtTime(r.time)}</span>
+            <span>${RI.turbo}Best lap ${fmtTime(r.bestLap)}</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="rr-grid">
+        ${tiles.map(([icon, label, v, note, c], i) => `<div class="rr-tile ${v ? "" : "zero"}" style="--c:${c};--d:${0.15 + i * 0.07}s">
+          <i class="ico">${icon}</i>
+          <span class="lab">${label}<small>${note}</small></span>
+          <b data-n="${v}">0</b>
+        </div>`).join("")}
       </div>
-      <div class="rr-rows">
-        ${rows.map(([k, v, note], i) => `<div class="rr-row" style="--d:${0.2 + i * 0.1}s">
-          <span>${k}${note ? `<i>${note}</i>` : ""}</span><b data-n="${v}">0</b></div>`).join("")}
+
+      <div class="rr-bonus" style="--d:${0.6}s">
+        <span class="pill gold">${ORD(r.position)} place <b data-n="${r.finishBonus}">0</b></span>
+        <span class="pill">Time bonus <b data-n="${r.timeBonus}">0</b></span>
       </div>
-      <div class="rr-total" style="--d:${0.3 + rows.length * 0.1}s"><span>Total</span><b data-n="${r.score}">0</b></div>
-      <div class="rr-earn" id="earn">Saving your race…</div>
+
+      <div class="rr-total" style="--d:0.75s">
+        <span>Total score</span>
+        <b data-n="${r.score}" data-total="1">0</b>
+        <i class="rr-ribbon" hidden>New best</i>
+      </div>
+
+      <div class="rr-rewards" id="earn">
+        <div class="rw sk"></div><div class="rw sk"></div><div class="rw sk"></div>
+      </div>
+      <div class="rr-unlocks" id="unlocks"></div>
+
       <div class="rr-acts">
-        <button class="btn primary" id="again">Race again <kbd>Enter</kbd></button>
+        <button class="rr-again" id="again">${RI.replay}<span>Race again</span><kbd>Enter</kbd></button>
         <div class="rr-row2">
-          <button class="btn ghost" id="rank">Leaderboard</button>
-          <button class="btn ghost" id="share">Share</button>
-          <button class="btn ghost" id="home">Hub</button>
+          <button class="rr-sec" id="home">${RI.home}<span>Hub</span></button>
+          <button class="rr-sec" id="rank">${ICON.trophy}<span>Board</span></button>
+          <button class="rr-sec" id="share">${RI.share}<span>Share</span></button>
         </div>
       </div>
     </div>
@@ -762,18 +800,21 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
 
   over.querySelectorAll<HTMLElement>("[data-n]").forEach((b, i) => {
     const target = Number(b.dataset.n);
-    const total = !!b.closest(".rr-total");
+    const total = b.dataset.total === "1";
     setTimeout(() => {
       const t0 = performance.now();
-      const dur = total ? 1100 : 450;
+      const dur = total ? 1200 : 500;
       const tick = (now: number) => {
         const k = Math.min(1, (now - t0) / dur);
-        b.textContent = fmt(Math.round(target * (1 - Math.pow(1 - k, 3))));
+        b.textContent = (total ? "" : "+") + fmt(Math.round(target * (1 - Math.pow(1 - k, 3))));
         if (k < 1) requestAnimationFrame(tick);
-        else if (target > 0) sfx.good(Math.min(9, i));
+        else if (target > 0) {
+          sfx.good(Math.min(9, i));
+          if (total) b.closest(".rr-total")!.classList.add("done");
+        }
       };
       requestAnimationFrame(tick);
-    }, 200 + i * 100 + (total ? 200 : 0));
+    }, calm ? 0 : (total ? 950 : 220 + i * 90));
   });
 
   const again = () => { sfx.ui(); race(); };
@@ -785,9 +826,13 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
   over.querySelector("#rank")!.addEventListener("click", () => { sfx.ui(); void board("best"); });
   const shareBtn = over.querySelector<HTMLButtonElement>("#share")!;
   shareBtn.addEventListener("click", async () => {
-    const line = `I finished ${ORD(r.position)} in DILI CART with ${fmt(r.score)} points. Beat me on the Dlicom Grand Prix.`;
-    try { await navigator.clipboard.writeText(line); shareBtn.textContent = "Copied!"; } catch { shareBtn.textContent = "Copy failed"; }
-    setTimeout(() => (shareBtn.textContent = "Share"), 1600);
+    const line = `I finished ${ORD(r.position)} on ${TRACK_INFO[r.track].name} in DILI CART with ${fmt(r.score)} points. Beat me: ${location.origin}`;
+    const label = shareBtn.querySelector("span")!;
+    try {
+      if (navigator.share) await navigator.share({ text: line });
+      else { await navigator.clipboard.writeText(line); label.textContent = "Copied!"; }
+    } catch { /* cancelled */ }
+    setTimeout(() => (label.textContent = "Share"), 1600);
   });
 
   // Save the race and show what it earned.
@@ -796,27 +841,38 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
   try {
     reply = await api.submitRace({ score: r.score, position: r.position, time: r.time, coins: r.coins });
   } catch (e) {
-    earn.innerHTML = `<span class="err">Couldn't save this race: ${esc(e instanceof Error ? e.message : "unknown error")}</span>`;
+    earn.innerHTML = `<div class="rw err"><b>Couldn't save this race</b><small>${esc(e instanceof Error ? e.message : "unknown error")}</small></div>`;
     return;
   }
-  const bits = [`+${fmt(reply.earned)} points`];
-  if (reply.multiplier > 1) bits.push(`${reply.multiplier.toFixed(1)}× streak`);
-  if (reply.rank && !p.guest) bits.push(`#${reply.rank} worldwide`);
-  // Coins go to the wallet; point out a skin that's now affordable.
+  if (!over.isConnected) return;
+  if (reply.isBest) over.querySelector<HTMLElement>(".rr-ribbon")!.hidden = false;
+
+  // Coins: progress toward the cheapest skin not owned yet.
   const wallet = reply.player.coins ?? 0;
-  const next = SKIN_IDS.filter((id) => !(reply.player.skins ?? []).includes(id)).sort((a, b) => SKIN_INFO[a].price - SKIN_INFO[b].price)
-    .find((id) => SKIN_INFO[id].price > wallet - r.coins);
-  const coinLine = r.coins
-    ? `<span class="rr-coins">${ICON.coin}+${fmt(r.coins)} Dili coins · wallet ${fmt(wallet)}${next && wallet >= SKIN_INFO[next].price ? ` · <b>${SKIN_INFO[next].name} is yours to buy!</b>` : ""}</span>`
-    : "";
-  earn.innerHTML = `${reply.isBest ? '<span class="rr-best">New personal best!</span>' : ""}<span>${bits.join(" · ")}</span>${coinLine}`
-    + (p.guest ? `<span class="muted">Guest score — saved on this device only.</span>` : "")
-    + (reply.offline ? `<span class="muted">No connection — this race is saved on your device and will sync to the board automatically.</span>` : "");
+  const next = SKIN_IDS.filter((id) => !(reply.player.skins ?? []).includes(id)).sort((a, b) => SKIN_INFO[a].price - SKIN_INFO[b].price)[0];
+  const price = next ? SKIN_INFO[next].price : 0;
+  const canBuy = !!next && wallet >= price;
+  const rankTxt = p.guest ? "Guest" : reply.offline ? "Offline" : reply.rank ? `#${fmt(reply.rank)}` : "—";
+  const rankSub = p.guest ? "sign up to get ranked" : reply.offline ? "syncs when you're back online" : "worldwide · best race";
+  earn.innerHTML = `
+    <div class="rw pts"><small>Points earned</small><b>+${fmt(reply.earned)}</b>${reply.multiplier > 1 ? `<em>${reply.multiplier.toFixed(1)}× streak</em>` : `<em class="dim">race daily for up to 2×</em>`}</div>
+    <div class="rw rank"><small>Rank</small><b>${rankTxt}</b><em class="dim">${rankSub}</em></div>
+    <div class="rw coins ${canBuy ? "ready" : ""}">
+      <small>${ICON.coin}Wallet</small><b>${fmt(wallet)}</b>
+      ${next ? (canBuy
+        ? `<button class="rw-shop" id="toshop">${SKIN_INFO[next].name} is yours · Shop</button>`
+        : `<div class="rw-bar"><i style="width:${Math.min(100, (wallet / price) * 100).toFixed(1)}%"></i></div><em class="dim">${fmt(price - wallet)} to ${SKIN_INFO[next].name}</em>`)
+        : `<em class="dim">every skin owned</em>`}
+    </div>`;
+  earn.querySelector("#toshop")?.addEventListener("click", () => { sfx.ui(); shop(next); });
+
   // Newly unlocked drivers.
+  const unlocks = over.querySelector<HTMLElement>("#unlocks")!;
   const before = reply.player.points - reply.earned;
   for (const id of CHAR_IDS) {
     if (before < CHAR_UNLOCK[id] && reply.player.points >= CHAR_UNLOCK[id]) {
-      earn.insertAdjacentHTML("beforeend", `<span class="unlock">${face(id)} ${CHAR_INFO[id].name} unlocked!</span>`);
+      unlocks.insertAdjacentHTML("beforeend", `<div class="rr-unlock" style="--c:${CHAR_INFO[id].color}">
+        <span class="pic">${face(id)}</span><span><small>New driver unlocked</small><b>${CHAR_INFO[id].name}</b></span><em>${CHAR_INFO[id].rarity}</em></div>`);
       sfx.perfect(9);
     }
   }
