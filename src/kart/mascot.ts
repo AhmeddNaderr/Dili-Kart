@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { CharId } from "../../shared/rules";
-import { rimLight } from "./rim";
+import { buildChibi, isSkinDriver, type SkinDriver } from "./chibi";
+import { chromeTrim, darken, disposeToon, dome, flat, glowMat, lighten, once, onceTex, suitMat, vinyl } from "./toon";
 
 /**
  * The Dlicom squad, modelled after the official mascots: a speech-bubble
@@ -11,6 +12,9 @@ import { rimLight } from "./rim";
  * `buildMascot` is shared by the standing menu characters and the drivers
  * sitting in the karts, so they're always the same character.
  */
+
+/** Everyone who can sit in a kart: the squad, plus the skin drivers from the shop. */
+export type DriverId = CharId | SkinDriver;
 
 export interface MascotColors {
   suit: string;
@@ -27,69 +31,10 @@ export const MASCOT: Record<CharId, MascotColors> = {
   dco: { suit: "#ec63df", head: "#d942cb", glove: "#e454d6", cape: "#c531b8", dome: "#ffc6f6", mouth: "o" },
 };
 
-const cache = new Map<string, THREE.BufferGeometry | THREE.Material>();
-function once<T extends THREE.BufferGeometry | THREE.Material>(key: string, make: () => T): T {
-  let v = cache.get(key) as T | undefined;
-  if (!v) { v = make(); cache.set(key, v); }
-  return v;
-}
-const texCache = new Map<string, THREE.Texture>();
-function onceTex(key: string, make: () => THREE.Texture) {
-  let t = texCache.get(key);
-  if (!t) { t = make(); texCache.set(key, t); }
-  return t;
-}
 export function disposeMascots() {
-  for (const v of cache.values()) v.dispose();
-  cache.clear();
-  for (const t of texCache.values()) t.dispose();
-  texCache.clear();
+  disposeToon();
 }
 
-const lighten = (hex: string, k: number) => "#" + new THREE.Color(hex).lerp(new THREE.Color("#ffffff"), k).getHexString();
-
-/** A fine twill weave as a normal map, so the suits read as fabric up close. */
-function fabricNormal() {
-  return onceTex("fabricN", () => {
-    const S = 128;
-    const c = document.createElement("canvas");
-    c.width = c.height = S;
-    const g = c.getContext("2d")!;
-    const h = (x: number, y: number) => {
-      // Whole periods across the tile so it wraps without a seam.
-      const t = ((x + y * 0.5) / 8) * Math.PI * 2;
-      return 0.5 + 0.35 * Math.sin(t) + 0.15 * Math.sin(((x - y) / 16) * Math.PI * 2);
-    };
-    const img = g.createImageData(S, S);
-    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-      const dx = h(x + 1, y) - h(x - 1, y), dy = h(x, y + 1) - h(x, y - 1);
-      const n = new THREE.Vector3(-dx * 1.6, -dy * 1.6, 1).normalize();
-      const i = (y * S + x) * 4;
-      img.data[i] = (n.x * 0.5 + 0.5) * 255;
-      img.data[i + 1] = (n.y * 0.5 + 0.5) * 255;
-      img.data[i + 2] = (n.z * 0.5 + 0.5) * 255;
-      img.data[i + 3] = 255;
-    }
-    g.putImageData(img, 0, 0);
-    const t = new THREE.CanvasTexture(c);
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.repeat.set(5, 5);
-    t.anisotropy = 4;
-    return t;
-  });
-}
-
-/** Racing-suit fabric: soft sheen, a woven normal, the same rim light as the vinyl. */
-const suitMat = (color: string) => once(`suit${color}`, () => rimLight(new THREE.MeshPhysicalMaterial({
-  color, roughness: 0.6, metalness: 0, sheen: 0.6, sheenRoughness: 0.45,
-  sheenColor: new THREE.Color(color).lerp(new THREE.Color("#ffffff"), 0.5),
-  normalMap: fabricNormal(), normalScale: new THREE.Vector2(0.16, 0.16),
-}), 0.3));
-
-/** Polished trim metal: badges, buckles, collar rings. */
-const chromeTrim = () => once("chromeTrim", () => new THREE.MeshPhysicalMaterial({
-  color: "#eef1f8", metalness: 0.9, roughness: 0.18, clearcoat: 0.7, clearcoatRoughness: 0.1,
-}));
 
 /** The cape, printed: a trim border and the squad emblem (drawn mirrored, since it's seen from behind). */
 function capeTex(color: string, trim: string, emblem: boolean) {
@@ -133,11 +78,6 @@ function capeTex(color: string, trim: string, emblem: boolean) {
 }
 
 /** Soft vinyl-toy finish, like the renders. */
-const vinyl = (color: string) => once(`vinyl${color}`, () => rimLight(new THREE.MeshPhysicalMaterial({
-  color, roughness: 0.45, metalness: 0, clearcoat: 0.4, clearcoatRoughness: 0.4,
-  sheen: 0.25, sheenColor: new THREE.Color(color).lerp(new THREE.Color("#ffffff"), 0.35),
-}), 0.3));
-const flat = (color: string, rough = 0.5) => once(`flat${color}${rough}`, () => new THREE.MeshStandardMaterial({ color, roughness: rough }));
 
 /** The speech-bubble head: a pill with a little tail underneath. */
 function bubbleGeo() {
@@ -187,33 +127,6 @@ export function dLetterGeo(height: number, depth: number) {
 }
 
 /** Glass dome: a clear physical shell plus an additive fresnel rim. */
-function dome(tint: string, radius: number, opacity = 0.2, rimTint = tint) {
-  const g = new THREE.Group();
-  const glass = new THREE.Mesh(
-    once(`domegeo${radius}`, () => new THREE.SphereGeometry(radius, 40, 28)),
-    once(`glass${tint}${opacity}`, () => new THREE.MeshPhysicalMaterial({
-      color: tint, transparent: true, opacity, roughness: 0.03, metalness: 0,
-      clearcoat: 1, clearcoatRoughness: 0.02, envMapIntensity: 1.6, depthWrite: false,
-    })),
-  );
-  glass.renderOrder = 3;
-  g.add(glass);
-  const rim = new THREE.Mesh(
-    once(`domegeo${radius}`, () => new THREE.SphereGeometry(radius, 40, 28)),
-    once(`rim${rimTint}`, () => new THREE.ShaderMaterial({
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-      uniforms: { uColor: { value: new THREE.Color(rimTint) } },
-      vertexShader: `varying vec3 vN; varying vec3 vV;
-        void main(){ vec4 mv = modelViewMatrix * vec4(position,1.); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }`,
-      fragmentShader: `uniform vec3 uColor; varying vec3 vN; varying vec3 vV;
-        void main(){ float f = pow(1. - abs(dot(vN, vV)), 3.0); gl_FragColor = vec4(uColor * f * 0.9, 1.0); }`,
-    })),
-  );
-  rim.renderOrder = 4;
-  g.add(rim);
-  g.userData.keepApart = true;
-  return g;
-}
 
 /**
  * A Custodian: the same squad body, gone bad. Dark vinyl, horns, angry
@@ -226,15 +139,6 @@ export interface EvilLook {
   glow: string;
 }
 
-const glowMat = (color: string, k = 2.4) => once(`eglow${color}${k}`, () => new THREE.MeshStandardMaterial({
-  color: "#000000", emissive: color, emissiveIntensity: k * 1.9, roughness: 0.4,
-}));
-
-function darken(hex: string, amt: number) {
-  const c = new THREE.Color(hex);
-  c.multiplyScalar(1 - amt);
-  return "#" + c.getHexString();
-}
 
 export interface MascotRig {
   root: THREE.Group;
@@ -246,7 +150,8 @@ export interface MascotRig {
   armR: THREE.Group;
   legL: THREE.Group | null;
   legR: THREE.Group | null;
-  cape: THREE.Mesh;
+  /** Squad drivers wear capes; the skin drivers don't. */
+  cape: THREE.Mesh | null;
   capeBase: Float32Array;
   /** Parts that animate or are transparent — never merged. */
   keep: Set<THREE.Object3D>;
@@ -257,7 +162,8 @@ export interface MascotRig {
  * a kart seat at the origin (torso ~1.2 up). Standing characters are lifted
  * by the caller.
  */
-export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): MascotRig {
+export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): MascotRig {
+  if (isSkinDriver(char)) return buildChibi(char, seated);
   const c: MascotColors = evil
     ? { suit: "#25243a", head: "#1c1a2a", glove: evil.team, cape: darken(evil.team, 0.45), dome: evil.glow, mouth: "smile" }
     : MASCOT[char];
@@ -514,6 +420,7 @@ export function buildMascot(char: CharId, seated: boolean, evil?: EvilLook): Mas
 
 /** Flutter the cape. `wind` 0..1.3, `spread` 0..1 for the glide. */
 export function animateCape(rig: MascotRig, time: number, wind: number, spread: number) {
+  if (!rig.cape) return;
   const pos = rig.cape.geometry.attributes.position as THREE.BufferAttribute;
   const a = pos.array as Float32Array;
   const b = rig.capeBase;
@@ -553,8 +460,11 @@ export class MascotModel {
   private w = { wave: 0, cheer: 0, talk: 0, sad: 0, point: 0 };
   private seed: number;
 
-  constructor(readonly char: CharId, seed = 0) {
+  private torsoBase: THREE.Vector3;
+
+  constructor(readonly char: DriverId, seed = 0) {
     this.rig = buildMascot(char, false);
+    this.torsoBase = this.rig.torso.scale.clone();
     this.rig.root.position.y = -0.02;
     this.root.add(this.rig.root);
     this.seed = seed;
@@ -572,7 +482,8 @@ export class MascotModel {
     const breathe = Math.sin(t * 2.2) * 0.02;
     const hop = cheer * Math.abs(Math.sin(t * 6)) * 0.22;
     r.root.position.y = hop - sad * 0.06;
-    r.torso.scale.set(1 + breathe * 0.5, 1 + breathe, 0.82);
+    const base = this.torsoBase;
+    r.torso.scale.set(base.x * (1 + breathe * 0.5), base.y * (1 + breathe), base.z);
     r.head.position.y = 1.98 + breathe * 0.6 - sad * 0.08;
     r.head.rotation.z = Math.sin(t * 1.3) * 0.06 + talk * Math.sin(t * 7) * 0.05 + wave * 0.1;
     r.head.rotation.x = sad * 0.28 - cheer * 0.12 + talk * Math.sin(t * 9) * 0.04;

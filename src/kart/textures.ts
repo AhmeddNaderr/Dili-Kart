@@ -323,7 +323,7 @@ export function diliFaceTex() {
 }
 
 /** A round emblem: the Dlicom "D" on a disc. */
-export function emblemTex(bg: string, fg: string, ring: string) {
+export function emblemTex(bg: string, fg: string, ring: string, letter = "D") {
   const S = 128;
   const [c, g] = canvas(S, S);
   g.fillStyle = ring;
@@ -338,8 +338,106 @@ export function emblemTex(bg: string, fg: string, ring: string) {
   g.font = "900 78px 'Inter', 'Arial Black', sans-serif";
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.fillText("D", S / 2 + 2, S / 2 + 5);
+  g.fillText(letter, S / 2 + 2, S / 2 + 5);
   return tex(c, false);
+}
+
+export type Livery = "waves" | "matrix" | "gold" | "carbon";
+
+/**
+ * Paint jobs for the shop skins, tiled over the kart shell (about one tile
+ * per metre): Quang's sky and surf, Cipher's falling code, gold flake with
+ * pinstripes, and bare carbon weave.
+ */
+export function liveryTex(kind: Livery) {
+  const S = 512;
+  const [c, g] = canvas(S, S);
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  if (kind === "waves") {
+    const sky = g.createLinearGradient(0, 0, 0, S);
+    sky.addColorStop(0, "#e9f8ff");
+    sky.addColorStop(0.45, "#8fdcff");
+    sky.addColorStop(1, "#1fb2ef");
+    g.fillStyle = sky;
+    g.fillRect(0, 0, S, S);
+    // Rolling surf: white crests over deeper bands, drawn to wrap sideways.
+    for (let band = 0; band < 5; band++) {
+      const y0 = 150 + band * 80;
+      g.fillStyle = band % 2 ? "rgba(255,255,255,.85)" : "rgba(10,140,210,.55)";
+      g.beginPath();
+      g.moveTo(0, S);
+      for (let x = 0; x <= S; x += 8) {
+        const k = (x / S) * Math.PI * 2;
+        g.lineTo(x, y0 + Math.sin(k * 2 + band) * 18 + Math.sin(k * 5 + band * 2) * 6);
+      }
+      g.lineTo(S, S);
+      g.closePath();
+      g.fill();
+    }
+    // Clouds up top.
+    g.fillStyle = "rgba(255,255,255,.9)";
+    for (let i = 0; i < 9; i++) {
+      const x = rnd() * S, y = 30 + rnd() * 70, r = 18 + rnd() * 26;
+      for (let k = 0; k < 4; k++) {
+        g.beginPath();
+        g.arc(x + k * r * 0.7, y + Math.sin(k) * 6, r * (1 - k * 0.12), 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+  } else if (kind === "matrix") {
+    g.fillStyle = "#0a1450";
+    g.fillRect(0, 0, S, S);
+    const glow = g.createRadialGradient(S / 2, S / 2, 20, S / 2, S / 2, S * 0.7);
+    glow.addColorStop(0, "rgba(47,77,255,.55)");
+    glow.addColorStop(1, "rgba(47,77,255,0)");
+    g.fillStyle = glow;
+    g.fillRect(0, 0, S, S);
+    g.font = "700 22px ui-monospace, 'Courier New', monospace";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    for (let y = 12; y < S; y += 24) {
+      for (let x = 10; x < S; x += 20) {
+        const a = 0.25 + rnd() * 0.6;
+        g.fillStyle = rnd() > 0.93 ? "rgba(220,235,255,.95)" : `rgba(120,150,255,${a})`;
+        g.fillText(String(Math.floor(rnd() * 10)), x, y);
+      }
+    }
+  } else if (kind === "gold") {
+    const base = g.createLinearGradient(0, 0, S, S);
+    base.addColorStop(0, "#ffe27a");
+    base.addColorStop(0.5, "#ffb81c");
+    base.addColorStop(1, "#ffd24d");
+    g.fillStyle = base;
+    g.fillRect(0, 0, S, S);
+    // Metal flake.
+    for (let i = 0; i < 2600; i++) {
+      g.fillStyle = rnd() > 0.5 ? "rgba(255,255,230,.35)" : "rgba(170,110,0,.25)";
+      g.fillRect(rnd() * S, rnd() * S, 2, 2);
+    }
+    g.strokeStyle = "#15161f";
+    g.lineWidth = 6;
+    for (const y of [120, 138, 380, 398]) {
+      g.beginPath(); g.moveTo(0, y); g.lineTo(S, y); g.stroke();
+    }
+  } else {
+    const n = 16, q = S / n;
+    g.fillStyle = "#101219";
+    g.fillRect(0, 0, S, S);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const horiz = (x + y) % 2 === 0;
+      const grad = horiz ? g.createLinearGradient(x * q, 0, x * q + q, 0) : g.createLinearGradient(0, y * q, 0, y * q + q);
+      grad.addColorStop(0, "#171a24");
+      grad.addColorStop(0.5, "#3a4052");
+      grad.addColorStop(1, "#171a24");
+      g.fillStyle = grad;
+      g.fillRect(x * q + 1, y * q + 1, q - 2, q - 2);
+    }
+    // An ice-blue speed line.
+    g.fillStyle = "#8fe3ff";
+    g.fillRect(0, S * 0.62, S, 10);
+  }
+  return tex(c);
 }
 
 /**

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { DRIVER_LOOKS, KartModel, RIVAL_LOOKS } from "../kart/models";
-import { MascotModel, type Pose } from "../kart/mascot";
+import { KartModel, RIVAL_LOOKS, lookFor } from "../kart/models";
+import { MascotModel, type DriverId, type Pose } from "../kart/mascot";
 import { blobTex } from "../kart/textures";
 import type { CharId } from "../../shared/rules";
 
@@ -18,7 +18,7 @@ import type { CharId } from "../../shared/rules";
 const q = new URLSearchParams(location.search);
 const num = (k: string, d: number) => (q.has(k) ? Number(q.get(k)) : d);
 const what = q.get("what") ?? "kart";
-const char = (q.get("char") ?? "dili") as CharId;
+const char = (q.get("char") ?? "dili") as DriverId;
 
 const host = document.getElementById("stage")!;
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -60,7 +60,8 @@ if (what === "mascot") {
   for (let i = 0; i < 90; i++) m.update(t * i / 90, 1 / 60);
   lookY = 1.25;
 } else {
-  const look = what === "rival" ? RIVAL_LOOKS[num("n", 0)] : DRIVER_LOOKS[char];
+  const skin = q.get("skin") ?? (char === "quang" || char === "cipher" ? char : null);
+  const look = what === "rival" ? RIVAL_LOOKS[num("n", 0)] : lookFor((skin ? "dili" : char) as CharId, skin as never);
   const k = new KartModel(look, blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)"));
   scene.add(k.root, k.shadowRoot);
   k.update({ speed: 0, steer: 0, slide: 0, hop: 0, squash: 1, roll: 0, flip: 0, boost: 0, glide: 0, wave: num("wave", 0), time: t }, 1 / 60);

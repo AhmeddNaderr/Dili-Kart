@@ -2,8 +2,9 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as T from "./textures";
-import type { CharId } from "../../shared/rules";
-import { animateCape, blink, buildMascot, disposeMascots, type EvilLook, type MascotRig } from "./mascot";
+import type { CharId, SkinId } from "../../shared/rules";
+import { animateCape, blink, buildMascot, disposeMascots, type DriverId, type EvilLook, type MascotRig } from "./mascot";
+import type { SkinDriver } from "./chibi";
 import { rimLight } from "./rim";
 
 /**
@@ -98,7 +99,26 @@ export interface KartLook {
   accent: string;    // stripe, valve covers, harness
   glow: string;      // exhaust and lamps
   number: string;    // race number on the side pods
-  driver: CharId | "custodian";
+  driver: DriverId | "custodian";
+  /** A printed paint job instead of plain paint (shop skins). */
+  livery?: T.Livery;
+  /** Letter on the nose badge. */
+  letter?: string;
+}
+
+/** Karts for the shop skins: Quang and Cipher bring their own; liveries repaint the squad kart. */
+export const SKIN_LOOKS: Record<SkinDriver, KartLook> = {
+  quang: { body: "#ffffff", trim: "#1fb2ef", accent: "#0b7fc4", glow: "#7fe6ff", number: "8", driver: "quang", livery: "waves", letter: "Q" },
+  cipher: { body: "#ffffff", trim: "#2f4dff", accent: "#1a2cc2", glow: "#4d7bff", number: "01", driver: "cipher", livery: "matrix", letter: "C" },
+};
+
+/** The kart a player drives: their squad driver's, dressed in any equipped skin. */
+export function lookFor(char: CharId, skin: SkinId | null | undefined): KartLook {
+  if (skin === "quang" || skin === "cipher") return SKIN_LOOKS[skin];
+  const base = DRIVER_LOOKS[char];
+  if (skin === "gold") return { ...base, body: "#ffffff", trim: "#15161f", accent: "#2a2b36", glow: "#ffd24d", livery: "gold" };
+  if (skin === "carbon") return { ...base, body: "#ffffff", trim: "#1c2030", accent: "#8fe3ff", glow: "#8fe3ff", livery: "carbon" };
+  return base;
 }
 
 /** The player's kart, in each squad member's colours. */
@@ -139,6 +159,20 @@ export function paint(color: string): THREE.MeshPhysicalMaterial {
   let m = matCache.get(k) as THREE.MeshPhysicalMaterial | undefined;
   if (!m) {
     m = rimLight(new THREE.MeshPhysicalMaterial({ color, roughness: 0.3, metalness: 0.12, clearcoat: 1, clearcoatRoughness: 0.06 }), 0.38);
+    matCache.set(k, m);
+  }
+  return m;
+}
+
+/** Printed paint under the same deep clearcoat as the plain paint. */
+function liveryPaint(kind: T.Livery): THREE.MeshPhysicalMaterial {
+  const k = `livery${kind}`;
+  let m = matCache.get(k) as THREE.MeshPhysicalMaterial | undefined;
+  if (!m) {
+    const metal = kind === "gold" ? 0.55 : kind === "carbon" ? 0.3 : 0.1;
+    m = rimLight(new THREE.MeshPhysicalMaterial({
+      map: T.liveryTex(kind), roughness: kind === "gold" ? 0.22 : 0.3, metalness: metal, clearcoat: 1, clearcoatRoughness: 0.05,
+    }), 0.38);
     matCache.set(k, m);
   }
   return m;
@@ -303,7 +337,7 @@ export class KartModel {
     const L = this.look;
     const c = this.chassis;
     const d = this.detail;
-    const body = paint(L.body);
+    const body = L.livery ? liveryPaint(L.livery) : paint(L.body);
     const trim = paint(L.trim);
     const accent = paint(L.accent);
     const carbon = texMat("carbon", () => new THREE.MeshPhysicalMaterial({ map: T.carbonTex(), roughness: 0.35, metalness: 0.3, clearcoat: 0.8, clearcoatRoughness: 0.1 }));
@@ -345,8 +379,8 @@ export class KartModel {
       add(c, sphere(0.07, 14, 10), lamp, 0.3 * s, 0.53, 1.3, false);
     }
     const emblem = add(c, cached("emblemPlane", () => new THREE.CircleGeometry(0.16, 28)),
-      texMat(`emb${L.trim}${L.driver}`, () => new THREE.MeshStandardMaterial({
-        map: L.driver === "custodian" ? T.lockEmblemTex(L.trim) : T.emblemTex(L.trim, "#ffffff", "#ffffff"),
+      texMat(`emb${L.trim}${L.driver}${L.letter ?? ""}`, () => new THREE.MeshStandardMaterial({
+        map: L.driver === "custodian" ? T.lockEmblemTex(L.trim) : T.emblemTex(L.trim, "#ffffff", "#ffffff", L.letter),
         roughness: 0.35, polygonOffset: true, polygonOffsetFactor: -2,
       })), 0, 0.745, 1.02, false);
     emblem.rotation.x = -Math.PI / 2 + 0.52;
@@ -555,7 +589,7 @@ export class KartModel {
   }
 
   /** A member of the Dlicom squad, sitting in the seat. */
-  private buildMascotDriver(char: CharId, evil?: EvilLook) {
+  private buildMascotDriver(char: DriverId, evil?: EvilLook) {
     const rig = buildMascot(char, true, evil);
     this.rig = rig;
     this.driver.add(rig.root);
