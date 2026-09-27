@@ -220,7 +220,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
     for (const c of centre) if ((c.x - x) ** 2 + (c.z - z) ** 2 < margin * margin) return false;
     return !(Math.abs(z - canal.z) < canalW / 2 + 3 && x > cx0 - 4 && x < cx1 + 4);
   };
-  const blocks = new CityBlocks();
+  const blocks = new CityBlocks(quality !== "low");
   // Frontage: a row of buildings facing the street on each side.
   let n = 0;
   for (const s of [-1, 1]) {
@@ -244,8 +244,10 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
     }
   }
   // Fill: towers across the blocks inside and around the loop.
-  for (let gx = minX - 160; gx < maxX + 160; gx += 26) {
-    for (let gz = minZ - 160; gz < maxZ + 160; gz += 26) {
+  // Phones get a smaller, sparser city beyond the street frontage.
+  const reach = quality === "low" ? 90 : 160, pitch = quality === "low" ? 34 : 26;
+  for (let gx = minX - reach; gx < maxX + reach; gx += pitch) {
+    for (let gz = minZ - reach; gz < maxZ + reach; gz += pitch) {
       n++;
       const x = gx + (rnd(n, 5) - 0.5) * 8, z = gz + (rnd(n, 6) - 0.5) * 8;
       const w = 14 + rnd(n, 7) * 10, d = 14 + rnd(n, 8) * 10;
@@ -424,6 +426,8 @@ function footprintClear(x: number, z: number, w: number, d: number, yaw: number,
  * neon, water tanks and antenna beacons.
  */
 class CityBlocks {
+  /** Rooftop tanks and antennas; skipped on phones. */
+  constructor(private detail: boolean) {}
   private facades = [0, 1, 2, 3].map((v) => {
     const { map, glow } = T.facadeTex(v);
     return { mat: new THREE.MeshStandardMaterial({ map, emissive: "#ffffff", emissiveMap: glow, emissiveIntensity: 1.0, roughness: 0.55, metalness: 0.3 }), geos: [] as THREE.BufferGeometry[] };
@@ -460,12 +464,12 @@ class CityBlocks {
     this.facades[v].geos.push(place(body, 0, h / 2, 0));
     // Parapet and a roof slab.
     this.roof.geos.push(place(new THREE.BoxGeometry(w + 0.6, 0.8, d + 0.6), 0, h + 0.4, 0));
-    if (rnd(seed, 21) < 0.5) {
+    if (this.detail && rnd(seed, 21) < 0.5) {
       const tank = new THREE.CylinderGeometry(1.6, 1.6, 3, 12);
       this.tanks.geos.push(place(tank, (rnd(seed, 22) - 0.5) * w * 0.5, h + 2.3, (rnd(seed, 23) - 0.5) * d * 0.5));
       this.tanks.geos.push(place(new THREE.ConeGeometry(1.8, 1, 12), (rnd(seed, 22) - 0.5) * w * 0.5, h + 4.3, (rnd(seed, 23) - 0.5) * d * 0.5));
     }
-    if (h > 40 || rnd(seed, 24) < 0.3) {
+    if (this.detail && (h > 40 || rnd(seed, 24) < 0.3)) {
       const ah = 4 + rnd(seed, 25) * 8;
       this.roof.geos.push(place(new THREE.CylinderGeometry(0.12, 0.2, ah, 6), w * 0.25, h + ah / 2, -d * 0.2));
       this.beacons.geos.push(place(new THREE.SphereGeometry(0.4, 8, 6), w * 0.25, h + ah, -d * 0.2));
