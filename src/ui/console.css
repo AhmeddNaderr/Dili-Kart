@@ -1014,3 +1014,6 @@
 @media (max-width: 900px) and (max-height: 760px) {
   .garage .garage-top { min-height: 150px; }
 }
+.rr-coins { display: inline-flex; align-items: center; gap: 6px; color: #ffd84a; font-weight: 700; }
+.rr-coins svg { width: 18px; height: 18px; }
+.rr-coins b { color: #fff; }

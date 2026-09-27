@@ -382,6 +382,7 @@ export class DiliCart {
       };
       w.__keys = (k: Partial<typeof this.input>) => Object.assign(this.input, k);
       w.__press = (code: string) => this.pressed.add(code);
+      w.__nearFinish = () => { const p = this.racers[0]; p.dist = this.laps * this.track.length - 12; this.lap = this.laps; this.camReady = false; };
       w.__use = (k: ItemKind) => { this.item = k; this.useItem(this.racers[0]); };
       // Free camera for inspection: render from anywhere and save the frame.
       w.__cam = async (px: number, py: number, pz: number, tx: number, ty: number, tz: number, name = "cam") => {

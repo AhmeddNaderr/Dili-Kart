@@ -789,7 +789,14 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
   const bits = [`+${fmt(reply.earned)} points`];
   if (reply.multiplier > 1) bits.push(`${reply.multiplier.toFixed(1)}× streak`);
   if (reply.rank && !p.guest) bits.push(`#${reply.rank} worldwide`);
-  earn.innerHTML = `${reply.isBest ? '<span class="rr-best">New personal best!</span>' : ""}<span>${bits.join(" · ")}</span>`
+  // Coins go to the wallet; point out a skin that's now affordable.
+  const wallet = reply.player.coins ?? 0;
+  const next = SKIN_IDS.filter((id) => !(reply.player.skins ?? []).includes(id)).sort((a, b) => SKIN_INFO[a].price - SKIN_INFO[b].price)
+    .find((id) => SKIN_INFO[id].price > wallet - r.coins);
+  const coinLine = r.coins
+    ? `<span class="rr-coins">${ICON.coin}+${fmt(r.coins)} Dili coins · wallet ${fmt(wallet)}${next && wallet >= SKIN_INFO[next].price ? ` · <b>${SKIN_INFO[next].name} is yours to buy!</b>` : ""}</span>`
+    : "";
+  earn.innerHTML = `${reply.isBest ? '<span class="rr-best">New personal best!</span>' : ""}<span>${bits.join(" · ")}</span>${coinLine}`
     + (p.guest ? `<span class="muted">Guest score — saved on this device only.</span>` : "")
     + (reply.offline ? `<span class="muted">No connection — this race is saved on your device and will sync to the board automatically.</span>` : "");
   // Newly unlocked drivers.
