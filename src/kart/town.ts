@@ -71,7 +71,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   // Wet asphalt: the painted lanes, darkened, with puddles that are glassy.
   const wet = T.wetTex();
   const road = new THREE.MeshStandardMaterial({
-    map: T.asphaltTex(), color: "#7d849c", roughness: 1, roughnessMap: wet, metalness: 0.15, envMapIntensity: 1.0,
+    map: T.asphaltTex(), color: "#7d849c", roughness: 1, roughnessMap: wet, metalness: 0.12, envMapIntensity: 0.7,
   });
   const m = strip(track, runFrom, runTo, 2, [-ROAD_HALF, 0], [ROAD_HALF, 0], 1 / 10, road, false);
   m.receiveShadow = true;
@@ -289,7 +289,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   ], WALL + 2, keep);
   streetLamps(scene, track, quality === "low" ? 34 : 22, WALL, ROAD_HALF, keep, (u) =>
     Math.abs(track.delta(u, track.startU)) < 14
-    || (track.delta(track.lipU - 10, u) > 0 && track.delta(track.landU + 8, u) < 0), 0.55);
+    || (track.delta(track.lipU - 10, u) > 0 && track.delta(track.landU + 8, u) < 0), 0.36);
   // Vending machines, planters and hydrants on the sidewalk behind the barrier.
   for (let k = 0; k < 40; k++) {
     const u = track.wrap(k * (track.length / 40) + rnd(k, 1) * 8);
@@ -310,7 +310,44 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
 
   mergeStatic(scene, takeStatic(), true);
 
-  return { sun: moon, gateLamps, sky, water, balloons: [], spinners, flags: [], center };
+  return { sun: moon, gateLamps, sky, water, balloons: [], spinners, flags: [], center, weather: quality === "low" ? undefined : drizzle(scene) };
+}
+
+/**
+ * A light drizzle: short streaks in a box that travels with the camera,
+ * falling and slanting a little, lit only by the city (additive, faint).
+ */
+function drizzle(scene: THREE.Scene) {
+  const N = 1400, BOX = 36, H = 22;
+  const pos = new Float32Array(N * 6);
+  const seeds = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    seeds[i * 3] = (rnd(i, 60) - 0.5) * BOX;
+    seeds[i * 3 + 1] = rnd(i, 61) * H;
+    seeds[i * 3 + 2] = (rnd(i, 62) - 0.5) * BOX;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+    color: new THREE.Color(0.55, 0.65, 1.0), transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }));
+  lines.frustumCulled = false;
+  scene.add(lines);
+  let fall = 0;
+  return {
+    update(cam: THREE.Camera, dt: number) {
+      fall += dt * 26;
+      const c = cam.position;
+      for (let i = 0; i < N; i++) {
+        const x = c.x + seeds[i * 3], z = c.z + seeds[i * 3 + 2];
+        const y = c.y - 6 + H - ((seeds[i * 3 + 1] + fall) % H);
+        const o = i * 6;
+        pos[o] = x; pos[o + 1] = y; pos[o + 2] = z;
+        pos[o + 3] = x + 0.12; pos[o + 4] = y - 0.9; pos[o + 5] = z + 0.05;
+      }
+      geo.attributes.position.needsUpdate = true;
+    },
+  };
 }
 
 /** Is a rotated w×d footprint centred at (x, z) clear of the street? */
@@ -563,8 +600,8 @@ function nightEnvironment(renderer: THREE.WebGLRenderer) {
     m.lookAt(0, 0, 0);
     env.add(m);
   };
-  panel("#ff3fa4", 3, -18, 3, 6, 10, 5);
-  panel("#2ee6ff", 3, 18, 2, -6, 10, 5);
+  panel("#ff3fa4", 1.5, -18, 3, 6, 10, 5);
+  panel("#2ee6ff", 1.2, 18, 2, -6, 10, 5);
   panel("#ffcf7a", 2.5, 4, 4, 18, 14, 3);
   panel("#6b8bff", 1.6, -6, 5, -18, 12, 4);
   panel("#c9d6ff", 1.4, 0, 9.5, 0, 20, 8);

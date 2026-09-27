@@ -1882,6 +1882,7 @@ export class DiliCart {
     w.water.offset.x += dt * 0.02;
     w.water.offset.y += dt * 0.012;
     w.sky.update(t);
+    w.weather?.update(this.camera, dt);
     crowdTime.value = t;
     for (const b of w.balloons) b.position.y = (b.userData.base as number) + Math.sin(t * 0.8 + b.position.x) * 1.2;
     for (const sp of w.spinners) sp.rotation.y += dt * 0.6;

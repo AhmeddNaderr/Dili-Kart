@@ -43,6 +43,8 @@ export interface World {
   flags: THREE.Object3D[];
   /** Middle of the stadium bowl, at ground level. */
   center: THREE.Vector3;
+  /** Weather that follows the camera (Neon Town's drizzle). */
+  weather?: { update(cam: THREE.Camera, dt: number): void };
 }
 
 export const WALL_T = 0.7;

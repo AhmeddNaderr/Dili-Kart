@@ -259,10 +259,12 @@ export function streetLamps(scene: THREE.Scene, track: Track, every: number, wal
     keep(g);
 
     // Light pool on the road under the lamp.
-    const cLat = (wall - 3.5) * side;
-    const r = 7.5;
+    // Centred just inside the road edge, so the pool stays round rather than
+    // being squashed against the curb.
+    const cLat = Math.min(wall - 3.5, roadHalf - 1.5) * side;
+    const r = 6.5;
     for (const [du, dl, su, sv] of [[-r, -r, 0, 0], [r, -r, 1, 0], [r, r, 1, 1], [-r, r, 0, 1]] as const) {
-      const q = track.point(u + du, Math.max(-roadHalf - 1.5, Math.min(roadHalf + 1.5, cLat + dl)), 0.05);
+      const q = track.point(u + du, cLat + dl, 0.05);
       pos.push(q.x, q.y, q.z);
       uv.push(su, sv);
     }
