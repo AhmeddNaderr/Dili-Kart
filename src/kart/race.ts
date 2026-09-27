@@ -267,6 +267,7 @@ export class DiliCart {
     this.trackId = opts.track ?? "circuit";
     if (this.trackId !== "circuit") this.track = new Track(TRACKS[this.trackId]);
     this.laps = TRACK_INFO[this.trackId].laps;
+    this.audio.night = this.trackId === "town";
     this.attract = opts.attract === true;
     this.trailer = opts.trailer === true;
     if (this.attract || this.trailer) {

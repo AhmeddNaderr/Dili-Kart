@@ -33,6 +33,20 @@ const LEAD = [
 ];
 const ARP = [0, 1, 2, 1, 0, 2, 1, 2];
 
+/** Neon Town's night drive: D minor, Dm – B♭ – F – C, a moodier synthwave line. */
+const PROG_NIGHT = [
+  { root: 38, notes: [53, 57, 62] },   // Dm
+  { root: 46, notes: [53, 58, 62] },   // B♭
+  { root: 41, notes: [53, 57, 60] },   // F
+  { root: 48, notes: [55, 60, 64] },   // C
+];
+const LEAD_NIGHT = [
+  [74, 0, 0, 72, 69, 0, 0, 0, 72, 0, 74, 0, 77, 0, 0, 0],
+  [74, 0, 0, 72, 70, 0, 0, 0, 69, 0, 67, 0, 65, 0, 0, 0],
+  [69, 0, 72, 0, 77, 0, 0, 76, 74, 0, 72, 0, 69, 0, 0, 0],
+  [67, 0, 69, 0, 72, 0, 0, 0, 76, 0, 74, 0, 72, 0, 0, 0],
+];
+
 /** Speed bands for the gearbox, m/s. */
 const GEARS = [0, 7, 13, 19, 25, 45];
 
@@ -554,19 +568,23 @@ export class RaceAudio {
     }
   }
 
+  /** Neon Town plays the night version of the soundtrack. */
+  night = false;
+
   private playStep(step: number, t: number) {
     const bar = Math.floor(step / 16) % 4;
     const s = step % 16;
     const withLead = Math.floor(step / 64) === 1;
-    const ch = PROG[bar];
+    const ch = (this.night ? PROG_NIGHT : PROG)[bar];
     if (s % 4 === 0) this.mKick(t);
-    if (s === 4 || s === 12) this.mSnare(t);
+    // At night the backbeat drops to half time, which makes it feel wider.
+    if (this.night ? s === 8 : s === 4 || s === 12) this.mSnare(t);
     this.mHat(t, s % 4 === 2, s % 2 ? 0.5 : 0.8);
     if (s % 2 === 0) this.mBass(t, midi(ch.root + (s % 4 === 2 ? 12 : 0)), STEP * 1.8);
     this.mArp(t, midi(ch.notes[ARP[s % 8]] + 12));
     if (s === 0) this.mPad(t, ch.notes, STEP * 16);
     if (withLead) {
-      const n = LEAD[bar][s];
+      const n = (this.night ? LEAD_NIGHT : LEAD)[bar][s];
       if (n) this.mLead(t, midi(n), STEP * 1.7);
     }
   }
