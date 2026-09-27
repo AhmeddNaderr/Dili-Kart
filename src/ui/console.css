@@ -917,3 +917,86 @@
   .trk { padding: 4px 8px 4px 4px; }
   .trk small { display: none; }
 }
+
+/* ================================================================
+   Dili's intro: the stage and the dialogue card
+   ================================================================ */
+.intro-body { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); max-width: 1320px; }
+.intro-3d { height: min(80vh, 720px); }
+.intro-say { max-width: 600px; width: 100%; gap: 0; }
+.say-card {
+  --tint: #ffd84a;
+  position: relative; width: 100%;
+  padding: 18px 22px 16px;
+  border-radius: 30px;
+  color: #fff;
+  background:
+    radial-gradient(120% 90% at 0% 0%, rgba(61, 99, 255, 0.28), transparent 60%),
+    rgba(10, 12, 30, 0.62);
+  -webkit-backdrop-filter: blur(22px) saturate(170%); backdrop-filter: blur(22px) saturate(170%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 30px 70px -24px rgba(0, 0, 0, 0.8);
+}
+/* The tail pointing back at Dili. */
+.say-card::before {
+  content: ""; position: absolute; left: -12px; top: 64px; width: 26px; height: 26px; border-radius: 6px;
+  background: rgba(22, 26, 58, 0.9);
+  transform: rotate(45deg);
+  box-shadow: inset 1px -1px 0 rgba(255, 255, 255, 0.14);
+  z-index: -1;
+}
+.say-card.pop { animation: saycard 0.55s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes saycard { from { transform: translateY(10px) scale(0.97); opacity: 0.5; } }
+.say-head { display: flex; align-items: center; gap: 12px; }
+.say-avatar { width: 46px; height: 46px; border-radius: 15px; overflow: hidden; flex: none; background: radial-gradient(circle at 50% 40%, #6f8cff, #16204f); box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.35), 0 8px 18px -8px rgba(61, 99, 255, 0.9); }
+.say-avatar svg { width: 100%; height: 100%; display: block; }
+.say-who { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.say-who b { font: 900 17px/1 "Inter", sans-serif; letter-spacing: -0.02em; }
+.say-who small { font: 600 12px/1.2 "Inter", sans-serif; color: rgba(210, 220, 255, 0.62); }
+.say-step { font: 700 12px/1 "Inter", sans-serif; font-variant-numeric: tabular-nums; color: rgba(210, 220, 255, 0.6); padding: 6px 9px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); }
+.say-title { margin: 16px 0 6px; font: 800 12px/1 "Inter", sans-serif; letter-spacing: 0.14em; text-transform: uppercase; color: #ffd84a; }
+.say-text { margin: 0; min-height: 4.2em; font: 800 clamp(19px, 1.75vw, 25px)/1.34 "Inter", sans-serif; letter-spacing: -0.02em; white-space: pre-wrap; text-wrap: pretty; }
+.say-text::after { content: ""; display: inline-block; width: 3px; height: 1em; margin-left: 3px; vertical-align: -0.12em; border-radius: 2px; background: #ffd84a; animation: caret 0.9s steps(2) infinite; }
+@keyframes caret { 50% { opacity: 0; } }
+.say-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; min-height: 30px; }
+.say-chips span {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px;
+  font: 700 13px/1 "Inter", sans-serif; color: #fff;
+  background: color-mix(in srgb, var(--c) 22%, rgba(255, 255, 255, 0.04));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent);
+  opacity: 0; transform: translateY(6px) scale(0.9);
+  transition: opacity 0.3s, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.say-chips span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c); box-shadow: 0 0 8px var(--c); }
+.say-chips span.on { opacity: 1; transform: none; }
+.say-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; }
+.say-hint { font: 600 12px/1 "Inter", sans-serif; color: rgba(210, 220, 255, 0.5); }
+.say-hint kbd { font: inherit; font-weight: 800; padding: 3px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); color: #fff; }
+.say-next {
+  display: inline-flex; align-items: center; gap: 4px; height: 44px; padding: 0 16px 0 20px; border: 0; border-radius: 999px; cursor: pointer;
+  font: 800 15px/1 "Inter", sans-serif; color: #2a1a00;
+  background: linear-gradient(180deg, #fff0a0, #ffd84a 45%, #ffb400);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 10px 22px -8px rgba(255, 170, 0, 0.8);
+  opacity: 0.35; transform: scale(0.96); pointer-events: none;
+  transition: opacity 0.25s, transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.2s;
+}
+.say-next svg { width: 18px; height: 18px; }
+.say-next.on { opacity: 1; transform: none; pointer-events: auto; animation: next-nudge 1.6s ease-in-out infinite 0.6s; }
+.say-next:hover { filter: brightness(1.06); }
+@keyframes next-nudge { 50% { transform: translateX(3px); } }
+.intro .intro-dots i { width: 34px; height: 5px; }
+@media (max-width: 900px) {
+  .intro-body { grid-template-columns: 1fr; }
+  .intro-3d { height: 40vh; }
+  .say-card::before { display: none; }
+  .say-text { min-height: 0; font-size: 17px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .say-card.pop, .say-next.on, .say-text::after { animation: none; }
+}
+/* The intro stage fades out at its edges, so props never end on a hard line. */
+.intro .intro-3d {
+  -webkit-mask: linear-gradient(90deg, transparent 0%, #000 8%, #000 92%, transparent 100%), linear-gradient(180deg, #000 80%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask: linear-gradient(90deg, transparent 0%, #000 8%, #000 92%, transparent 100%), linear-gradient(180deg, #000 80%, transparent 100%);
+  mask-composite: intersect;
+}

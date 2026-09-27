@@ -444,7 +444,7 @@ export function blink(rig: MascotRig, time: number, seed = 0) {
   for (const e of rig.eyes) e.scale.y = k;
 }
 
-export type Pose = "idle" | "wave" | "cheer" | "talk" | "sad" | "point";
+export type Pose = "idle" | "wave" | "cheer" | "talk" | "sad" | "point" | "present" | "think";
 
 /**
  * A standing character for the menus, intro and results. Poses blend
@@ -457,13 +457,15 @@ export class MascotModel {
   /** 0..1 blend into a walk cycle; `stride` advances it (radians of leg swing). */
   walk = 0;
   stride = 0;
-  private w = { wave: 0, cheer: 0, talk: 0, sad: 0, point: 0 };
+  private w = { wave: 0, cheer: 0, talk: 0, sad: 0, point: 0, present: 0, think: 0 };
+  /** 0..1: mouth flaps as if speaking, independent of the pose. */
+  speaking = 0;
   private seed: number;
 
   private torsoBase: THREE.Vector3;
 
-  constructor(readonly char: DriverId, seed = 0) {
-    this.rig = buildMascot(char, false);
+  constructor(readonly char: DriverId, seed = 0, evil?: EvilLook) {
+    this.rig = buildMascot(char, false, evil);
     this.torsoBase = this.rig.torso.scale.clone();
     this.rig.root.position.y = -0.02;
     this.root.add(this.rig.root);
@@ -477,7 +479,8 @@ export class MascotModel {
       const target = this.pose === k ? 1 : 0;
       this.w[k] += (target - this.w[k]) * Math.min(1, dt * 7);
     }
-    const { wave, cheer, talk, sad, point } = this.w;
+    const { wave, cheer, talk, sad, point, present, think } = this.w;
+    const speak = Math.max(talk, this.speaking);
 
     const breathe = Math.sin(t * 2.2) * 0.02;
     const hop = cheer * Math.abs(Math.sin(t * 6)) * 0.22;
@@ -485,10 +488,13 @@ export class MascotModel {
     const base = this.torsoBase;
     r.torso.scale.set(base.x * (1 + breathe * 0.5), base.y * (1 + breathe), base.z);
     r.head.position.y = 1.98 + breathe * 0.6 - sad * 0.08;
-    r.head.rotation.z = Math.sin(t * 1.3) * 0.06 + talk * Math.sin(t * 7) * 0.05 + wave * 0.1;
-    r.head.rotation.x = sad * 0.28 - cheer * 0.12 + talk * Math.sin(t * 9) * 0.04;
-    r.head.rotation.y = Math.sin(t * 0.7) * 0.12;
-    r.mouth.scale.y = 1 + talk * (0.6 + Math.sin(t * 18) * 0.6);
+    r.head.rotation.z = Math.sin(t * 1.3) * 0.06 + speak * Math.sin(t * 7) * 0.05 + wave * 0.1 + think * 0.16;
+    r.head.rotation.x = sad * 0.28 - cheer * 0.12 + speak * Math.sin(t * 9) * 0.04 - think * 0.12 + present * 0.05;
+    r.head.rotation.y = Math.sin(t * 0.7) * 0.12 - point * 0.25 + think * 0.2;
+    // Syllable-ish mouth: two beating rates so it never looks like a metronome.
+    const syl = Math.max(0, Math.sin(t * 17) * 0.6 + Math.sin(t * 7.3) * 0.5);
+    r.mouth.scale.y = 1 + speak * syl * 1.1;
+    r.mouth.scale.x = 1 + speak * syl * 0.15;
     blink(r, t, this.seed);
 
     // Arms: rest by the sides, wave (right arm), cheer (both), point (right forward).
@@ -498,8 +504,10 @@ export class MascotModel {
       const up = cheer + (right ? wave : 0);
       const wig = right ? Math.sin(t * 11) * 0.35 * wave : 0;
       const cheerWig = Math.sin(t * 12 + s) * 0.2 * cheer;
-      arm.rotation.x = -up * 2.6 - (right ? point * 1.4 : 0) + sad * 0.15;
-      arm.rotation.z = s * (0.18 + sideSway + up * 0.55 - sad * 0.1) + wig + cheerWig;
+      // Talking hands: the right one beats time, the left follows lazily.
+      const beat = talk * (right ? -0.35 - Math.max(0, Math.sin(t * 4.6)) * 0.4 : -0.15 - Math.max(0, Math.sin(t * 4.6 - 1.2)) * 0.12);
+      arm.rotation.x = -up * 2.6 - (right ? point * 1.4 : 0) + sad * 0.15 + beat - present * 0.95 - (right ? think * 2.15 : think * 0.3);
+      arm.rotation.z = s * (0.18 + sideSway + up * 0.55 - sad * 0.1 + present * 0.5) + wig + cheerWig + (right ? think * 0.6 : 0);
     }
     if (r.legL && r.legR) {
       r.legL.rotation.x = -cheer * Math.max(0, Math.sin(t * 6)) * 0.3;

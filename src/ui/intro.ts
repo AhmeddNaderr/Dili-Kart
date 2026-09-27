@@ -1,5 +1,8 @@
 import { sfx } from "../engine/audio";
 import type { Pose } from "../kart/mascot";
+import type { Prop } from "./stage3d";
+import { MASCOT } from "../kart/mascot";
+import { portrait } from "./icons";
 
 const SEEN_KEY = "dlicom.arcade.intro.v3";
 /** Set once Dili has greeted this browser tab, so a reload goes straight in. */
@@ -41,6 +44,12 @@ export interface IntroWho {
 interface Beat {
   pose: Pose;
   text: string;
+  /** Small caption over the line. */
+  title: string;
+  /** What pops up beside Dili while he says it. */
+  prop: Prop;
+  /** Little tags under the line: [label, colour]. */
+  chips?: [string, string][];
 }
 
 /**
@@ -48,15 +57,32 @@ interface Beat {
  * official announcement: a year, no promises.
  */
 const BEATS: Beat[] = [
-  { pose: "wave", text: "" },   // the greeting, written for whoever just logged in
+  { pose: "wave", title: "Welcome", prop: "none", text: "" },   // the greeting, written for whoever just logged in
   {
-    pose: "talk",
+    pose: "present", title: "What's Dlicom?", prop: "phone",
     text: "Dlicom is one app for your whole crypto life — encrypted messages, a social feed, DliClips, communities, and a wallet built right in.",
+    chips: [["Messages", "#3d63ff"], ["Feed", "#e447d2"], ["DliClips", "#ff6a3d"], ["Wallet", "#ffc21a"]],
   },
-  { pose: "point", text: "And the big one: the $DLI Token Generation Event is scheduled for 2027.\nThe exact date comes later — follow @DlicomApp." },
-  { pose: "talk", text: "The Custodians want to hold everyone's keys. With Dlicom, you hold your own.\nSo today, they're racing me for the crown." },
-  { pose: "point", text: "← → steer. Hold a turn to drift, let go for a turbo.\n↑ is gas, ↓ fires your item. Hit the ramp and I glide." },
-  { pose: "cheer", text: "Grab coins, smash item boxes, beat all seven Custodians over three laps.\nLet's race!" },
+  {
+    pose: "point", title: "$DLI", prop: "coin",
+    text: "And the big one: the $DLI Token Generation Event is scheduled for 2027.\nThe exact date comes later — follow @DlicomApp.",
+    chips: [["TGE 2027", "#ffc21a"], ["@DlicomApp", "#3d63ff"]],
+  },
+  {
+    pose: "think", title: "The Custodians", prop: "custodian",
+    text: "The Custodians want to hold everyone's keys. With Dlicom, you hold your own.\nSo today, they're racing me for the crown.",
+    chips: [["Self-custody", "#2fd872"], ["7 rivals", "#ff3048"]],
+  },
+  {
+    pose: "talk", title: "How to drive", prop: "keys",
+    text: "← → steer. Hold a turn to drift, let go for a turbo.\n↑ is gas, ↓ fires your item. Hit the ramp and I glide.",
+    chips: [["Drift = turbo", "#2ee6ff"], ["Items: ↓", "#ffd84a"], ["Coins → shop", "#ffc21a"]],
+  },
+  {
+    pose: "cheer", title: "Race day", prop: "kart",
+    text: "Grab coins, smash item boxes, beat all seven Custodians.\nDili Circuit or Neon Town at night — let's race!",
+    chips: [["Dili Circuit", "#ffb45c"], ["Neon Town", "#ff3fa4"]],
+  },
 ];
 
 /** Typing rhythm: punctuation gets a beat, line breaks a longer one. */
@@ -94,17 +120,31 @@ export function buildIntro(onDone: () => void, who: IntroWho = { handle: null })
     <div class="intro-body">
       <div class="intro-3d" id="intro3d" title="Click Dili"></div>
       <div class="intro-say">
-        <div class="say-name">Dili Boy <span>· Dlicom</span></div>
-        <div class="say-bubble"><p id="text"></p></div>
-        <button class="btn primary intro-next" id="next">Next</button>
+        <div class="say-card">
+          <div class="say-head">
+            <span class="say-avatar" aria-hidden="true">${portrait(MASCOT.dili.head, MASCOT.dili.dome, MASCOT.dili.mouth)}</span>
+            <span class="say-who"><b>Dili Boy</b><small>Dlicom mascot · your co-driver</small></span>
+            <span class="say-step" id="step"></span>
+          </div>
+          <div class="say-title" id="title"></div>
+          <p id="text" class="say-text"></p>
+          <div class="say-chips" id="chips"></div>
+          <div class="say-foot">
+            <span class="say-hint">Tap or press <kbd>Enter</kbd></span>
+            <button class="say-next" id="next">Next <svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+        </div>
       </div>
     </div>
-    <p class="fine">Click, tap or press Enter to continue.</p>`;
+    `;
 
   const textEl = view.querySelector<HTMLElement>("#text")!;
   const nextEl = view.querySelector<HTMLButtonElement>("#next")!;
   const dotsEl = view.querySelector<HTMLElement>("#dots")!;
   const skipEl = view.querySelector<HTMLElement>("#skip")!;
+  const titleEl = view.querySelector<HTMLElement>("#title")!;
+  const stepEl = view.querySelector<HTMLElement>("#step")!;
+  const chipsEl = view.querySelector<HTMLElement>("#chips")!;
 
   function finish() {
     window.clearTimeout(timer);
@@ -117,17 +157,20 @@ export function buildIntro(onDone: () => void, who: IntroWho = { handle: null })
     window.clearTimeout(timer);
     typing = false;
     textEl.textContent = beats[i].text;
+    view.dispatchEvent(new CustomEvent("intro:speak", { detail: false }));
     showNext();
   }
 
   function showNext() {
     nextEl.classList.add("on");
-    nextEl.textContent = i === beats.length - 1 ? "Let's race!" : "Next";
+    nextEl.firstChild!.textContent = i === beats.length - 1 ? "Let's race! " : "Next ";
+    chipsEl.querySelectorAll("span").forEach((c, n) => setTimeout(() => c.classList.add("on"), n * 90));
   }
 
   function type(full: string, at: number) {
     if (at >= full.length) {
       typing = false;
+      view.dispatchEvent(new CustomEvent("intro:speak", { detail: false }));
       showNext();
       view.dispatchEvent(new CustomEvent("intro:pose", { detail: beats[i].pose === "talk" ? "idle" : beats[i].pose }));
       return;
@@ -142,10 +185,15 @@ export function buildIntro(onDone: () => void, who: IntroWho = { handle: null })
     const beat = beats[i];
     dotsEl.querySelectorAll("i").forEach((d, n) => d.classList.toggle("on", n <= i));
     view.dispatchEvent(new CustomEvent("intro:pose", { detail: beat.pose === "wave" || beat.pose === "cheer" ? beat.pose : "talk" }));
-    const bubble = view.querySelector<HTMLElement>(".say-bubble")!;
-    bubble.classList.remove("pop");
-    void bubble.offsetWidth;
-    bubble.classList.add("pop");
+    view.dispatchEvent(new CustomEvent("intro:prop", { detail: beat.prop }));
+    view.dispatchEvent(new CustomEvent("intro:speak", { detail: true }));
+    const card = view.querySelector<HTMLElement>(".say-card")!;
+    card.classList.remove("pop");
+    void card.offsetWidth;
+    card.classList.add("pop");
+    titleEl.textContent = beat.title;
+    stepEl.textContent = `${i + 1} / ${beats.length}`;
+    chipsEl.innerHTML = (beat.chips ?? []).map(([t, c]) => `<span style="--c:${c}">${t}</span>`).join("");
     nextEl.classList.remove("on");
     textEl.textContent = "";
     typing = true;

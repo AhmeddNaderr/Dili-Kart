@@ -145,6 +145,8 @@ function intro(then: () => void, isNew?: boolean) {
   if (host) {
     stage3d = mountStage(host, { kind: "solo", char: "dili" }, () => sfx.pop());
     view.addEventListener("intro:pose", (e) => stage3d?.setPose((e as CustomEvent).detail));
+    view.addEventListener("intro:prop", (e) => stage3d?.setProp((e as CustomEvent).detail));
+    view.addEventListener("intro:speak", (e) => stage3d?.setSpeaking((e as CustomEvent).detail));
     stage3d.setPose("wave");
   }
 }

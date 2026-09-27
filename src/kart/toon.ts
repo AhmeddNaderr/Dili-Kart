@@ -84,7 +84,11 @@ export function dome(tint: string, radius: number, opacity = 0.2, rimTint = tint
   const rim = new THREE.Mesh(
     once(`domegeo${radius}`, () => new THREE.SphereGeometry(radius, 40, 28)),
     once(`rim${rimTint}`, () => new THREE.ShaderMaterial({
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      // Additive light that leaves the destination alpha alone, so the rim
+      // doesn't punch a dark disc into menus drawn on a transparent canvas.
+      transparent: true, depthWrite: false,
+      blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
       uniforms: { uColor: { value: new THREE.Color(rimTint) } },
       vertexShader: `varying vec3 vN; varying vec3 vV;
         void main(){ vec4 mv = modelViewMatrix * vec4(position,1.); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }`,
