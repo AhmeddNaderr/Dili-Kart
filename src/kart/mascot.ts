@@ -137,6 +137,8 @@ export function dLetterGeo(height: number, depth: number) {
 export interface EvilLook {
   team: string;
   glow: string;
+  /** Head style, so crews read apart: 0 horns, 1 mohawk, 2 antennae, 3 crown. */
+  style?: number;
 }
 
 
@@ -267,10 +269,36 @@ export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): M
       mesh(once("evilCore", () => new THREE.BoxGeometry(0.12, 0.022, 0.02)), glowMat("#ffffff", 1.6), eye, 0.01 * s, 0, 0.022);
       eyes.push(eye);
     }
-    // Horns.
-    for (const s of [-1, 1]) {
-      const horn = mesh(once("horn", () => new THREE.ConeGeometry(0.075, 0.27, 14).translate(0, 0.135, 0)), vinyl(evil.team), head, 0.3 * s, 0.26, 0.02);
-      horn.rotation.z = -0.55 * s;
+    const style = (evil.style ?? 0) % 4;
+    if (style === 0) {
+      // Horns.
+      for (const s of [-1, 1]) {
+        const horn = mesh(once("horn", () => new THREE.ConeGeometry(0.075, 0.27, 14).translate(0, 0.135, 0)), vinyl(evil.team), head, 0.3 * s, 0.26, 0.02);
+        horn.rotation.z = -0.55 * s;
+      }
+    } else if (style === 1) {
+      // A mohawk of blades down the middle.
+      for (let k = 0; k < 5; k++) {
+        const b = mesh(once("mohawk", () => new THREE.ConeGeometry(0.06, 0.24, 4).translate(0, 0.12, 0)), vinyl(evil.team), head, 0, 0.3, 0.14 - k * 0.08);
+        b.scale.set(0.5, 1 - Math.abs(k - 1.5) * 0.12, 1.4);
+        b.rotation.x = -0.25 + k * 0.1;
+      }
+    } else if (style === 2) {
+      // Two antennae with glowing tips.
+      for (const s of [-1, 1]) {
+        const a = mesh(once("antenna", () => new THREE.CylinderGeometry(0.014, 0.02, 0.3, 6).translate(0, 0.15, 0)), vinyl("#2a2838"), head, 0.2 * s, 0.28, 0);
+        a.rotation.z = -0.35 * s;
+        mesh(once("antTip", () => new THREE.SphereGeometry(0.045, 10, 8)), glowMat(evil.glow, 3), head, 0.2 * s + Math.sin(0.35 * s) * 0.3, 0.28 + Math.cos(0.35) * 0.3, 0);
+      }
+    } else {
+      // A spiked crown in the crew colour.
+      const crown = mesh(once("crownRing", () => new THREE.CylinderGeometry(0.2, 0.22, 0.08, 20, 1, true)), vinyl(evil.team), head, 0, 0.32, 0);
+      crown.castShadow = true;
+      for (let k = 0; k < 5; k++) {
+        const a = (k / 5) * Math.PI * 2;
+        mesh(once("crownSpike", () => new THREE.ConeGeometry(0.04, 0.12, 8).translate(0, 0.06, 0)), vinyl(evil.team), head, Math.sin(a) * 0.2, 0.36, Math.cos(a) * 0.2);
+      }
+      mesh(once("crownGem", () => new THREE.OctahedronGeometry(0.045, 0)), glowMat(evil.glow, 3), head, 0, 0.34, 0.22);
     }
   } else for (const s of [-1, 1]) {
     const eye = new THREE.Group();

@@ -292,7 +292,7 @@ export class KartModel {
     this.body.add(this.chassis, this.driver);
     this.chassis.add(this.detail);
     this.buildKart();
-    if (look.driver === "custodian") this.buildMascotDriver("dili", { team: look.trim, glow: look.glow });
+    if (look.driver === "custodian") this.buildMascotDriver("dili", { team: look.trim, glow: look.glow, style: Number(look.number) });
     else this.buildMascotDriver(look.driver);
     this.buildGlider();
 
