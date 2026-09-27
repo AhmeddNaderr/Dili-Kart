@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { hdriEnvironment } from "../kart/hdri";
 import { DILI_LOOK, KartModel, add, coinGeometry, coinMaterials, glow, plastic, rbox, torus, type KartLook } from "../kart/models";
 import { MascotModel, type DriverId, type Pose } from "../kart/mascot";
 import { blobTex } from "../kart/textures";
@@ -29,7 +30,7 @@ type Mode = { kind: "squad"; chars: CharId[] } | { kind: "kart"; look: KartLook;
 
 export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): MenuStage {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));   // retina-sharp menus
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NeutralToneMapping;
   renderer.toneMappingExposure = 1.3;
@@ -43,6 +44,14 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   scene.environmentIntensity = 0.5;
   pmrem.dispose();
+  // Swap in a photographed studio (softboxes, real falloff) once it arrives.
+  let alive = true;
+  void hdriEnvironment(renderer, "studio").then((env) => {
+    if (!alive) { env.dispose(); return; }
+    scene.environment?.dispose();
+    scene.environment = env;
+    scene.environmentIntensity = 0.42;
+  }).catch(() => { /* keep the room lighting */ });
   scene.add(new THREE.HemisphereLight("#b9c8ff", "#1a1530", 0.9));
   const key = new THREE.DirectionalLight("#fff3e2", 2.4);
   key.position.set(-4, 8, 7);
@@ -77,7 +86,8 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   ring2.scale.setScalar(0.72);
   ring2.position.y = 0.01;
   plat.add(ring2);
-  const top = new THREE.Mesh(new THREE.CircleGeometry(stageR, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: "#1d2136", roughness: 0.6, metalness: 0.2 }));
+  // Polished dark showroom floor: it mirrors the studio softboxes instead of greying out under them.
+  const top = new THREE.Mesh(new THREE.CircleGeometry(stageR, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: "#12152a", roughness: 0.28, metalness: 0.7 }));
   top.position.y = 0.005;
   top.receiveShadow = true;
   plat.add(top);
@@ -369,6 +379,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       for (const m of mascots) m.pose = p;
     },
     dispose() {
+      alive = false;
       cancelAnimationFrame(raf);
       ro.disconnect();
       // Models and textures are shared with the live backdrop (and cached for

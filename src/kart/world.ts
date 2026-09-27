@@ -73,7 +73,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
   scene.add(new THREE.HemisphereLight("#8fa4ff", "#2a2f3e", 0.72));
   const sun = new THREE.DirectionalLight("#ffc07a", 2.1);
   sun.castShadow = true;
-  sun.shadow.mapSize.setScalar(quality === "low" ? 1024 : 2048);
+  sun.shadow.mapSize.setScalar(quality === "low" ? 1024 : 4096);
   const sc = sun.shadow.camera;
   sc.left = -38; sc.right = 38; sc.top = 38; sc.bottom = -38; sc.near = 1; sc.far = 220;
   sun.shadow.bias = -0.0004;

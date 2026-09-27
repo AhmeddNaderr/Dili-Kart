@@ -19,6 +19,7 @@
     "wrangler": "^4.140.0"
   },
   "dependencies": {
+    "@pmndrs/assets": "^1.7.0",
     "@types/three": "^0.186.0",
     "three": "^0.186.1"
   }

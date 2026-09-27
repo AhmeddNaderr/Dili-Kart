@@ -19,7 +19,7 @@ function tex(c: HTMLCanvasElement, repeat = true, srgb = true): THREE.CanvasText
   const t = new THREE.CanvasTexture(c);
   if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 8;
+  t.anisotropy = 16;   // the renderer clamps this to what the GPU supports
   made.push(t);
   return t;
 }

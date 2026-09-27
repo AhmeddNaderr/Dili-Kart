@@ -18,10 +18,12 @@ export function gradePass() {
       uFringe: { value: 0.006 },
       uGrain: { value: 0.012 },
       uSeed: { value: 0 },
+      /** 0..1 radial speed blur, for boosts. */
+      uBlur: { value: 0 },
     },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
     fragmentShader: `
-      uniform sampler2D tDiffuse; uniform float uSat, uContrast, uVignette, uFringe, uGrain, uSeed;
+      uniform sampler2D tDiffuse; uniform float uSat, uContrast, uVignette, uFringe, uGrain, uSeed, uBlur;
       varying vec2 vUv;
       float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233)) + uSeed) * 43758.5453); }
       void main(){
@@ -32,6 +34,15 @@ export function gradePass() {
         vec4 c = texture2D(tDiffuse, vUv);
         c.r = texture2D(tDiffuse, vUv - off).r;
         c.b = texture2D(tDiffuse, vUv + off).b;
+        if (uBlur > 0.01) {
+          // Speed blur: smear outward from the centre, strongest at the edges,
+          // leaving the kart in the middle sharp.
+          float edge = smoothstep(0.12, 0.7, length(d * vec2(1.4, 1.0)));
+          vec2 step = d * uBlur * edge * 0.012;
+          vec3 acc = c.rgb;
+          for (int i = 1; i < 7; i++) acc += texture2D(tDiffuse, vUv - step * float(i)).rgb;
+          c.rgb = acc / 7.0;
+        }
         float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
         vec3 col = mix(vec3(l), c.rgb, uSat);
         col = (col - 0.5) * uContrast + 0.5;

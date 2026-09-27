@@ -284,7 +284,8 @@ export class DiliCart {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
     // The attract backdrop sits behind the menus, so it can afford fewer pixels.
-    const maxRatio = this.trailer ? 1 : this.attract ? (this.quality === "low" ? 0.75 : 1) : this.quality === "low" ? 1.25 : 1.5;
+    // Retina-sharp on capable machines; the frame-rate watchdog steps it down if needed.
+    const maxRatio = this.trailer ? 1 : this.attract ? (this.quality === "low" ? 0.75 : 1) : this.quality === "low" ? 1.25 : 2;
     if (this.trailer) this.quality = "high";
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, maxRatio));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -362,11 +363,13 @@ export class DiliCart {
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.45, 2.9);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
-    this.composer.addPass(gradePass());
+    this.grade = gradePass();
+    this.composer.addPass(this.grade);
     this.resize();
 
     // Warm the GPU: compile every shader before the first visible frame.
     this.placeAll(0);
+    this.captureReflections();
     if (this.attract) this.startAttract();
     else this.startIntro();
     this.renderer.compile(this.scene, this.camera);
@@ -2146,8 +2149,46 @@ export class DiliCart {
     this.followSun();
   }
 
+  /**
+   * Real reflections: photograph the finished track (neon, towers, stands,
+   * sky) into a cube map once at load and light every material with it, so
+   * paint, glass and wet tarmac mirror what's actually around them.
+   */
+  private captureReflections() {
+    // Neon Town's reflections are hand-tuned (pink and cyan light panels that
+    // make the wet streets glow), which reads better than a photo of dark towers.
+    if (this.trackId === "town") return;
+    const size = this.quality === "low" ? 128 : 256;
+    const cubeRT = new THREE.WebGLCubeRenderTarget(size, { type: THREE.HalfFloatType });
+    const cubeCam = new THREE.CubeCamera(0.5, 3000, cubeRT);
+    // Hide the karts and particles so the capture is just the world.
+    const hidden: THREE.Object3D[] = [];
+    for (const r of this.racers) for (const o of [r.model.root, r.model.shadowRoot]) if (o.visible) { o.visible = false; hidden.push(o); }
+    for (const o of [this.sparks.points, this.puffs.points, this.confetti.mesh]) if (o.visible) { o.visible = false; hidden.push(o); }
+    const at = this.track.point(this.track.startU + 60, 0, 9);
+    cubeCam.position.copy(at);
+    this.scene.add(cubeCam);
+    cubeCam.update(this.renderer, this.scene);
+    this.scene.remove(cubeCam);
+    for (const o of hidden) o.visible = true;
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const env = pmrem.fromCubemap(cubeRT.texture);
+    pmrem.dispose();
+    cubeRT.dispose();
+    this.scene.environment?.dispose();
+    this.scene.environment = env.texture;
+    this.scene.environmentIntensity = 0.8;
+  }
+
   /** Keep the shadow camera centred on the player, and size particles for the view. */
   private followSun() {
+    // Speed blur while boosting (not in the menus' backdrop).
+    if (this.grade && !this.attract && this.racers[0]) {
+      const p = this.racers[0];
+      const want = p.boostT > 0 && this.phase === "race" ? Math.min(1, 0.55 + p.speed / 90) : 0;
+      this.speedBlur += (want - this.speedBlur) * (want > this.speedBlur ? 0.18 : 0.06);
+      (this.grade.uniforms as Record<string, THREE.IUniform>).uBlur.value = this.speedBlur < 0.02 ? 0 : this.speedBlur;
+    }
     const sun = this.world.sun;
     const pp = this.racers[0].model.root.position;
     sun.target.position.copy(pp);
@@ -2291,6 +2332,8 @@ export class DiliCart {
    * as a last resort a cheaper bloom. Once lowered it stays lowered.
    */
   private perfStep = 0;
+  private grade: ReturnType<typeof gradePass> | null = null;
+  private speedBlur = 0;
   private watchPerf(raw: number) {
     if (this.lowered || this.phase === "load" || this.paused) return;
     this.frameMs.push(raw * 1000);

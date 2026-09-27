@@ -1,3 +1,4 @@
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as THREE from "three";
 import type { Track } from "./track";
 import { newFrame } from "./track";
@@ -226,7 +227,8 @@ export function billboards(scene: THREE.Scene, track: Track, specs: BoardSpec[],
  * Street lamps behind the walls, leaning out over the road, each throwing a
  * warm pool of light onto the tarmac below.
  */
-export function streetLamps(scene: THREE.Scene, track: Track, every: number, wall: number, roadHalf: number, keep: (o: THREE.Object3D) => void, skip: (u: number) => boolean, poolOpacity = 0.32) {
+export function streetLamps(scene: THREE.Scene, track: Track, every: number, wall: number, roadHalf: number, keep: (o: THREE.Object3D) => void, skip: (u: number) => boolean, poolOpacity = 0.32, cones = false) {
+  const coneGeos: THREE.BufferGeometry[] = [];
   const f = newFrame();
   const pole = new THREE.MeshStandardMaterial({ color: "#2a2f45", roughness: 0.4, metalness: 0.6 });
   const head = new THREE.MeshBasicMaterial({ color: new THREE.Color("#ffe3a3").multiplyScalar(2.2), toneMapped: false });
@@ -256,6 +258,13 @@ export function streetLamps(scene: THREE.Scene, track: Track, every: number, wal
     const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.22, 1.1), head);
     lamp.position.set(0, height - 0.28, -2.9);
     g.add(lamp);
+    if (cones) {
+      // A cone of light from the lamp head down to the road (visible in rain and haze).
+      g.updateMatrixWorld(true);
+      const top = new THREE.Vector3(0, height - 0.4, -2.9).applyMatrix4(g.matrixWorld);
+      const h = Math.max(4, top.y - (roadY + 0.05));
+      coneGeos.push(new THREE.CylinderGeometry(0.35, 3.6, h, 20, 1, true).translate(top.x, top.y - h / 2, top.z));
+    }
     keep(g);
 
     // Light pool on the road under the lamp.
@@ -292,4 +301,21 @@ export function streetLamps(scene: THREE.Scene, track: Track, every: number, wal
   }));
   pools.renderOrder = 1;
   scene.add(pools);
+  if (coneGeos.length) {
+    const merged = mergeGeometries(coneGeos, false)!;
+    coneGeos.forEach((c) => c.dispose());
+    const beams = new THREE.Mesh(merged, new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      uniforms: { uColor: { value: new THREE.Color("#ffd9a0") } },
+      vertexShader: `varying vec3 vN; varying vec3 vV; varying float vY;
+        void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz);
+          vY = uv.y; gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `uniform vec3 uColor; varying vec3 vN; varying vec3 vV; varying float vY;
+        void main(){ float face = pow(abs(dot(vN, vV)), 1.6); float fade = smoothstep(0.0, 0.5, vY) * (0.35 + 0.65 * vY);
+          gl_FragColor = vec4(uColor * face * fade * 0.16, 1.0); }`,
+    }));
+    beams.frustumCulled = false;
+    beams.renderOrder = 2;
+    scene.add(beams);
+  }
 }

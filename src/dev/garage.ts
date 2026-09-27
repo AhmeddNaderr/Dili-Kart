@@ -51,6 +51,7 @@ floor.receiveShadow = true;
 scene.add(floor);
 
 const t = num("t", 1.2);
+const draw = () => { renderer.render(scene, cam); (window as unknown as { __done: boolean }).__done = true; };
 let lookY = 1.0;
 if (what === "mascot") {
   const m = new MascotModel(char);
@@ -72,5 +73,9 @@ const cam = new THREE.PerspectiveCamera(num("fov", 32), innerWidth / innerHeight
 const yaw = num("yaw", 0.6), dist = num("dist", 6.5);
 cam.position.set(Math.sin(yaw) * dist, num("h", 2.2), Math.cos(yaw) * dist);
 cam.lookAt(0, num("look", lookY), 0);
-renderer.render(scene, cam);
-(window as unknown as { __done: boolean }).__done = true;
+// Studio HDRI, like the menus.
+void import("../kart/hdri").then(({ hdriEnvironment }) => hdriEnvironment(renderer, "studio")).then((env) => {
+  scene.environment = env;
+  scene.environmentIntensity = 0.8;
+  draw();
+}).catch(draw);

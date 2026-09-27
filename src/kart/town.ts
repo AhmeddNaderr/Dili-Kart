@@ -35,7 +35,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   scene.add(new THREE.HemisphereLight("#4a5cc0", "#0b0a18", 0.55));
   const moon = new THREE.DirectionalLight("#a9bcff", 1.05);
   moon.castShadow = true;
-  moon.shadow.mapSize.setScalar(quality === "low" ? 1024 : 2048);
+  moon.shadow.mapSize.setScalar(quality === "low" ? 1024 : 4096);
   const sc = moon.shadow.camera;
   sc.left = -38; sc.right = 38; sc.top = 38; sc.bottom = -38; sc.near = 1; sc.far = 220;
   moon.shadow.bias = -0.0004;
@@ -380,7 +380,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   ], WALL + 2, keep);
   streetLamps(scene, track, quality === "low" ? 34 : 22, WALL, ROAD_HALF, keep, (u) =>
     Math.abs(track.delta(u, track.startU)) < 14
-    || (track.delta(track.lipU - 10, u) > 0 && track.delta(track.landU + 8, u) < 0), 0.24);
+    || (track.delta(track.lipU - 10, u) > 0 && track.delta(track.landU + 8, u) < 0), 0.16, quality !== "low");
   // Vending machines, planters and hydrants on the sidewalk behind the barrier.
   for (let k = 0; k < 40; k++) {
     const u = track.wrap(k * (track.length / 40) + rnd(k, 1) * 8);
