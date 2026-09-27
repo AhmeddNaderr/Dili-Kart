@@ -1357,3 +1357,116 @@ export function bladeSignTex(text: string, neon: string, horizontal = false) {
   g.globalAlpha = 1;
   return tex(c, false);
 }
+
+/**
+ * Glass curtain wall for the big towers: blue-green panels on a fine
+ * mullion grid with floor lines, a few lit floors and office blocks glowing
+ * behind the glass. One tile is 16 m wide by 16 m tall (four floors).
+ */
+export function curtainTex(variant: number) {
+  const S = 512;
+  const [c, g] = canvas(S, S);
+  const [c2, g2] = canvas(S, S);
+  const [c3, g3] = canvas(S, S);
+  const tints = [["#0d2a3f", "#1b4a6b"], ["#1a1638", "#2c2a62"], ["#0f2a2a", "#1d4d4a"], ["#231a2f", "#3d2d52"]][variant % 4];
+  const grad = g.createLinearGradient(0, 0, S, S);
+  grad.addColorStop(0, tints[0]);
+  grad.addColorStop(1, tints[1]);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, S, S);
+  g2.fillStyle = "#000";
+  g2.fillRect(0, 0, S, S);
+  g3.fillStyle = "rgb(0,20,0)";   // glass: glossy
+  g3.fillRect(0, 0, S, S);
+  const r = rand(300 + variant);
+  const cols = 16, rows = 4, cw = S / cols, rh = S / rows;
+  for (let y = 0; y < rows; y++) {
+    // A lit floor: a warm or cool band across most of the width.
+    const lit = r();
+    if (lit < 0.35) {
+      const col = lit < 0.22 ? "#ffd49a" : "#9fd8ff";
+      const x0 = Math.floor(r() * 6) * cw, x1 = S - Math.floor(r() * 6) * cw;
+      g2.fillStyle = col;
+      g2.globalAlpha = 0.35 + r() * 0.4;
+      g2.fillRect(x0, y * rh + 10, x1 - x0, rh - 22);
+      g2.globalAlpha = 1;
+      // Desks and people break the glow up.
+      g2.fillStyle = "rgba(0,0,0,.45)";
+      for (let k = 0; k < 10; k++) g2.fillRect(x0 + r() * (x1 - x0), y * rh + rh * 0.55, 6 + r() * 14, rh * 0.3);
+    } else {
+      for (let x = 0; x < cols; x++) {
+        if (r() < 0.12) {
+          g2.fillStyle = r() < 0.6 ? "#ffcf8a" : "#8fd0ff";
+          g2.globalAlpha = 0.5 + r() * 0.5;
+          g2.fillRect(x * cw + 2, y * rh + 10, cw - 4, rh - 22);
+          g2.globalAlpha = 1;
+        }
+      }
+    }
+    // Spandrel between floors: opaque and matte.
+    g.fillStyle = "rgba(8,10,20,.85)";
+    g.fillRect(0, y * rh + rh - 12, S, 12);
+    g3.fillStyle = "rgb(0,170,0)";
+    g3.fillRect(0, y * rh + rh - 12, S, 12);
+  }
+  // Mullions.
+  g.fillStyle = "rgba(190,210,235,.35)";
+  for (let x = 0; x <= cols; x++) g.fillRect(x * cw - 1, 0, 2, S);
+  // Sky reflection sweeping across the glass.
+  const sh = g.createLinearGradient(0, 0, S, S * 0.6);
+  sh.addColorStop(0, "rgba(255,255,255,0)");
+  sh.addColorStop(0.5, "rgba(170,190,255,.10)");
+  sh.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = sh;
+  g.fillRect(0, 0, S, S);
+  return { map: tex(c), glow: tex(c2), rough: tex(c3, true, false) };
+}
+
+/**
+ * Giant LED screen content: a tall strip of ad panels that scrolls
+ * upward, so each screen shows a slowly changing billboard.
+ */
+export function ledTex(seed: number) {
+  const W = 256, H = 1024;
+  const [c, g] = canvas(W, H);
+  const panels: [string, string, string, string][] = [
+    ["DLICOM", "one app · every chain", "#3d63ff", "#0b1030"],
+    ["$DLI", "TGE · 2027", "#ffc21a", "#1a1200"],
+    ["HOLD", "your own keys", "#39ff9e", "#021a10"],
+    ["DILI KART", "neon town · 5 laps", "#ff3fa4", "#1d0414"],
+  ];
+  const ph = H / panels.length;
+  const off = seed % panels.length;
+  panels.forEach((_, i) => {
+    const [big, small, col, bg] = panels[(i + off) % panels.length];
+    const y = i * ph;
+    const gr = g.createLinearGradient(0, y, W, y + ph);
+    gr.addColorStop(0, bg);
+    gr.addColorStop(1, "#000");
+    g.fillStyle = gr;
+    g.fillRect(0, y, W, ph);
+    g.save();
+    g.shadowColor = col;
+    g.shadowBlur = 18;
+    g.fillStyle = col;
+    g.font = "900 italic 52px 'Inter', 'Arial Black', sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(big, W / 2, y + ph * 0.45);
+    g.restore();
+    g.fillStyle = "#ffffff";
+    g.font = "700 20px 'Inter', sans-serif";
+    g.textAlign = "center";
+    g.fillText(small, W / 2, y + ph * 0.68);
+    g.fillStyle = col;
+    g.fillRect(W * 0.3, y + ph * 0.78, W * 0.4, 4);
+  });
+  // LED pixel grid.
+  g.fillStyle = "rgba(0,0,0,.28)";
+  for (let x = 0; x < W; x += 4) g.fillRect(x, 0, 1, H);
+  for (let y = 0; y < H; y += 4) g.fillRect(0, y, W, 1);
+  const t = tex(c);
+  t.wrapS = THREE.ClampToEdgeWrapping;
+  t.repeat.set(1, 1 / panels.length);
+  return t;
+}

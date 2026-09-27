@@ -45,6 +45,8 @@ export interface World {
   center: THREE.Vector3;
   /** Weather that follows the camera (Neon Town's drizzle). */
   weather?: { update(cam: THREE.Camera, dt: number, focus?: THREE.Vector3): void };
+  /** Anything else in the world that moves (screens, trains, traffic). */
+  animate?: (t: number, dt: number) => void;
 }
 
 export const WALL_T = 0.7;

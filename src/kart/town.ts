@@ -5,6 +5,7 @@ import * as M from "./models";
 import { EDGE, ROAD_HALF, WALL, Track, newFrame } from "./track";
 import { buildSky } from "./sky";
 import { billboards, streetLamps } from "./trackside";
+import { Skyline, monorail, skyTraffic } from "./skyline";
 import {
   WALL_H, WALL_T, buildJump, buildStart, embankment, haloTex, keep, mergeStatic, strip, takeStatic, underside,
   type Quality, type World,
@@ -221,6 +222,10 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
     return !(Math.abs(z - canal.z) < canalW / 2 + 3 && x > cx0 - 4 && x < cx1 + 4);
   };
   const blocks = new CityBlocks(quality !== "low");
+  const skyline = new Skyline(scene);
+  // The monorail crosses town east-west on this line; nothing is built on it.
+  const RAIL_Z = 18, RAIL_Y = 27;
+  const onRail = (z: number, half: number) => Math.abs(z - RAIL_Z) < half + 6;
   // Frontage: a row of buildings facing the street on each side.
   let n = 0;
   for (const s of [-1, 1]) {
@@ -239,6 +244,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
       const x = f.pos.x + flat.x * off * s, z = f.pos.z + flat.z * off * s;
       const yaw = Math.atan2(flat.x * s, flat.z * s);   // local +Z faces away from the road
       if (!footprintClear(x, z, w, d, yaw, clearOfRoad, WALL + WALL_T + 3.5)) continue;
+      if (onRail(z, Math.max(w, d) / 2)) continue;
       const h = 12 + rnd(n, 3) ** 1.6 * 44 + (rnd(n, 4) < 0.12 ? 30 : 0);
       blocks.add(x, z, w, d, h, yaw, n, true);
     }
@@ -252,12 +258,38 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
       const x = gx + (rnd(n, 5) - 0.5) * 8, z = gz + (rnd(n, 6) - 0.5) * 8;
       const w = 14 + rnd(n, 7) * 10, d = 14 + rnd(n, 8) * 10;
       if (!footprintClear(x, z, w, d, 0, clearOfRoad, WALL + WALL_T + 30)) continue;
+      if (onRail(z, Math.max(w, d) / 2)) continue;
       const far = Math.hypot(x - center.x, z - center.z);
+      // Every so often, a signature skyscraper instead of a plain block.
+      if (quality !== "low" && rnd(n, 12) < 0.34 && footprintClear(x, z, 26, 26, 0, clearOfRoad, WALL + WALL_T + 34) && !onRail(z, 14)) {
+        const size = 18 + rnd(n, 13) * 8;
+        const ht = 110 + rnd(n, 14) ** 0.8 * 120 + Math.min(40, far * 0.1);
+        const face = Math.atan2(center.x - x, center.z - z);
+        skyline.tower(x, z, size, ht, n, face);
+        continue;
+      }
       const h = 18 + rnd(n, 10) ** 1.4 * 60 + Math.min(40, far * 0.08);
       blocks.add(x, z, w, d, h, (rnd(n, 11) < 0.5 ? 0 : Math.PI / 2), n, false);
     }
   }
   blocks.build(scene);
+  skyline.build();
+  const train = monorail(scene, minX - 220, maxX + 220, RAIL_Z, RAIL_Y, (x, z) => clearOfRoad(x, z, WALL + WALL_T + 4));
+  const traffic = skyTraffic(scene, center, quality === "low" ? 10 : 26);
+
+  // Zebra crossings on the approach to each corner.
+  const zebraTex = T.stripeTex("#e9ecf5", "rgba(0,0,0,0)", 8);
+  zebraTex.center.set(0.5, 0.5);
+  zebraTex.rotation = Math.PI / 2;   // bars run with the traffic, alternating across the road
+  const zebraMat = new THREE.MeshStandardMaterial({ map: zebraTex, transparent: true, roughness: 0.6, polygonOffset: true, polygonOffsetFactor: -2 });
+  for (const i of [3, 7, 12, 16]) {
+    track.frame(track.ctrlU[i] - 16, f);
+    const zebra = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_HALF * 2 - 1, 3.2).rotateX(-Math.PI / 2), zebraMat);
+    zebra.position.copy(f.pos).addScaledVector(f.up, 0.025);
+    zebra.rotation.y = Math.atan2(f.tan.x, f.tan.z);
+    zebra.receiveShadow = true;
+    scene.add(zebra);
+  }
 
   // Landmark: the Dlicom tower at the top of the boulevard, crowned with a
   // giant sign you drive straight at off the start line.
@@ -369,7 +401,8 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
 
   mergeStatic(scene, takeStatic(), true);
 
-  return { sun: moon, gateLamps, sky, water, balloons: [], spinners, flags: [], center, weather: quality === "low" ? undefined : drizzle(scene) };
+  return { sun: moon, gateLamps, sky, water, balloons: [], spinners, flags: [], center, weather: quality === "low" ? undefined : drizzle(scene),
+    animate: (t: number) => { skyline.animate(t); train.update(t); traffic.update(t); } };
 }
 
 /**
@@ -497,8 +530,18 @@ function footprintClear(x: number, z: number, w: number, d: number, yaw: number,
 class CityBlocks {
   /** Rooftop tanks and antennas; skipped on phones. */
   constructor(private detail: boolean) {}
-  private facades = [0, 1, 2, 3].map((v) => {
-    const { map, glow, rough } = T.facadeTex(v);
+  private facades = [0, 1, 2, 3, 4, 5, 6, 7].map((v) => {
+    // Four punched-window facades and four glass curtain walls.
+    const { map, glow, rough } = v < 4 ? T.facadeTex(v) : T.curtainTex(v - 4);
+    if (v >= 4) {
+      return {
+        mat: grounded(new THREE.MeshStandardMaterial({
+          map, emissive: "#ffffff", emissiveMap: glow, emissiveIntensity: 1.1,
+          roughness: 1, roughnessMap: rough, metalness: 0.65, envMapIntensity: 1.6,
+        })),
+        geos: [] as THREE.BufferGeometry[],
+      };
+    }
     return {
       mat: grounded(new THREE.MeshStandardMaterial({
         map, emissive: "#ffffff", emissiveMap: glow, emissiveIntensity: 1.0,
@@ -542,7 +585,7 @@ class CityBlocks {
       if (Math.abs(nrm.getY(k)) > 0.5) uv.setXY(k, 0, 0);
       else uv.setXY(k, (uv.getX(k) * side) / 14, (uv.getY(k) * h) / 16);
     }
-    const v = Math.floor(rnd(seed, 20) * 4);
+    const v = rnd(seed, 19) < 0.35 ? 4 + Math.floor(rnd(seed, 20) * 4) : Math.floor(rnd(seed, 20) * 4);
     // Tall towers step back near the top, like real ones.
     const setback = h > 34 && rnd(seed, 40) < 0.7;
     const hb = setback ? Math.round(h * (0.62 + rnd(seed, 41) * 0.15)) : h;
