@@ -983,16 +983,9 @@ export function rimTex(spoke: string, cap: string) {
   const S = 256;
   const [c, g] = canvas(S, S);
   const R = S / 2;
-  g.fillStyle = "#1a1c24";
-  g.fillRect(0, 0, S, S);
-  // Brake disc glimpsed between the spokes.
-  g.strokeStyle = "#5b5f6e";
-  g.lineWidth = 3;
-  for (let r = 40; r < 100; r += 9) {
-    g.beginPath();
-    g.arc(R, R, r, 0, Math.PI * 2);
-    g.stroke();
-  }
+  // Transparent between the spokes: the brake disc and caliper modelled
+  // behind the rim show through.
+  g.clearRect(0, 0, S, S);
   // Spokes.
   for (let i = 0; i < 6; i++) {
     g.save();

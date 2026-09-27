@@ -507,7 +507,10 @@ export class KartModel {
     const tyreMat = new THREE.MeshStandardMaterial({ map: tyreTex, roughness: 0.78 });
     const rimT = T.rimTex(L.driver === "custodian" ? "#3a3f52" : "#e6eaf5", L.trim);
     this.rimTexture = rimT;
-    const rimMat = new THREE.MeshStandardMaterial({ map: rimT, roughness: 0.3, metalness: 0.45 });
+    const rimMat = new THREE.MeshStandardMaterial({ map: rimT, roughness: 0.3, metalness: 0.45, alphaTest: 0.5, side: THREE.DoubleSide });
+    const discMat = plastic("#8d93a6", 0.35, 0.85);
+    const hubMat = plastic("#23263a", 0.5, 0.4);
+    const caliperMat = plastic(L.driver === "custodian" ? L.glow : L.trim, 0.3, 0.3);
     const mk = (x: number, z: number, r: number, w: number, front: boolean) => {
       const holder = front ? new THREE.Group() : c;
       const o = front ? new THREE.Vector3() : new THREE.Vector3(x, r, z);
@@ -517,7 +520,12 @@ export class KartModel {
         this.steerGroups.push(holder);
       }
       add(holder, tyreGeo(r, w), tyreMat, o.x, o.y, o.z).rotation.z = Math.PI / 2;
+      // Inside the wheel: a dark well, a drilled disc and the caliper.
+      add(holder, cached(`well${r}`, () => new THREE.CylinderGeometry(r * 0.63, r * 0.63, w * 0.6, 24)), hubMat, o.x, o.y, o.z, false).rotation.z = Math.PI / 2;
       for (const sd of [1, -1]) {
+        const disc = add(holder, cached(`disc${r}`, () => new THREE.CylinderGeometry(r * 0.5, r * 0.5, 0.03, 28)), discMat, o.x + sd * (w * 0.5 - 0.045), o.y, o.z, false);
+        disc.rotation.z = Math.PI / 2;
+        add(holder, rbox(0.06, r * 0.34, r * 0.22, 0.02), caliperMat, o.x + sd * (w * 0.5 - 0.075), o.y + r * 0.33, o.z - r * 0.2, false).rotation.x = 0.5;
         const f = add(holder, cached(`rimface${r}`, () => new THREE.CircleGeometry(r * 0.64, 24)), rimMat, o.x + sd * w * 0.5, o.y, o.z, false);
         f.rotation.y = (sd * Math.PI) / 2;
         const lip = add(holder, cached(`lip${r}`, () => new THREE.TorusGeometry(r * 0.64, 0.025, 8, 28)), chromeM, o.x + sd * w * 0.49, o.y, o.z, false);
