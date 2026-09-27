@@ -8,8 +8,6 @@ import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
  */
 const SOURCES = {
   studio: () => import("@pmndrs/assets/hdri/studio.exr.js"),
-  sunset: () => import("@pmndrs/assets/hdri/sunset.exr.js"),
-  night: () => import("@pmndrs/assets/hdri/night.exr.js"),
 } as const;
 export type HdriName = keyof typeof SOURCES;
 
