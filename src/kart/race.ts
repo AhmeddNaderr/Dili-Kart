@@ -422,6 +422,7 @@ export class DiliCart {
     const make = (i: number, look: M.KartLook, slot: number) => {
       const model = new M.KartModel(look, shadowTex);
       this.scene.add(model.root, model.shadowRoot);
+      if (this.trackId === "town") model.lightsOn();
       const g = gridSlot(slot);
       const r: Racer = {
         i, player: i === 0, model,

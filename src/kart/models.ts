@@ -328,6 +328,46 @@ export class KartModel {
     }
   }
 
+  /**
+   * Night racing: soft headlight beams, a pool of light on the road ahead,
+   * and brighter tail lights. Neon Town turns these on.
+   */
+  lightsOn() {
+    const beamMat = texMat(`beam${this.look.glow}`, () => {
+      const c = document.createElement("canvas");
+      c.width = 4; c.height = 128;
+      const g = c.getContext("2d")!;
+      const gr = g.createLinearGradient(0, 0, 0, 128);
+      gr.addColorStop(0, "rgba(255,255,255,0.9)");
+      gr.addColorStop(0.35, "rgba(255,255,255,0.3)");
+      gr.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = gr;
+      g.fillRect(0, 0, 4, 128);
+      const t = new THREE.CanvasTexture(c);
+      return new THREE.MeshBasicMaterial({
+        map: t, color: new THREE.Color(this.look.driver === "custodian" ? this.look.glow : "#dff1ff").multiplyScalar(0.55),
+        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+      });
+    });
+    // Cone with its apex at the lamp, opening forward and a little down.
+    const coneGeo = cached("beamCone", () => new THREE.ConeGeometry(1.1, 6, 20, 1, true).translate(0, -3, 0).rotateX(-Math.PI / 2 + 0.1));
+    for (const s of [1, -1]) {
+      const b = new THREE.Mesh(coneGeo, beamMat);
+      b.position.set(0.3 * s, 0.53, 1.35);
+      b.renderOrder = 2;
+      b.frustumCulled = false;
+      this.body.add(b);
+    }
+    const pool = new THREE.Mesh(cached("beamPool", () => new THREE.PlaneGeometry(4.2, 7).rotateX(-Math.PI / 2)), texMat(`pool${this.look.glow}`, () => new THREE.MeshBasicMaterial({
+      map: T.blobTex("rgba(255,255,255,.75)", "rgba(255,255,255,0)"),
+      color: new THREE.Color(this.look.driver === "custodian" ? this.look.glow : "#e8f4ff").multiplyScalar(0.5),
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, toneMapped: false,
+    })));
+    pool.position.set(0, 0.07, 5.2);
+    pool.renderOrder = 1;
+    this.shadowRoot.add(pool);
+  }
+
   /** Show or hide the fine detail (suspension, springs, harness...). */
   setDetail(on: boolean) {
     this.detail.visible = on;
