@@ -3,14 +3,15 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { DRIVE_LIMIT, EDGE, Track, laneX, newFrame, type Frame } from "./track";
+import { DRIVE_LIMIT, EDGE, TRACKS, Track, laneX, newFrame, type Frame } from "./track";
+import { buildTown } from "./town";
 import { buildWorld, crowdTime, gridSlot, type Quality, type World } from "./world";
 import * as M from "./models";
 import * as T from "./textures";
 import { Confetti, Particles } from "./fx";
 import { RaceAudio } from "./sound";
 import { Hud, ITEM_NAME, type ItemKind } from "./hud";
-import type { CharId, SkinId } from "../../shared/rules";
+import { TRACK_INFO, type CharId, type SkinId, type TrackId } from "../../shared/rules";
 import { MASCOT } from "./mascot";
 import { tickNature } from "./nature";
 import { ContactAO, gradePass } from "./grade";
@@ -29,7 +30,6 @@ const TOP = 24;               // m/s with the gas held
 const CRUISE = 0.66;          // fraction of TOP when you let go of the gas
 const BOOST_TOP = 34;
 const CENTRIFUGAL = 0.3;
-const PAR_TIME = 150;
 const RIVALS = 7;
 
 export type TallyKey = "coins" | "turbos" | "stunts" | "passes" | "takedowns" | "laps";
@@ -46,6 +46,8 @@ export interface RaceResult {
   tricks: number;
   finishBonus: number;
   timeBonus: number;
+  laps: number;
+  track: TrackId;
 }
 
 export interface RaceHooks {
@@ -72,6 +74,8 @@ export interface MountOptions {
   trailer?: boolean;
   /** The player's equipped shop skin. */
   skin?: SkinId | null;
+  /** Which track to race on. */
+  track?: TrackId;
 }
 
 type ShotKind = "heli" | "chase" | "front" | "trackside" | "jump" | "low";
@@ -229,6 +233,8 @@ export class DiliCart {
 
   private char: CharId = "dili";
   private skin: SkinId | null = null;
+  private trackId: TrackId = "circuit";
+  private laps = LAPS;
   private attract = false;
   private trailer = false;
   /** Trailer: films the frame instead of the game's own cameras; returns the fov. */
@@ -253,6 +259,9 @@ export class DiliCart {
     this.hooks = hooks;
     this.char = char;
     this.skin = opts.skin ?? null;
+    this.trackId = opts.track ?? "circuit";
+    if (this.trackId !== "circuit") this.track = new Track(TRACKS[this.trackId]);
+    this.laps = TRACK_INFO[this.trackId].laps;
     this.attract = opts.attract === true;
     this.trailer = opts.trailer === true;
     if (this.attract || this.trailer) {
@@ -263,7 +272,7 @@ export class DiliCart {
       resume: () => this.setPaused(false),
       restart: () => this.hooks.onRestart(),
       quit: () => this.hooks.onQuit(),
-    });
+    }, { name: TRACK_INFO[this.trackId].name, laps: this.laps, night: this.trackId === "town" });
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
     // The attract backdrop sits behind the menus, so it can afford fewer pixels.
@@ -310,7 +319,10 @@ export class DiliCart {
     ]);
     if (!this.alive) return;
 
-    this.world = buildWorld(this.scene, this.renderer, this.track, img.complete && img.naturalWidth ? img : null, this.quality);
+    const portraitImg = img.complete && img.naturalWidth ? img : null;
+    this.world = this.trackId === "town"
+      ? buildTown(this.scene, this.renderer, this.track, portraitImg, this.quality)
+      : buildWorld(this.scene, this.renderer, this.track, portraitImg, this.quality);
     this.scene.add(this.sparks.points, this.puffs.points, this.confetti.mesh);
     this.buildRacers();
     this.buildPickups();
@@ -433,66 +445,18 @@ export class DiliCart {
 
   /** Coins, item boxes, boost pads and hazards, all placed by landmark. */
   private buildPickups() {
-    const c = this.track.ctrlU;
     const tr = this.track;
     const coin = (kind: T.CoinKind, u: number, lat: number, h = 1.15) =>
       this.coins.push({ kind, u: tr.wrap(u), lat, h, alive: true, respawn: 0, pop: 0, phase: Math.random() * 6 });
-
-    // Main straight: two rails of coins.
-    for (let k = 0; k < 5; k++) {
-      coin("dli", tr.startU + 46 + k * 5, laneX(0));
-      coin("dli", tr.startU + 46 + k * 5, laneX(3));
-    }
-    // Top hairpin: an arc on the inside line, with an ETH at the apex.
-    for (let k = 0; k < 6; k++) {
-      const u = c[3] + 6 + k * ((c[5] - c[3]) / 6);
-      coin(k === 3 ? "eth" : "dli", u, 4.8);
-    }
-    // BTC on the outside of the hairpin exit — you have to commit to it.
-    coin("btc", c[6] - 4, -6.8);
-    // Back straight, lined up for the jump.
-    for (let k = 0; k < 4; k++) coin("dli", c[7] - 18 + k * 6, laneX(1) + 1);
-    // Over the gap: coins along the glide arc, BTC at the top.
-    const lipY = tr.point(tr.lipU, 0, 0).y + 0.9;
-    [[8, "dli"], [15, "eth"], [22, "btc"], [30, "eth"], [38, "dli"]].forEach(([dx, k]) => {
-      const x = dx as number;
-      const t = x / 24;
-      const y = lipY + 7.5 * t - 5 * t * t;
-      const u = tr.lipU + x;
-      const road = tr.point(u, 0, 0).y;
-      coin(k as T.CoinKind, u, 0, Math.max(1.4, y - road + 0.4));
-    });
-    // S-bends: coins weaving along the ideal line.
-    for (let k = 0; k < 8; k++) {
-      const u = c[14] + k * ((c[17] - c[14]) / 8);
-      coin(k === 4 ? "eth" : "dli", u, Math.sin(k * 0.9) * 5);
-    }
-    // Bottom hairpin exit: two ETH on the edge of the curb.
-    coin("eth", c[19] - 10, -8.2);
-    coin("eth", c[19] - 4, -8.2);
-
-    // Instanced coin meshes, one per kind.
-    for (const kind of ["dli", "eth", "btc"] as T.CoinKind[]) {
-      const n = this.coins.filter((x) => x.kind === kind).length;
-      const im = new THREE.InstancedMesh(M.coinGeometry(kind), M.coinMaterials(kind), n);
-      im.castShadow = true;
-      im.frustumCulled = false;
-      this.scene.add(im);
-      this.coinMesh.set(kind, im);
-    }
-
-    // Item box rows: one per lane.
     const face = T.itemFaceTex();
     const spark = T.sparkleTex();
-    for (const u of [tr.startU + 120, c[10] + 18, c[16] - 12]) {
+    const boxRow = (u: number) => {
       for (let l = 0; l < 4; l++) {
         const obj = M.itemBox(face, spark);
         this.scene.add(obj);
         this.boxes.push({ u: tr.wrap(u), lat: laneX(l), obj, alive: true, respawn: 0, phase: l * 0.7 });
       }
-    }
-
-    // Boost pads: before the jump (two), hairpin exit, S entry, onto the straight.
+    };
     const chev = T.chevronTex();
     const frame = T.padFrameTex();
     const pad = (u: number, lat: number) => {
@@ -502,12 +466,6 @@ export class DiliCart {
       this.scene.add(g);
       this.pads.push({ u: tr.wrap(u), lat, tex: g.userData.chev as THREE.Texture });
     };
-    pad(c[7] + 4, laneX(1));
-    pad(c[7] + 4, laneX(2));
-    pad(c[6] + 12, laneX(2));
-    pad(c[12] + 8, laneX(1));
-    pad(c[19] + 6, laneX(2));
-
     // Hazards — always with an obvious free lane.
     const stripes = T.stripeTex("#ff7a1a", "#ffffff", 4);
     const hz = (kind: Hazard["kind"], u: number, lat: number) => {
@@ -521,32 +479,122 @@ export class DiliCart {
       this.hazards.push(h);
       return h;
     };
-    hz("bollard", c[2] + 14, laneX(0));
-    hz("bollard", c[2] + 14, laneX(1));
-    hz("bollard", c[11] + 4, laneX(3));
-    hz("bollard", c[11] + 4, laneX(2));
-    hz("bollard", c[15] + 2, laneX(1) + 0.6);
-    for (let k = 0; k < 3; k++) hz("cone", c[13] + 6 + k * 2.2, laneX(3) + (k - 1) * 1.1);
-    for (let k = 0; k < 3; k++) hz("cone", c[4] + 3 + k * 2.2, laneX(0) - 0.3 + (k % 2) * 0.8);
     const ringMat = new THREE.MeshBasicMaterial({
       color: "#ff3355", transparent: true, opacity: 0.55,
       depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3,
     });
     const ringGeo = new THREE.RingGeometry(1.1, 1.55, 32).rotateX(-Math.PI / 2);
-    const addRing = (h: Hazard) => {
+    const drone = (u: number, span: number, phase = 0) => {
+      const h = hz("drone", u, 0);
       h.ring = new THREE.Mesh(ringGeo, ringMat);
       this.scene.add(h.ring);
+      h.span = span;
+      h.phase += phase;
+      return h;
     };
-    const d1 = hz("drone", c[7] - 34, 0);
-    addRing(d1);
-    d1.span = 6.5;
-    const d2 = hz("drone", c[10] + 44, 0);
-    d2.span = 6.5;
-    d2.phase += Math.PI;
-    addRing(d2);
-    const d3 = hz("drone", c[18] + 6, 0);
-    d3.span = 5.5;
-    addRing(d3);
+    // Over the gap: coins along the glide arc, BTC at the top.
+    const glideCoins = () => {
+      const lipY = tr.point(tr.lipU, 0, 0).y + 0.9;
+      [[8, "dli"], [15, "eth"], [22, "btc"], [30, "eth"], [38, "dli"]].forEach(([dx, k]) => {
+        const x = dx as number;
+        const t = x / 24;
+        const y = lipY + 7.5 * t - 5 * t * t;
+        const u = tr.lipU + x;
+        const road = tr.point(u, 0, 0).y;
+        coin(k as T.CoinKind, u, 0, Math.max(1.4, y - road + 0.4));
+      });
+    };
+
+    const c = tr.ctrlU;
+    if (this.trackId === "town") {
+      // Boulevard: two rails of coins, then a row of boxes.
+      for (let k = 0; k < 5; k++) {
+        coin("dli", tr.startU + 36 + k * 5, laneX(0));
+        coin("dli", tr.startU + 36 + k * 5, laneX(3));
+      }
+      boxRow(tr.startU + 80);
+      // First corner: an arc on the inside with an ETH at the apex.
+      for (let k = 0; k < 5; k++) coin(k === 2 ? "eth" : "dli", c[3] + k * ((c[4] - c[3]) / 5), 5);
+      // High street: a zigzag, and a BTC tucked against the far curb.
+      for (let k = 0; k < 7; k++) coin("dli", c[5] + k * 6, (k % 2 ? 1 : -1) * 4.2);
+      coin("btc", c[6] + 6, -7.6);
+      boxRow(c[6] - 8);
+      // The ramp: coins up the middle, boost pads, and over the canal.
+      for (let k = 0; k < 4; k++) coin("dli", c[8] - 14 + k * 5, laneX(2) - 0.6);
+      pad(c[8] + 6, laneX(1));
+      pad(c[8] + 6, laneX(2));
+      glideCoins();
+      // Waterfront: ETH on the curb edge.
+      coin("eth", c[11] + 4, 8.2);
+      coin("eth", c[11] + 10, 8.2);
+      pad(c[12] + 10, laneX(1));
+      // Market street: weave along the racing line.
+      for (let k = 0; k < 8; k++) coin(k === 4 ? "eth" : "dli", c[13] + k * ((c[16] - c[13]) / 8), Math.sin(k * 0.9) * 5);
+      boxRow(c[14] + 4);
+      coin("btc", c[16] + 4, 7.6);
+      pad(c[17] + 4, laneX(2));
+      // Hazards.
+      hz("bollard", c[2] - 8, laneX(0));
+      hz("bollard", c[2] - 8, laneX(1));
+      for (let k = 0; k < 3; k++) hz("cone", c[5] - 6 + k * 2.2, laneX(3) + (k - 1) * 1.1);
+      hz("bollard", c[11] + 16, laneX(3));
+      hz("bollard", c[11] + 16, laneX(2));
+      for (let k = 0; k < 3; k++) hz("cone", c[15] + 3 + k * 2.2, laneX(0) - 0.3 + (k % 2) * 0.8);
+      drone(c[7] - 16, 6.5);
+      drone(c[13] + 10, 6.5, Math.PI);
+      drone(c[17] - 6, 5.5);
+    } else {
+      // Main straight: two rails of coins.
+      for (let k = 0; k < 5; k++) {
+        coin("dli", tr.startU + 46 + k * 5, laneX(0));
+        coin("dli", tr.startU + 46 + k * 5, laneX(3));
+      }
+      // Top hairpin: an arc on the inside line, with an ETH at the apex.
+      for (let k = 0; k < 6; k++) {
+        const u = c[3] + 6 + k * ((c[5] - c[3]) / 6);
+        coin(k === 3 ? "eth" : "dli", u, 4.8);
+      }
+      // BTC on the outside of the hairpin exit — you have to commit to it.
+      coin("btc", c[6] - 4, -6.8);
+      // Back straight, lined up for the jump.
+      for (let k = 0; k < 4; k++) coin("dli", c[7] - 18 + k * 6, laneX(1) + 1);
+      glideCoins();
+      // S-bends: coins weaving along the ideal line.
+      for (let k = 0; k < 8; k++) {
+        const u = c[14] + k * ((c[17] - c[14]) / 8);
+        coin(k === 4 ? "eth" : "dli", u, Math.sin(k * 0.9) * 5);
+      }
+      // Bottom hairpin exit: two ETH on the edge of the curb.
+      coin("eth", c[19] - 10, -8.2);
+      coin("eth", c[19] - 4, -8.2);
+      for (const u of [tr.startU + 120, c[10] + 18, c[16] - 12]) boxRow(u);
+      // Boost pads: before the jump (two), hairpin exit, S entry, onto the straight.
+      pad(c[7] + 4, laneX(1));
+      pad(c[7] + 4, laneX(2));
+      pad(c[6] + 12, laneX(2));
+      pad(c[12] + 8, laneX(1));
+      pad(c[19] + 6, laneX(2));
+      hz("bollard", c[2] + 14, laneX(0));
+      hz("bollard", c[2] + 14, laneX(1));
+      hz("bollard", c[11] + 4, laneX(3));
+      hz("bollard", c[11] + 4, laneX(2));
+      hz("bollard", c[15] + 2, laneX(1) + 0.6);
+      for (let k = 0; k < 3; k++) hz("cone", c[13] + 6 + k * 2.2, laneX(3) + (k - 1) * 1.1);
+      for (let k = 0; k < 3; k++) hz("cone", c[4] + 3 + k * 2.2, laneX(0) - 0.3 + (k % 2) * 0.8);
+      drone(c[7] - 34, 6.5);
+      drone(c[10] + 44, 6.5, Math.PI);
+      drone(c[18] + 6, 5.5);
+    }
+
+    // Instanced coin meshes, one per kind.
+    for (const kind of ["dli", "eth", "btc"] as T.CoinKind[]) {
+      const n = this.coins.filter((x) => x.kind === kind).length;
+      const im = new THREE.InstancedMesh(M.coinGeometry(kind), M.coinMaterials(kind), n);
+      im.castShadow = true;
+      im.frustumCulled = false;
+      this.scene.add(im);
+      this.coinMesh.set(kind, im);
+    }
   }
 
   /* ================================================================ */
@@ -810,11 +858,13 @@ export class DiliCart {
       base.clone().addScaledVector(f.tan, fw).addScaledVector(f.side, sd).add(new THREE.Vector3(0, up, 0));
     const gate = tr.point(tr.startU, 0, 0);
     // Swoop over the stands, past the gate, down to Dili's face while he
-    // waves, then round his side into the chase position.
+    // waves, then round his side into the chase position. In town the
+    // street is walled in by buildings, so the swoop comes down the street.
     const chase = this.chaseTarget(p);
+    const town = this.trackId === "town";
     this.introPath = new THREE.CatmullRomCurve3([
-      at(-60, -42, 34, gate),
-      at(16, -28, 15, gate),
+      town ? at(-80, 0, 30, gate) : at(-60, -42, 34, gate),
+      town ? at(16, -7, 13, gate) : at(16, -28, 15, gate),
       at(11, 8, 5),
       at(5.4, 1.8, 2.1),
       at(4.6, -0.9, 2.2),
@@ -925,7 +975,7 @@ export class DiliCart {
   private endRace() {
     const pos = this.lastPos;
     const finishBonus = [1000, 700, 500, 350, 250, 150, 100, 50][pos - 1] ?? 50;
-    const timeBonus = Math.max(0, Math.round((PAR_TIME - this.raceT) * 8));
+    const timeBonus = Math.max(0, Math.round((this.track.def.par - this.raceT) * 8));
     const r: RaceResult = {
       tally: { ...this.tally },
       score: this.score + finishBonus + timeBonus,
@@ -938,6 +988,8 @@ export class DiliCart {
       tricks: this.tricks,
       finishBonus,
       timeBonus,
+      laps: this.laps,
+      track: this.trackId,
     };
     this.result = r;
     this.hud.racing(false);
@@ -1035,15 +1087,15 @@ export class DiliCart {
     }
 
     // Laps.
-    const lapNow = Math.min(LAPS, Math.floor(p.dist / this.track.length) + 1);
-    if (p.dist >= LAPS * this.track.length && !p.finished) {
+    const lapNow = Math.min(this.laps, Math.floor(p.dist / this.track.length) + 1);
+    if (p.dist >= this.laps * this.track.length && !p.finished) {
       this.closeLap();
       this.finishRace();
     } else if (lapNow > this.lap && p.dist > 0) {
       this.closeLap();
       this.lap = lapNow;
       this.addScore(100, "laps");
-      if (lapNow === LAPS) {
+      if (lapNow === this.laps) {
         this.hud.banner("FINAL LAP!", "", 1900);
         this.audio.lap();
         this.audio.hurry();
@@ -1374,7 +1426,7 @@ export class DiliCart {
       }
     }
 
-    if (!r.finished && r.dist >= LAPS * tr.length) r.finished = true;
+    if (!r.finished && r.dist >= this.laps * tr.length) r.finished = true;
   }
 
   private dropGoo(r: Racer) {
@@ -2093,7 +2145,7 @@ export class DiliCart {
     hud.score(this.score);
     hud.coins(this.coinCount);
     hud.position(this.lastPos);
-    hud.lap(Math.min(LAPS, this.lap), LAPS);
+    hud.lap(Math.min(this.laps, this.lap), this.laps);
     hud.clock(this.raceT);
     for (const r of this.racers) {
       const w = r.model.root.position;

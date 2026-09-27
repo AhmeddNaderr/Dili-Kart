@@ -226,7 +226,7 @@ export function billboards(scene: THREE.Scene, track: Track, specs: BoardSpec[],
  * Street lamps behind the walls, leaning out over the road, each throwing a
  * warm pool of light onto the tarmac below.
  */
-export function streetLamps(scene: THREE.Scene, track: Track, every: number, wall: number, roadHalf: number, keep: (o: THREE.Object3D) => void, skip: (u: number) => boolean) {
+export function streetLamps(scene: THREE.Scene, track: Track, every: number, wall: number, roadHalf: number, keep: (o: THREE.Object3D) => void, skip: (u: number) => boolean, poolOpacity = 0.32) {
   const f = newFrame();
   const pole = new THREE.MeshStandardMaterial({ color: "#2a2f45", roughness: 0.4, metalness: 0.6 });
   const head = new THREE.MeshBasicMaterial({ color: new THREE.Color("#ffe3a3").multiplyScalar(2.2), toneMapped: false });
@@ -285,7 +285,7 @@ export function streetLamps(scene: THREE.Scene, track: Track, every: number, wal
   g2.fillRect(0, 0, 128, 128);
   const t = new THREE.CanvasTexture(c);
   const pools = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({
-    map: t, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false,
+    map: t, transparent: true, opacity: poolOpacity, blending: THREE.AdditiveBlending, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, side: THREE.DoubleSide,
   }));
   pools.renderOrder = 1;

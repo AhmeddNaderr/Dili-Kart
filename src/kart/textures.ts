@@ -1136,3 +1136,225 @@ export function stoneTex() {
   speckle(g, S, S, 1800, ["rgba(255,255,255,.08)", "rgba(0,0,0,.12)"], 9);
   return tex(c);
 }
+
+/* ------------------------------------------------------------------ */
+/* Neon Town                                                           */
+/* ------------------------------------------------------------------ */
+
+/** Square paving slabs with dark joints. */
+export function pavingTex() {
+  const S = 256;
+  const [c, g] = canvas(S, S);
+  g.fillStyle = "#7e8398";
+  g.fillRect(0, 0, S, S);
+  speckle(g, S, S, 4000, ["#737890", "#8a8fa4", "#6c7188"], 21);
+  g.strokeStyle = "#3b3f52";
+  g.lineWidth = 4;
+  for (let i = 0; i <= 4; i++) {
+    g.beginPath(); g.moveTo(i * 64, 0); g.lineTo(i * 64, S); g.stroke();
+    g.beginPath(); g.moveTo(0, i * 64); g.lineTo(S, i * 64); g.stroke();
+  }
+  return tex(c);
+}
+
+/**
+ * Roughness for rain-soaked tarmac (green channel): mostly damp, with dark
+ * glassy puddles that turn into mirrors for the neon.
+ */
+export function wetTex() {
+  const S = 512;
+  const [c, g] = canvas(S, S);
+  g.fillStyle = "rgb(0,120,0)";
+  g.fillRect(0, 0, S, S);
+  const r = rand(77);
+  for (let i = 0; i < 26; i++) {
+    const x = r() * S, y = r() * S, rad = 20 + r() * 70;
+    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+    gr.addColorStop(0, "rgba(0,52,0,1)");
+    gr.addColorStop(0.7, "rgba(0,70,0,.7)");
+    gr.addColorStop(1, "rgba(0,120,0,0)");
+    g.fillStyle = gr;
+    g.beginPath();
+    g.ellipse(x, y, rad, rad * (0.4 + r() * 0.5), r() * 3, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Streaky drying marks along the lanes.
+  g.globalAlpha = 0.25;
+  for (let i = 0; i < 60; i++) {
+    g.fillStyle = r() < 0.5 ? "rgb(0,170,0)" : "rgb(0,60,0)";
+    g.fillRect(r() * S, r() * S, 2 + r() * 5, 30 + r() * 120);
+  }
+  g.globalAlpha = 1;
+  const t = tex(c, true, false);
+  return t;
+}
+
+/** Concrete jersey barrier with hazard chevrons along the foot. */
+export function barrierTex() {
+  const W = 256, H = 64;
+  const [c, g] = canvas(W, H);
+  g.fillStyle = "#b8bccb";
+  g.fillRect(0, 0, W, H);
+  speckle(g, W, H, 1500, ["#a9adbd", "#c6cad8", "#9ea2b3"], 31);
+  g.fillStyle = "#23263a";
+  g.fillRect(0, H - 16, W, 16);
+  g.fillStyle = "#ffd84a";
+  for (let x = -16; x < W; x += 32) {
+    g.beginPath();
+    g.moveTo(x, H); g.lineTo(x + 12, H - 16); g.lineTo(x + 24, H - 16); g.lineTo(x + 12, H);
+    g.fill();
+  }
+  g.fillStyle = "rgba(0,0,0,.25)";
+  for (let x = 0; x < W; x += 64) g.fillRect(x, 0, 2, H - 16);
+  return tex(c);
+}
+
+/**
+ * Tower facades: a colour map (cladding, mullions, dark glass) and a glow
+ * map with a scatter of lit windows, warm and cool. One tile is a 12 m
+ * square: four floors of four bays.
+ */
+export function facadeTex(variant: number) {
+  const S = 512;
+  const [c, g] = canvas(S, S);
+  const [c2, g2] = canvas(S, S);
+  const clad = ["#23273d", "#3a2c3e", "#1f2c3a", "#34323f"][variant];
+  const glassC = ["#0b1130", "#140d22", "#0a1822", "#12121d"][variant];
+  g.fillStyle = clad;
+  g.fillRect(0, 0, S, S);
+  speckle(g, S, S, 3000, ["rgba(255,255,255,.04)", "rgba(0,0,0,.12)"], 50 + variant);
+  g2.fillStyle = "#000";
+  g2.fillRect(0, 0, S, S);
+  const r = rand(100 + variant * 7);
+  const rows = variant === 1 ? 5 : 4, cols = variant === 0 ? 8 : variant === 3 ? 5 : 6;
+  const cw = S / cols, rh = S / rows;
+  // Floor slabs.
+  g.fillStyle = "rgba(255,255,255,.07)";
+  for (let y = 0; y < rows; y++) g.fillRect(0, y * rh + rh - 10, S, 6);
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const inset = variant === 0 ? 3 : variant === 1 ? 14 : 9;
+      const px = x * cw + inset, py = y * rh + 12, w = cw - inset * 2, h = rh - 30;
+      g.fillStyle = glassC;
+      g.fillRect(px, py, w, h);
+      g.fillStyle = "rgba(150,170,255,.07)";
+      g.beginPath();
+      g.moveTo(px, py + h); g.lineTo(px + w * 0.5, py); g.lineTo(px + w * 0.75, py); g.lineTo(px + w * 0.25, py + h);
+      g.fill();
+      const k = r();
+      if (k < 0.3) {
+        const warm = k < 0.22;
+        const col = warm ? (r() < 0.6 ? "#ffc873" : "#ffe0a6") : (r() < 0.5 ? "#7fc4ff" : "#b89cff");
+        const a = 0.35 + r() * 0.5;
+        g2.globalAlpha = a;
+        const gr = g2.createLinearGradient(0, py, 0, py + h);
+        gr.addColorStop(0, col);
+        gr.addColorStop(1, "#000");
+        g2.fillStyle = col;
+        g2.fillRect(px, py, w, h);
+        g2.globalAlpha = a * 0.8;
+        g2.fillStyle = gr;
+        g2.fillRect(px, py + h * 0.5, w, h * 0.5);
+        g2.globalAlpha = 1;
+        g2.fillStyle = "rgba(0,0,0,.6)";
+        const kind = r();
+        if (kind < 0.35) for (let b = 0; b < h; b += 6) g2.fillRect(px, py + b, w, 2);
+        else if (kind < 0.6) { g2.fillRect(px + w * 0.25, py + h * 0.4, w * 0.18, h * 0.6); g2.fillRect(px + w * 0.21, py + h * 0.3, w * 0.26, h * 0.14); }
+        else if (kind < 0.8) g2.fillRect(px, py, w * 0.5, h);
+        g.fillStyle = col;
+        g.globalAlpha = 0.25;
+        g.fillRect(px, py, w, h);
+        g.globalAlpha = 1;
+      }
+      // Mullion and sill.
+      g.fillStyle = "rgba(0,0,0,.35)";
+      g.fillRect(px + w / 2 - 1, py, 2, h);
+      g.fillStyle = "rgba(255,255,255,.1)";
+      g.fillRect(px - 2, py + h, w + 4, 3);
+    }
+  }
+  if (variant === 3) {
+    // Vertical fins.
+    g.fillStyle = "rgba(255,255,255,.08)";
+    for (let x = 0; x < cols; x++) g.fillRect(x * cw - 3, 0, 6, S);
+  }
+  return { map: tex(c), glow: tex(c2) };
+}
+
+/** A street-level shopfront: two lit shop windows, each with a neon name. */
+export function shopfrontTex(a: string, b: string, neon: string) {
+  const W = 512, H = 160;
+  const [c, g] = canvas(W, H);
+  g.fillStyle = "#15161f";
+  g.fillRect(0, 0, W, H);
+  [a, b].forEach((name, i) => {
+    const x0 = i * (W / 2) + 8, w = W / 2 - 16;
+    // Sign band.
+    g.fillStyle = "#0b0c14";
+    g.fillRect(x0, 6, w, 42);
+    g.font = "900 30px 'Inter', 'Arial Black', sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.shadowColor = i ? neon : "#ffd28a";
+    g.shadowBlur = 14;
+    g.fillStyle = i ? neon : "#ffe2a8";
+    g.fillText(name, x0 + w / 2, 28);
+    g.shadowBlur = 0;
+    // Warm interior behind glass, with shelves and a door.
+    const gr = g.createLinearGradient(0, 54, 0, H);
+    gr.addColorStop(0, "#ffe6b8");
+    gr.addColorStop(1, "#ffb86b");
+    g.fillStyle = gr;
+    g.fillRect(x0, 54, w, H - 60);
+    g.fillStyle = "rgba(60,30,20,.35)";
+    for (let s = 70; s < H - 10; s += 22) g.fillRect(x0 + 8, s, w * 0.55, 4);
+    g.fillStyle = "#2a1c18";
+    g.fillRect(x0 + w * 0.7, 62, w * 0.22, H - 68);
+    g.strokeStyle = "#0b0c14";
+    g.lineWidth = 4;
+    g.strokeRect(x0, 54, w, H - 60);
+  });
+  return tex(c, false);
+}
+
+/** A neon sign: vertical blade (letters stacked) or a horizontal board. */
+export function bladeSignTex(text: string, neon: string, horizontal = false) {
+  const W = horizontal ? 512 : 96, H = horizontal ? 96 : 384;
+  const [c, g] = canvas(W, H);
+  g.fillStyle = "#0b0c14";
+  g.fillRect(0, 0, W, H);
+  g.strokeStyle = neon;
+  g.lineWidth = 5;
+  g.shadowColor = neon;
+  g.shadowBlur = 12;
+  g.strokeRect(6, 6, W - 12, H - 12);
+  g.fillStyle = "#ffffff";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  if (horizontal) {
+    g.font = "900 italic 58px 'Inter', 'Arial Black', sans-serif";
+    g.fillStyle = neon;
+    g.fillText(text, W / 2, H / 2 + 2);
+    g.shadowBlur = 0;
+    g.fillStyle = "rgba(255,255,255,.85)";
+    g.font = "900 italic 58px 'Inter', 'Arial Black', sans-serif";
+    g.globalAlpha = 0.6;
+    g.fillText(text, W / 2, H / 2 + 2);
+  } else {
+    const letters = text.replace(/\s+/g, "").slice(0, 7).split("");
+    const step = (H - 40) / letters.length;
+    g.font = `900 ${Math.min(56, step * 0.9)}px 'Inter', 'Arial Black', sans-serif`;
+    letters.forEach((ch, i) => {
+      g.fillStyle = neon;
+      g.fillText(ch, W / 2, 24 + step * (i + 0.5));
+      g.shadowBlur = 0;
+      g.globalAlpha = 0.55;
+      g.fillStyle = "#ffffff";
+      g.fillText(ch, W / 2, 24 + step * (i + 0.5));
+      g.globalAlpha = 1;
+      g.shadowBlur = 12;
+    });
+  }
+  g.globalAlpha = 1;
+  return tex(c, false);
+}

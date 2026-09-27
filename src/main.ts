@@ -1,6 +1,6 @@
 import "./style.css";
 import "./ui/console.css";
-import { DiliCart, LAPS, type RaceResult } from "./kart/race";
+import { DiliCart, type RaceResult } from "./kart/race";
 import { buildIntro, greetedThisSession } from "./ui/intro";
 import { filmSeen, playFilm, prepareFilm } from "./ui/film";
 import { dropLoader, finishLoader, progress } from "./ui/loader";
@@ -11,8 +11,8 @@ import { MASCOT } from "./kart/mascot";
 import { sfx, setMuted, isMuted } from "./engine/audio";
 import * as api from "./app/api";
 import {
-  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, SKIN_IDS, SKIN_INFO, TIERS, nextTier, normaliseHandle,
-  type BoardEntry, type CharId, type RaceReply, type SkinId,
+  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, SKIN_IDS, SKIN_INFO, TIERS, TRACK_IDS, TRACK_INFO, isTrackId, nextTier, normaliseHandle,
+  type BoardEntry, type CharId, type RaceReply, type SkinId, type TrackId,
 } from "../shared/rules";
 
 /**
@@ -93,7 +93,14 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 const face = (c: CharId) => portrait(MASCOT[c].head, MASCOT[c].dome, MASCOT[c].mouth);
 /** The player's portrait: a skin driver's if one is in the seat. */
 const faceOf = (p: api.Player) => (p.skin === "quang" || p.skin === "cipher" ? skinPortrait(p.skin) : face(p.char));
-const TRACK_LABEL = "Dili Circuit · 3 laps";
+/** The track picked in the hub, remembered between visits. */
+const TRACK_KEY = "dilicart.track";
+let trackPick: TrackId = (() => { try { const t = localStorage.getItem(TRACK_KEY); return isTrackId(t) ? t : "circuit"; } catch { return "circuit"; } })();
+function setTrack(t: TrackId) {
+  trackPick = t;
+  try { localStorage.setItem(TRACK_KEY, t); } catch { /* storage blocked */ }
+}
+const trackLabel = (t: TrackId) => `${TRACK_INFO[t].name} · ${TRACK_INFO[t].laps} laps`;
 
 const canFullscreen = () => document.fullscreenEnabled === true;
 
@@ -348,6 +355,7 @@ function hub() {
 
   const streak = p.streak >= 2 ? `${p.streak}-day streak · up to 2× points` : "Race daily for up to 2× points";
   const news: [string, string][] = [
+    ["New track: Neon Town · 5 laps at night", "p"],
     ["Dili Circuit · 3 laps · 8 racers", ""],
     ["New: skins in the shop · pay in Dili coins", "y"],
     [streak, "g"],
@@ -397,13 +405,14 @@ function hub() {
           </section>
         </div></div>
         <div class="go-wrap">
+          <div class="tracks" role="radiogroup" aria-label="Track">${TRACK_IDS.map((t) => `<button type="button" class="trk ${t} ${t === trackPick ? "on" : ""}" data-track="${t}" role="radio" aria-checked="${t === trackPick}"><i></i><span><b>${TRACK_INFO[t].name}</b><small>${TRACK_INFO[t].laps} laps · ${t === "town" ? "night" : "dusk"}</small></span></button>`).join("")}</div>
           <button class="launch" id="race" aria-label="Race">
             <span class="launch-ring"></span>
             <span class="launch-body">
               <span class="launch-shine"></span>
               <span class="launch-chev"><i></i><i></i><i></i></span>
               <b>RACE</b>
-              <small>${TRACK_LABEL}</small>
+              <small id="go-track">${trackLabel(trackPick)}</small>
             </span>
           </button>
           <span class="go-label"><kbd>Enter</kbd> to race</span>
@@ -432,6 +441,17 @@ function hub() {
   };
   raceBtn.addEventListener("click", go);
   for (const id of ["#board", "#board2"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); void board("best"); });
+  view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => b.addEventListener("click", () => {
+    const t = b.dataset.track as TrackId;
+    if (t === trackPick) return;
+    sfx.pop();
+    setTrack(t);
+    view.querySelectorAll<HTMLElement>("[data-track]").forEach((x) => {
+      x.classList.toggle("on", x === b);
+      x.setAttribute("aria-checked", String(x === b));
+    });
+    view.querySelector("#go-track")!.textContent = trackLabel(t);
+  }));
   for (const id of ["#shop", "#wallet"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); shop(); });
   view.querySelector("#out")!.addEventListener("click", async () => {
     sfx.ui();
@@ -683,7 +703,7 @@ function race() {
     onEnd: (r) => void results(stageEl, r),
     onRestart: () => { sfx.ui(); race(); },
     onQuit: () => { sfx.ui(); hub(); },
-  }, p.char, { skin: p.skin });
+  }, p.char, { skin: p.skin, track: trackPick });
 }
 
 /** End-of-race card, over the still-running finish camera. */
@@ -696,7 +716,7 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
     ["Stunts", r.tally.stunts, `${r.tricks} tricks`],
     ["Overtakes", r.tally.passes, ""],
     ["Takedowns", r.tally.takedowns, r.takedowns ? `${r.takedowns} Custodians` : ""],
-    ["Laps", r.tally.laps, `${LAPS} laps`],
+    ["Laps", r.tally.laps, `${r.laps} laps`],
     [`${ORD(r.position)} place`, r.finishBonus, "finish bonus"],
     ["Time bonus", r.timeBonus, fmtTime(r.time)],
   ];
@@ -836,9 +856,10 @@ void (async () => {
   progress(0.12, "Checking your garage");
   const p = await api.restore();
   const dev = import.meta.env.DEV ? location.hash : "";
-  if (dev === "#race") {
+  if (dev === "#race" || dev === "#town") {
     dropLoader();
     if (!p) api.playAsGuest();
+    setTrack(dev === "#town" ? "town" : "circuit");
     return race();
   }
   // Dev shortcuts for screenshots: open a screen directly.

@@ -45,12 +45,14 @@ export interface World {
   center: THREE.Vector3;
 }
 
-const WALL_T = 0.7;
-const WALL_H = 1.25;
+export const WALL_T = 0.7;
+export const WALL_H = 1.25;
 
 /** Props that never move. Merged into a few big meshes once the world is built. */
 let STATIC: THREE.Object3D[] = [];
-const keep = <O extends THREE.Object3D>(o: O) => { STATIC.push(o); return o; };
+export const keep = <O extends THREE.Object3D>(o: O) => { STATIC.push(o); return o; };
+/** Hand over (and clear) the props gathered by `keep`, for merging. */
+export function takeStatic() { const s = STATIC; STATIC = []; return s; }
 
 export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, track: Track, diliImg: HTMLImageElement | null, quality: Quality = "high"): World {
   /* ---------- light ---------- */
@@ -227,7 +229,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
  * texture axes, for things like walls whose artwork runs along the track;
  * `uSign` flips that direction so lettering reads the right way round.
  */
-function strip(
+export function strip(
   track: Track, from: number, to: number, step: number,
   a: [number, number], b: [number, number], vPerM: number,
   mat: THREE.Material, alongU: boolean, uSign = 1,
@@ -265,7 +267,7 @@ function strip(
 }
 
 /** Vertical glow falloff for the neon halo: dark → bright at the line → dark. */
-function haloTex() {
+export function haloTex() {
   const c = document.createElement("canvas");
   c.width = 4;
   c.height = 64;
@@ -297,7 +299,7 @@ function ringIndices(from: number, to: number, step: number) {
  * track descends through a hairpin, an unclamped slope from the high side
  * would sit on top of the low side.
  */
-function embankment(track: Track, from: number, to: number, s: number, mat: THREE.Material) {
+export function embankment(track: Track, from: number, to: number, s: number, mat: THREE.Material) {
   const pos: number[] = [];
   const uv: number[] = [];
   const index: number[] = [];
@@ -349,7 +351,7 @@ function embankment(track: Track, from: number, to: number, s: number, mat: THRE
 }
 
 /** Closes the underside of raised road so there's no see-through gap. */
-function underside(track: Track, from: number, to: number, mat: THREE.Material) {
+export function underside(track: Track, from: number, to: number, mat: THREE.Material) {
   const m = strip(track, from, to, 4, [WALL + WALL_T, -3], [-(WALL + WALL_T), -3], 1 / 10, mat, false);
   return m;
 }
@@ -358,7 +360,7 @@ function underside(track: Track, from: number, to: number, mat: THREE.Material) 
 /* Landmarks                                                           */
 /* ================================================================== */
 
-function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture) {
+export function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture, withLake = true) {
   const f = newFrame();
   // Kicker ramp: the last few metres before the lip rise into a lip.
   const rampLen = 7;
@@ -431,6 +433,7 @@ function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture) {
     scene.add(keep(band));
   }
 
+  if (!withLake) return;
   // A round lake under the gap, with a sandy shore and lily pads.
   track.frame((track.lipU + track.landU) / 2, f);
   const c = new THREE.Vector3(f.pos.x, 0, f.pos.z);
@@ -452,7 +455,7 @@ function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture) {
   }
 }
 
-function buildStart(scene: THREE.Scene, track: Track) {
+export function buildStart(scene: THREE.Scene, track: Track, banner = "DLICOM GRAND PRIX") {
   const f = newFrame();
   track.frame(track.startU, f);
   const yaw = Math.atan2(f.tan.x, f.tan.z);
@@ -509,7 +512,7 @@ function buildStart(scene: THREE.Scene, track: Track) {
   const span = px * 2 + 3.2;
   M.add(gate, M.rbox(span, 2.6, 1.4, 0.5), M.plastic("#2f6bff", 0.3), 0, 11.1, 0);
   const bannerMat = new THREE.MeshStandardMaterial({
-    map: T.bannerTex("DLICOM GRAND PRIX", "#2f6bff", "#ffffff", 1024, 160),
+    map: T.bannerTex(banner, "#2f6bff", "#ffffff", 1024, 160),
     roughness: 0.4, emissive: "#ffffff", emissiveIntensity: 0.15,
   });
   for (const z of [0.72, -0.72]) {
@@ -837,7 +840,7 @@ function dressInfield(scene: THREE.Scene, track: Track, quality: Quality) {
  * chunk. Hundreds of trees become a dozen draw calls, and chunking keeps
  * frustum and shadow culling useful.
  */
-function mergeStatic(scene: THREE.Scene, objs: THREE.Object3D[], shadows: boolean) {
+export function mergeStatic(scene: THREE.Scene, objs: THREE.Object3D[], shadows: boolean) {
   const CHUNK = 110;
   const buckets = new Map<string, { mat: THREE.Material; geos: THREE.BufferGeometry[] }>();
   for (const o of objs) {
@@ -915,7 +918,7 @@ function crowdMaterial() {
   return m;
 }
 
-function inflatableArch() {
+export function inflatableArch() {
   const g = new THREE.Group();
   const R = WALL + 0.8;
   const segs = 10;

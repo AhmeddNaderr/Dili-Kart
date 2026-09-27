@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { TrackId } from "../../shared/rules";
 
 /**
  * The circuit's spine. Everything in the race lives in *track space*: a
@@ -24,18 +25,51 @@ export const DRIVE_LIMIT = WALL - 1.3;
 /** Centre of lane n, 0 = far left. */
 export const laneX = (n: number) => -ROAD_HALF + LANE_W * (n + 0.5);
 
-/**
- * Hand-placed control points as [x, z, height]. Travel runs in list order:
- * main straight north, a climbing hairpin, the back straight with the jump
- * crest at index 8, a sweeping right, an S through the bottom, and home.
- */
-const CTRL: [number, number, number][] = [
-  [0, 0, 0], [0, -70, 0], [0, -140, 1], [10, -190, 3], [45, -215, 5],
-  [88, -208, 6.5], [112, -172, 7], [118, -128, 7.2], [118, -98, 8.2],
-  [118, -58, 2], [122, -18, 0], [150, 18, 0], [165, 62, 0], [148, 100, 1],
-  [112, 108, 2.5], [80, 92, 3], [48, 112, 2], [20, 128, 1], [-2, 108, 0],
-  [-6, 60, 0],
-];
+export interface TrackDef {
+  id: TrackId;
+  /** Hand-placed control points as [x, z, height], in driving order. */
+  ctrl: [number, number, number][];
+  /** Index of the control point at the jump's launch lip. */
+  jumpAt: number;
+  /** Seconds for a clean race; faster earns a time bonus. */
+  par: number;
+}
+
+export const TRACKS: Record<TrackId, TrackDef> = {
+  /**
+   * The stadium: main straight north, a climbing hairpin, the back straight
+   * with the jump crest at index 8, a sweeping right, an S through the
+   * bottom, and home.
+   */
+  circuit: {
+    id: "circuit",
+    ctrl: [
+      [0, 0, 0], [0, -70, 0], [0, -140, 1], [10, -190, 3], [45, -215, 5],
+      [88, -208, 6.5], [112, -172, 7], [118, -128, 7.2], [118, -98, 8.2],
+      [118, -58, 2], [122, -18, 0], [150, 18, 0], [165, 62, 0], [148, 100, 1],
+      [112, 108, 2.5], [80, 92, 3], [48, 112, 2], [20, 128, 1], [-2, 108, 0],
+      [-6, 60, 0],
+    ],
+    jumpAt: 8,
+    par: 150,
+  },
+  /**
+   * Neon Town: up the boulevard, right along the high street, a ramp up to
+   * the canal bridge (the jump at index 9), down past the waterfront, and
+   * back along the market street to the line.
+   */
+  town: {
+    id: "town",
+    ctrl: [
+      [0, 0, 0], [0, -55, 0], [2, -105, 0], [14, -135, 0], [40, -152, 0],
+      [75, -156, 0], [105, -146, 0.5], [128, -120, 2], [134, -85, 4.5],
+      [134, -52, 6.5], [134, -12, 1.5], [132, 22, 0], [120, 50, 0],
+      [92, 64, 0], [58, 62, 0], [32, 72, 0], [10, 60, 0], [-2, 34, 0],
+    ],
+    jumpAt: 9,
+    par: 175,
+  },
+};
 
 export interface Frame {
   pos: THREE.Vector3;
@@ -72,10 +106,10 @@ export class Track {
   private K: Float32Array;
   private B: Float32Array;
 
-  constructor() {
+  constructor(readonly def: TrackDef = TRACKS.circuit) {
     // The whole circuit sits a little above the ground plane so the two
     // never fight for the same depth at a distance.
-    const pts = CTRL.map(([x, z, y]) => new THREE.Vector3(x, y + 0.45, z));
+    const pts = def.ctrl.map(([x, z, y]) => new THREE.Vector3(x, y + 0.45, z));
     const curve = new THREE.CatmullRomCurve3(pts, true, "centripetal");
     this.length = curve.getLength();
     const N = this.N;
@@ -160,7 +194,7 @@ export class Track {
     });
 
     this.startU = this.ctrlU[0] + 32;
-    this.lipU = this.ctrlU[8] + 1;
+    this.lipU = this.ctrlU[def.jumpAt] + 1;
     this.landU = this.lipU + 24;
   }
 

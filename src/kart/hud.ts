@@ -103,7 +103,7 @@ export class Hud {
   private mapXf: (x: number, z: number) => [number, number] = () => [0, 0];
   private rollTimer = 0;
 
-  constructor(parent: HTMLElement, private actions: HudActions) {
+  constructor(parent: HTMLElement, private actions: HudActions, course = { name: "Dili Circuit", laps: 3, night: false }) {
     this.el = document.createElement("div");
     this.el.className = "kh";
     this.el.innerHTML = `
@@ -113,7 +113,7 @@ export class Hud {
         <div class="kh-slot"><i class="kh-ring"></i><div class="kh-ico"></div></div>
         <div class="kh-iname"><span></span><kbd>↓</kbd></div>
       </div>
-      <div class="kh-top"><div class="kh-lap">LAP <b>1</b><i>/3</i></div><span class="kh-sep"></span><div class="kh-clock">0:00.00</div></div>
+      <div class="kh-top"><div class="kh-lap">LAP <b>1</b><i>/${course.laps}</i></div><span class="kh-sep"></span><div class="kh-clock">0:00.00</div></div>
       <div class="kh-mapbox"><svg class="kh-map" viewBox="0 0 170 200"><g class="kh-map-g"></g></svg></div>
       <div class="kh-bl">
         <div class="kh-coins"><span class="kh-coin">${COIN}</span><b>0</b></div>
@@ -126,9 +126,9 @@ export class Hud {
       <div class="kh-warn">${G.warn}Incoming</div>
       <div class="kh-title">
         <div class="kh-title-card">
-          <small>Dlicom Grand Prix</small>
-          <strong>Dili Circuit</strong>
-          <span>3 laps · 8 racers · beat the Custodians</span>
+          <small>${course.night ? "Dlicom Night Series" : "Dlicom Grand Prix"}</small>
+          <strong>${course.name}</strong>
+          <span>${course.laps} laps · 8 racers · beat the Custodians</span>
         </div>
         <em>Press any arrow to skip</em>
       </div>
@@ -146,7 +146,7 @@ export class Hud {
         <div class="kh-tl"><button data-k="ArrowLeft" aria-label="Steer left">${G.left}</button><button data-k="ArrowRight" aria-label="Steer right">${G.right}</button></div>
         <div class="kh-tr"><button data-k="ArrowDown" class="small" aria-label="Use item">${G.item}</button><button data-k="ArrowUp" class="gas" aria-label="Gas">${G.up}</button></div>
       </div>
-      <div class="kh-load"><div class="kh-spin"><i></i></div><b>Dili Circuit</b><span>Building the stadium…</span></div>`;
+      <div class="kh-load"><div class="kh-spin"><i></i></div><b>${course.name}</b><span>${course.night ? "Lighting up the city…" : "Building the stadium…"}</span></div>`;
     parent.appendChild(this.el);
     this.wireTouch();
     this.el.querySelectorAll<HTMLButtonElement>("[data-a]").forEach((b) => {

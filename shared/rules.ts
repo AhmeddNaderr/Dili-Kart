@@ -65,12 +65,21 @@ export function streakMultiplier(streak: number): number {
   return 1 + Math.min(Math.max(streak - 1, 0), 6) / 6;
 }
 
+/** The tracks. Neon Town is a night street circuit through Dlicom City. */
+export const TRACK_IDS = ["circuit", "town"] as const;
+export type TrackId = (typeof TRACK_IDS)[number];
+export const TRACK_INFO: Record<TrackId, { name: string; laps: number; blurb: string }> = {
+  circuit: { name: "Dili Circuit", laps: 3, blurb: "Stadium at dusk · lake jump" },
+  town: { name: "Neon Town", laps: 5, blurb: "City streets at night · canal jump" },
+};
+export const isTrackId = (t: unknown): t is TrackId => typeof t === "string" && (TRACK_IDS as readonly string[]).includes(t);
+
 /**
  * Plausibility bounds for a submitted race. A clean three-lap race takes
  * around two minutes, and even a perfect one can't score beyond these.
  */
 export const RACE_LIMITS = {
-  maxScore: 15_000,
+  maxScore: 20_000,
   minTime: 60,
   maxTime: 900,
   maxCoins: 250,
