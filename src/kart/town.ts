@@ -329,7 +329,8 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
     scene.add(keep(tower));
   }
 
-  // Traffic lights on the corners, stuck on amber-flash for race night.
+  // Traffic lights on the corners, cycling green, amber, red.
+  const signals: { lamps: THREE.MeshBasicMaterial[]; off: number }[] = [];
   for (const i of [3, 7, 12, 16]) {
     track.frame(track.ctrlU[i], f);
     const flat = new THREE.Vector3(f.side.x, 0, f.side.z).normalize();
@@ -340,13 +341,34 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
     tl.rotation.y = Math.atan2(-f.tan.x, -f.tan.z);
     M.add(tl, M.cyl(0.14, 0.18, 6.2, 8), M.plastic("#2a2f45", 0.4, 0.6), 0, 3.1, 0);
     M.add(tl, M.rbox(0.8, 2.2, 0.6, 0.12), M.plastic("#15161f", 0.5), 0, 5.6, 0);
-    [["#ff2d3a", 0.2], ["#ffb31c", 2.6], ["#1bff6a", 0.2]].forEach(([c, k], j) => {
-      const lamp = new THREE.Mesh(M.sphere(0.2, 12, 8), new THREE.MeshBasicMaterial({ color: hot(c as string, k as number), toneMapped: false }));
+    const lamps: THREE.MeshBasicMaterial[] = [];
+    ["#ff2d3a", "#ffb31c", "#1bff6a"].forEach((c, j) => {
+      const mat = new THREE.MeshBasicMaterial({ color: hot(c, 0.15), toneMapped: false });
+      mat.userData.on = hot(c, 2.6);
+      mat.userData.dim = hot(c, 0.15);
+      const lamp = new THREE.Mesh(M.sphere(0.2, 12, 8), mat);
       lamp.position.set(0, 6.25 - j * 0.65, 0.32);
       tl.add(lamp);
+      // A hood over each lamp, like the real thing.
+      M.add(tl, new THREE.CylinderGeometry(0.26, 0.26, 0.34, 12, 1, true, -Math.PI / 2, Math.PI), M.plastic("#15161f", 0.5), 0, 6.42 - j * 0.65, 0.42).rotation.x = Math.PI / 2;
+      lamps.push(mat);
     });
+    // Lamps change colour, so they stay out of the static merge.
+    const lampsOnly = new THREE.Group();
+    for (const l of [...tl.children]) if ((l as THREE.Mesh).material && lamps.includes((l as THREE.Mesh).material as THREE.MeshBasicMaterial)) lampsOnly.add(l);
+    lampsOnly.position.copy(tl.position);
+    lampsOnly.rotation.copy(tl.rotation);
+    scene.add(lampsOnly);
     scene.add(keep(tl));
+    signals.push({ lamps, off: signals.length * 2.7 });
   }
+  const signalCycle = (t: number) => {
+    for (const s of signals) {
+      const c = (t + s.off) % 11;
+      const on = c < 5 ? 2 : c < 6.6 ? 1 : 0;   // green, amber, red
+      s.lamps.forEach((m, j) => { const want = j === on ? m.userData.on : m.userData.dim; if (!m.color.equals(want)) m.color.copy(want); });
+    }
+  };
 
   /* ---------- over the street ---------- */
   const spinners: THREE.Object3D[] = [];
@@ -402,7 +424,7 @@ export function buildTown(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tra
   mergeStatic(scene, takeStatic(), true);
 
   return { sun: moon, gateLamps, sky, water, balloons: [], spinners, flags: [], center, weather: quality === "low" ? undefined : drizzle(scene),
-    animate: (t: number) => { skyline.animate(t); train.update(t); traffic.update(t); } };
+    animate: (t: number) => { skyline.animate(t); train.update(t); traffic.update(t); signalCycle(t); } };
 }
 
 /**

@@ -558,3 +558,22 @@
 @media (prefers-reduced-motion: reduce) {
   .kh-ring, .kh-item.has .kh-ico svg, .kh-pos.first b, .kh-pos.first sup, .kh-count:not(:empty)::before { animation: none; }
 }
+
+/* Replay tag: broadcast-style bug in the top-left while the finish replays. */
+.kh-replay {
+  position: absolute; top: 22px; left: 24px;
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 14px 7px 12px; border-radius: 10px;
+  font: italic 900 15px/1 Inter, system-ui, sans-serif; letter-spacing: .14em; color: #fff;
+  background: linear-gradient(180deg, rgba(20, 24, 44, .82), rgba(10, 12, 26, .82));
+  border: 1px solid rgba(255, 255, 255, .14);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .12);
+  backdrop-filter: blur(8px);
+  opacity: 0; transform: translateX(-16px); pointer-events: none;
+  transition: opacity .35s, transform .35s cubic-bezier(.2, .8, .3, 1);
+}
+.kh-replay i { width: 10px; height: 10px; border-radius: 50%; background: #ff3348; box-shadow: 0 0 10px #ff3348; animation: kh-rec 1.1s steps(2, jump-none) infinite; }
+.kh-replay span { font: 700 10px/1 Inter, system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; color: #9fb0ff; padding-left: 9px; border-left: 1px solid rgba(255, 255, 255, .18); }
+.kh.replaying .kh-replay { opacity: 1; transform: none; }
+@keyframes kh-rec { 50% { opacity: .25; } }
+@media (max-width: 700px) { .kh-replay { top: 12px; left: 12px; font-size: 12px; } }

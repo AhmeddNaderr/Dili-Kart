@@ -161,6 +161,7 @@ export class Hud {
       <div class="kh-pops"></div>
       <div class="kh-count"></div>
       <div class="kh-banner"></div>
+      <div class="kh-replay"><i></i>REPLAY<span>Dlicom TV</span></div>
       <div class="kh-warn">${G.warn}Incoming</div>
       <div class="kh-title">
         <div class="kh-title-card">
@@ -444,6 +445,10 @@ export class Hud {
 
   paused(on: boolean) {
     this.q(".kh-pause").classList.toggle("on", on);
+  }
+
+  replay(on: boolean) {
+    this.el.classList.toggle("replaying", on);
   }
 
   racing(on: boolean) {

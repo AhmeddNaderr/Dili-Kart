@@ -8,7 +8,7 @@ import { buildTown } from "./town";
 import { buildWorld, crowdTime, gridSlot, type Quality, type World } from "./world";
 import * as M from "./models";
 import * as T from "./textures";
-import { Confetti, Particles } from "./fx";
+import { Confetti, Particles, ReplayTape, SkidMarks } from "./fx";
 import { RaceAudio } from "./sound";
 import { Hud, ITEM_NAME, type ItemKind } from "./hud";
 import { TRACK_INFO, type CharId, type SkinId, type TrackId } from "../../shared/rules";
@@ -147,7 +147,16 @@ export class DiliCart {
   private hud!: Hud;
   private audio = new RaceAudio();
   private sparks = new Particles(1400, true);
-  private puffs = new Particles(500, false);
+  private puffs = new Particles(900, false);
+  private skids: SkidMarks | null = null;
+  /** The last few seconds of every kart, for the replay after the finish. */
+  private tape: ReplayTape | null = null;
+  private poses: M.KartPose[] = [];
+  private replay: { t: number; from: number; to: number; shot: number; shotT: number; pos: THREE.Vector3; side: number } | null = null;
+  /** Live broadcast feed on the circuit's jumbotrons. */
+  private tv: { rt: THREE.WebGLRenderTarget; cam: THREE.PerspectiveCamera; screens: THREE.Mesh[]; n: number; shot: number; t: number; pos: THREE.Vector3 } | null = null;
+  private boostKick = 0;
+  private wasBoost = false;
   private confetti = new Confetti();
   private mountEl!: HTMLElement;
   private hooks!: RaceHooks;
@@ -337,7 +346,14 @@ export class DiliCart {
       ? buildTown(this.scene, this.renderer, this.track, portraitImg, this.quality)
       : buildWorld(this.scene, this.renderer, this.track, portraitImg, this.quality);
     this.scene.add(this.sparks.points, this.puffs.points, this.confetti.mesh);
+    const town = this.trackId === "town";
+    // On the wet street a slide wipes the water off, leaving a dull grey
+    // stripe; on the dry circuit it lays down rubber.
+    this.skids = new SkidMarks(this.quality === "low" ? 900 : 2200, town ? "#56607a" : "#0d0d12", town ? 0.32 : 0.5);
+    this.scene.add(this.skids.mesh);
     this.buildRacers();
+    if (!this.attract) this.tape = new ReplayTape(this.racers.length);
+    this.buildTv();
     this.buildPickups();
     this.shield = M.shieldBubble();
     this.shield.visible = false;
@@ -701,6 +717,7 @@ export class DiliCart {
     const dt = Math.min(raw + this.skipped, 1 / 20);
     this.skipped = 0;
     if (!this.paused) this.update(dt);
+    this.renderTv(dt);
     this.composer.render();
     this.pressed.clear();
     this.watchPerf(raw);
@@ -715,7 +732,10 @@ export class DiliCart {
       case "intro": this.updateIntro(); break;
       case "countdown": this.updateCountdown(); break;
       case "race": this.raceT += dt; break;
-      case "finish": if (this.phaseT > 3.4 && !this.result) this.endRace(); break;
+      case "finish":
+        if (this.phaseT > 3.4 && !this.result) this.endRace();
+        if (this.result && !this.replay && this.phaseT > 5.5) this.startReplay();
+        break;
     }
 
     const moving = this.phase === "race" || this.phase === "finish";
@@ -735,8 +755,13 @@ export class DiliCart {
     }
     this.updateHazards(dt);
     this.updateProps(dt);
-    this.placeAll(dt);
-    this.driftFx();
+    if (this.replay) this.playReplay(dt);
+    else {
+      this.placeAll(dt);
+      this.recordTape(dt);
+      this.driftFx();
+    }
+    this.skids?.update();
     this.sparks.update(dt);
     this.puffs.update(dt);
     this.confetti.update(dt);
@@ -1967,7 +1992,194 @@ export class DiliCart {
         time: this.time + r.i,
       };
       r.model.update(this.poseOverride ? this.poseOverride(r.i, pose) : pose, dt);
+      this.poses[r.i] = pose;
     }
+  }
+
+  /* ---------------- Replay ---------------- */
+
+  private recordTape(dt: number) {
+    if (!this.tape || !(this.phase === "race" || this.phase === "finish")) return;
+    this.tape.record(dt, (k, out, o) => {
+      const r = this.racers[k];
+      const m = r.model;
+      const p = this.poses[k];
+      m.root.position.toArray(out, o);
+      m.root.quaternion.toArray(out, o + 3);
+      m.shadowRoot.position.toArray(out, o + 7);
+      m.shadowRoot.quaternion.toArray(out, o + 10);
+      if (p) {
+        out[o + 14] = p.speed; out[o + 15] = p.steer; out[o + 16] = p.slide; out[o + 17] = p.hop; out[o + 18] = p.squash;
+        out[o + 19] = p.roll; out[o + 20] = p.flip; out[o + 21] = p.boost; out[o + 22] = p.glide; out[o + 23] = p.pitch ?? 0;
+      }
+      out[o + 24] = (m.shadow.material as THREE.MeshBasicMaterial).opacity;
+      out[o + 25] = r.dist;
+    });
+  }
+
+  /** The finish again from trackside cameras, looping behind the results. */
+  private startReplay() {
+    const tape = this.tape;
+    if (!tape || tape.length < 5) return;
+    // The newest frame is phaseT after the line; play from 6 s before it.
+    const cross = this.phaseT;
+    const from = Math.min(tape.length - 0.1, cross + 6);
+    const to = Math.max(0, cross - 1.4);
+    this.replay = { t: 0, from, to, shot: -1, shotT: 99, pos: V(), side: 1 };
+    this.hud.replay(true);
+  }
+
+  private playReplay(dt: number) {
+    const rp = this.replay!;
+    const tape = this.tape!;
+    const len = rp.from - rp.to;
+    rp.t += dt;
+    if (rp.t > len) { rp.t = 0; rp.shotT = 99; }
+    const back = rp.from - rp.t;
+    const qa = this.q1, qb = new THREE.Quaternion();
+    for (let k = 0; k < this.racers.length; k++) {
+      const [d, a, b, f] = tape.at(k, back);
+      const lerp = (i: number) => d[a + i] + (d[b + i] - d[a + i]) * f;
+      const m = this.racers[k].model;
+      m.root.position.set(lerp(0), lerp(1), lerp(2));
+      m.root.quaternion.copy(qa.fromArray(d, a + 3).slerp(qb.fromArray(d, b + 3), f));
+      m.shadowRoot.position.set(lerp(7), lerp(8), lerp(9));
+      m.shadowRoot.quaternion.copy(qa.fromArray(d, a + 10).slerp(qb.fromArray(d, b + 10), f));
+      (m.shadow.material as THREE.MeshBasicMaterial).opacity = lerp(24);
+      m.setDetail(k === 0 || m.root.position.distanceToSquared(this.camera.position) < 48 * 48);
+      m.update({
+        speed: lerp(14), steer: lerp(15), slide: lerp(16), hop: lerp(17), squash: lerp(18), roll: lerp(19),
+        flip: lerp(20), boost: lerp(21), glide: lerp(22), pitch: lerp(23), wave: 0, time: this.time + k,
+      }, dt);
+    }
+  }
+
+  /** Where the player's kart is in the replay, and how far round the lap. */
+  private replayDist() {
+    const [d, a, b, f] = this.tape!.at(0, this.replay!.from - this.replay!.t);
+    return d[a + 25] + (d[b + 25] - d[a + 25]) * f;
+  }
+
+  private replayCamera(dt: number) {
+    const rp = this.replay!;
+    const cam = this.camera;
+    const tr = this.track;
+    const kart = this.racers[0].model.root.position;
+    const u = tr.wrap(tr.startU + this.replayDist());
+    rp.shotT += dt;
+    if (rp.shotT > 2.6) {
+      rp.shotT = 0;
+      rp.shot++;
+      rp.side = Math.random() < 0.5 ? -1 : 1;
+      // Kerb camera, planted up the road for the kart to rush past.
+      rp.pos.copy(tr.point(u + 24, rp.side * (EDGE - 2.2), 0)).y += 1.1;
+    }
+    tr.frame(u, this.f2);
+    const f = this.f2;
+    let fov = 50;
+    const kind = rp.shot % 4;
+    if (kind === 0) {
+      // Long lens from the trackside, panning as the kart flies by.
+      cam.position.copy(rp.pos);
+      // Zoom to hold the kart at a steady size, like a camera operator.
+      const d = cam.position.distanceTo(kart);
+      fov = THREE.MathUtils.clamp(2 * THREE.MathUtils.radToDeg(Math.atan(3.2 / d)), 9, 45);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this.v1.copy(kart).setY(kart.y + 0.8));
+    } else if (kind === 1) {
+      // Low tracking shot just ahead of the front wheel.
+      const want = this.v1.copy(kart).addScaledVector(f.tan, 3.4).addScaledVector(f.side, rp.side * 2.3);
+      want.y = kart.y + 0.45;
+      if (rp.shotT < dt * 1.5) this.camPos.copy(want);
+      this.camPos.lerp(want, 1 - Math.exp(-dt * 10));
+      cam.position.copy(this.camPos);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this.v2.copy(kart).setY(kart.y + 0.9).addScaledVector(f.tan, -1));
+      fov = 58;
+    } else if (kind === 2) {
+      // Helicopter, high and behind, the field strung out ahead.
+      const want = this.v1.copy(kart).addScaledVector(f.tan, -16).addScaledVector(f.side, rp.side * 6);
+      want.y = kart.y + 11;
+      if (rp.shotT < dt * 1.5) this.camPos.copy(want);
+      this.camPos.lerp(want, 1 - Math.exp(-dt * 4));
+      cam.position.copy(this.camPos);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this.v2.copy(kart).addScaledVector(f.tan, 8));
+      fov = 48;
+    } else {
+      // Slow orbit round the driver, rolling with them.
+      const a = rp.shotT * 0.7 + rp.side;
+      const dir = this.v3.copy(f.tan).multiplyScalar(Math.cos(a)).addScaledVector(f.side, Math.sin(a));
+      cam.position.copy(kart).addScaledVector(dir, 4.6).setY(kart.y + 1.5);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this.v2.copy(kart).setY(kart.y + 0.9));
+      fov = 52;
+    }
+    // The results card covers the right of wide screens: shift the lens so
+    // the action sits in the open space on the left.
+    const w = this.renderer.domElement.width, h = this.renderer.domElement.height;
+    if (cam.aspect > 1) cam.setViewOffset(w, h, w * 0.2, 0, w, h);
+    return fov;
+  }
+
+  /* ---------------- Live TV ---------------- */
+
+  /** Point the circuit's jumbotrons at a live broadcast camera. */
+  private buildTv() {
+    const screens = this.world.liveScreens;
+    if (!screens?.length || this.attract || this.quality === "low") return;
+    const rt = new THREE.WebGLRenderTarget(512, 288, { type: THREE.HalfFloatType, samples: 2 });
+    const cam = new THREE.PerspectiveCamera(30, 16 / 9, 0.5, 650);
+    for (const s of screens) {
+      const m = s.material as THREE.MeshBasicMaterial;
+      m.map = rt.texture;
+      m.color.setScalar(0.8);
+      m.needsUpdate = true;
+    }
+    this.tv = { rt, cam, screens, n: 0, shot: 0, t: 99, pos: V() };
+  }
+
+  private renderTv(dt: number) {
+    const tv = this.tv;
+    if (!tv || this.lowered) return;
+    tv.t += dt;
+    if (++tv.n % 3) return;
+    const tr = this.track;
+    const p = this.racers[0];
+    const kart = p.model.root.position;
+    const u = tr.wrap(tr.startU + p.dist);
+    if (tv.t > 5) { tv.t = 0; tv.shot++; }
+    const cam = tv.cam;
+    tr.frame(u, this.f2);
+    const f = this.f2;
+    const shot = tv.shot % 3;
+    if (shot === 0) {
+      // Leader cam: a camera bike just ahead, looking back at the driver.
+      cam.position.copy(kart).addScaledVector(f.tan, 8).addScaledVector(f.side, 1.8).setY(kart.y + 2.4);
+      cam.lookAt(this.v1.copy(kart).setY(kart.y + 0.9));
+      cam.fov = 38;
+    } else if (shot === 1) {
+      // Chase helicopter.
+      cam.position.copy(kart).addScaledVector(f.tan, -14).setY(kart.y + 9);
+      cam.lookAt(this.v1.copy(kart).addScaledVector(f.tan, 10));
+      cam.fov = 44;
+    } else {
+      // The blimp's view: high above, long lens on the pack.
+      cam.position.copy(kart).addScaledVector(f.tan, -22).addScaledVector(f.side, 12).setY(kart.y + 42);
+      cam.lookAt(this.v1.copy(kart).addScaledVector(f.tan, 6));
+      cam.fov = 26;
+    }
+    cam.updateProjectionMatrix();
+    const r = this.renderer;
+    // Never sample the feed while drawing it, and reuse this frame's shadows.
+    for (const s of tv.screens) s.visible = false;
+    const auto = r.shadowMap.autoUpdate;
+    r.shadowMap.autoUpdate = false;
+    r.setRenderTarget(tv.rt);
+    r.render(this.scene, cam);
+    r.setRenderTarget(null);
+    r.shadowMap.autoUpdate = auto;
+    for (const s of tv.screens) s.visible = true;
   }
 
   /** Drift sparks, boost embers, grass spray. */
@@ -1996,9 +2208,10 @@ export class DiliCart {
           }
         }
       }
-      if (r.air || r.spin > 0) continue;
+      if (r.air || r.spin > 0) { this.skids?.lift(r.i * 2); this.skids?.lift(r.i * 2 + 1); continue; }
       this.track.frame(this.track.wrap(this.track.startU + r.dist), this.f2);
       const drifting = r.player ? this.driftDir !== 0 : Math.abs(r.slide) > 0.2;
+      this.tyreFx(r, drifting);
       const tier = r.player ? this.driftTier : 0;
       if (drifting && r.speed > 8) {
         const n = r.player ? 3 : 1;
@@ -2029,6 +2242,54 @@ export class DiliCart {
         const w = root.localToWorld(this.v1.set(0, 0.2, -1.2));
         this.puffs.spawn(w.x, w.y, w.z, (Math.random() - 0.5) * 2, 1.5, (Math.random() - 0.5) * 2,
           this.col.set(Math.random() < 0.5 ? "#7bd65c" : "#b9e68f"), 0.7, 0.5, { grav: 5, grow: 0.8 });
+      }
+    }
+  }
+
+  /** Rubber on the road, smoke off the tyres, spray on the wet street. */
+  private tyreFx(r: Racer, drifting: boolean) {
+    const root = r.model.root;
+    const wet = this.trackId === "town";
+    const near = r.player || root.position.distanceToSquared(this.camera.position) < 55 * 55;
+    const side = this.v3.set(1, 0, 0).applyQuaternion(root.quaternion);
+    const sliding = drifting && r.speed > (r.player ? 8 : 12);
+    for (const w of [0, 1]) {
+      const key = r.i * 2 + w;
+      const sx = w ? -0.95 : 0.95;
+      if (!sliding || !this.skids) { this.skids?.lift(key); continue; }
+      const p = root.localToWorld(this.v1.set(sx, 0.035, -0.95));
+      this.skids.mark(key, p, side, 0.36, r.player ? 1 : 0.55);
+    }
+    if (!near) return;
+    const back = this.v2.copy(this.f2.tan).multiplyScalar(-1);
+    if (sliding && !wet && Math.random() < (r.player ? 0.9 : 0.35)) {
+      for (const sx of [0.95, -0.95]) {
+        const w = root.localToWorld(this.v1.set(sx, 0.35, -1.05));
+        const g = 0.82 + Math.random() * 0.12;
+        this.puffs.spawn(w.x, w.y, w.z,
+          back.x * 2 + (Math.random() - 0.5) * 1.6, 0.7 + Math.random() * 0.8, back.z * 2 + (Math.random() - 0.5) * 1.6,
+          this.col.setRGB(g, g, g * 1.03), 0.75 + this.driftTier * 0.12, 1.1 + Math.random() * 0.5,
+          { grow: 4, drag: 1.4, grav: -0.4, alpha: 0.26 });
+      }
+    }
+    if (wet && r.speed > 9) {
+      // Rooster tails of spray off the rear tyres, and a fine mist.
+      const k = Math.min(1, r.speed / 30);
+      const n = (r.player ? 2 : 1) + (sliding ? 1 : 0);
+      for (let j = 0; j < n; j++) {
+        for (const sx of [0.95, -0.95]) {
+          if (!r.player && Math.random() < 0.5) continue;
+          const w = root.localToWorld(this.v1.set(sx, 0.15, -1.15));
+          const sp = r.speed * (0.25 + Math.random() * 0.2);
+          this.sparks.spawn(w.x, w.y, w.z,
+            back.x * sp + side.x * sx * 1.2 + (Math.random() - 0.5), 2 + Math.random() * 2.5 * k, back.z * sp + side.z * sx * 1.2 + (Math.random() - 0.5),
+            this.col.set("#9fc4ff"), 0.14 + Math.random() * 0.08, 0.35 + Math.random() * 0.25, { grav: 16, drag: 1.2, alpha: 0.5 });
+        }
+      }
+      if (Math.random() < (r.player ? 0.8 : 0.3) * k) {
+        const w = root.localToWorld(this.v1.set((Math.random() - 0.5) * 1.8, 0.3, -1.4));
+        this.puffs.spawn(w.x, w.y, w.z, back.x * r.speed * 0.15, 0.5, back.z * r.speed * 0.15,
+          this.col.set("#7d8fb0"), 0.9, 0.7, { grow: 2.6, drag: 2, alpha: 0.18 + (sliding ? 0.12 : 0) });
       }
     }
   }
@@ -2093,6 +2354,9 @@ export class DiliCart {
       cam.up.set(0, 1, 0);
       cam.lookAt(this.camLook);
       wantFov = 58;
+    } else if (this.replay) {
+      wantFov = this.replayCamera(dt);
+      this.fov = wantFov;
     } else if (this.phase === "finish") {
       // Swing round to the front of the kart, like the reference's finish.
       const tr = this.track;
@@ -2129,7 +2393,21 @@ export class DiliCart {
       cam.position.copy(this.camPos);
       cam.up.set(0, 1, 0).lerp(c.up, 0.5).normalize();
       cam.lookAt(this.camLook);
-      wantFov = 64 + (p.boostT > 0 ? 10 : 0) + Math.max(0, p.speed - 18) * 0.35 + Math.max(0, 1 - cam.aspect) * 22;
+      // A punch of FOV the moment a boost fires, easing into the boost FOV.
+      const boosting = p.boostT > 0;
+      if (boosting && !this.wasBoost) { this.boostKick = 1; this.shake = Math.max(this.shake, 0.18); }
+      this.wasBoost = boosting;
+      this.boostKick = Math.max(0, this.boostKick - dt * 2.4);
+      wantFov = 64 + (boosting ? 10 : 0) + this.boostKick * 7 + Math.max(0, p.speed - 18) * 0.35 + Math.max(0, 1 - cam.aspect) * 22;
+      // Road rumble: a smooth, fast tremble that grows with speed and on the grass.
+      if (!p.air && this.phase === "race") {
+        const off = Math.abs(p.lat) > EDGE + 0.4 ? 3 : 1;
+        const amp = (Math.max(0, p.speed - 14) * 0.0016 + (boosting ? 0.012 : 0)) * off;
+        const t = this.time;
+        cam.position.x += (Math.sin(t * 41.3) + Math.sin(t * 23.7 + 1.3)) * amp;
+        cam.position.y += (Math.sin(t * 37.9 + 0.7) + Math.sin(t * 19.1 + 2.1)) * amp * 0.8;
+        cam.position.z += Math.sin(t * 29.3 + 2.6) * amp;
+      }
     }
 
     if (this.shake > 0) {
@@ -2384,6 +2662,8 @@ export class DiliCart {
     });
     this.sparks.dispose();
     this.puffs.dispose();
+    this.skids?.dispose();
+    this.tv?.rt.dispose();
     T.disposeTextures();
     M.disposeModels();
     this.scene.environment?.dispose();

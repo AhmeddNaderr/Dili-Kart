@@ -233,7 +233,7 @@ export function cornerDetail(scene: THREE.Scene, track: Track, keep: <O extends 
     const k = track.curvature(u);
     if (Math.abs(k) > 0.022 && !corners.some((c) => Math.abs(track.delta(c.u, u)) < 40)) corners.push({ u, s: k > 0 ? -1 : 1 });
   }
-  const tyre = new THREE.TorusGeometry(0.42, 0.2, 10, 20).rotateX(Math.PI / 2);
+  const tyre = new THREE.TorusGeometry(0.42, 0.2, 6, 14).rotateX(Math.PI / 2);
   const spots: THREE.Matrix4[] = [];
   const cols: THREE.Color[] = [];
   const q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1);

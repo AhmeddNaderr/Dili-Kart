@@ -48,6 +48,8 @@ export interface World {
   weather?: { update(cam: THREE.Camera, dt: number, focus?: THREE.Vector3): void };
   /** Anything else in the world that moves (screens, trains, traffic). */
   animate?: (t: number, dt: number) => void;
+  /** Jumbotron faces that can carry a live camera feed. */
+  liveScreens?: THREE.Mesh[];
 }
 
 export const WALL_T = 0.7;
@@ -213,7 +215,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
   const gateLamps = buildStart(scene, track);
 
   /* ---------- stadium ---------- */
-  buildStadium(scene, track, diliImg);
+  const liveScreens = buildStadium(scene, track, diliImg);
   pitBuilding(scene, track, keep);
   if (quality !== "low") cornerDetail(scene, track, keep);
   const bowlC = new THREE.Vector3(bw.cx, 0, bw.cz);
@@ -225,7 +227,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
   mergeStatic(scene, STATIC, true);
   STATIC = [];
 
-  return { sun, gateLamps, sky, water, ...props, center: new THREE.Vector3(bw.cx, 0, bw.cz), animate: (t: number) => airship.update(t) };
+  return { sun, gateLamps, sky, water, ...props, center: new THREE.Vector3(bw.cx, 0, bw.cz), animate: (t: number) => airship.update(t), liveScreens };
 }
 
 /* ================================================================== */
@@ -687,6 +689,7 @@ function buildStadium(scene: THREE.Scene, track: Track, diliImg: HTMLImageElemen
     { a: Math.PI * 0.08, cap: "GO DILI\nGO!" },
     { a: Math.PI * 0.5, cap: "DLICOM\nTV" },
   ];
+  const live: THREE.Mesh[] = [];
   screens.forEach((s, i) => {
     const p = ringPoint(s.a, 6, 17);
     const grp = new THREE.Group();
@@ -698,10 +701,44 @@ function buildStadium(scene: THREE.Scene, track: Track, diliImg: HTMLImageElemen
     const scr = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({
       map: T.screenTex(diliImg, s.cap, i % 2 ? "#2f6bff" : "#7b3fff"), toneMapped: false,
     }));
-    grp.add(scr);
     M.add(grp, M.cyl(0.8, 0.8, 12, 10), M.plastic("#e8edf8", 0.5), -w * 0.3, -h / 2 - 5, -1);
     M.add(grp, M.cyl(0.8, 0.8, 12, 10), M.plastic("#e8edf8", 0.5), w * 0.3, -h / 2 - 5, -1);
+    if (s.cap !== "DLICOM\nTV") { grp.add(scr); return; }
+    // The TV screens stay separate meshes so the race can feed them live
+    // pictures, with a broadcast bug in the corner.
+    const face = new THREE.Group();
+    face.position.copy(grp.position);
+    face.quaternion.copy(grp.quaternion);
+    face.add(scr);
+    const bug = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.35), new THREE.MeshBasicMaterial({ map: liveBugTex(), transparent: true, toneMapped: false, depthWrite: false }));
+    bug.position.set(-w / 2 + 4.1, h / 2 - 1.2, 0.05);
+    face.add(bug);
+    scene.add(face);
+    live.push(scr);
   });
+  return live;
+}
+
+/** "● LIVE | DLICOM TV", for the corner of the jumbotron feed. */
+function liveBugTex() {
+  const c = document.createElement("canvas");
+  c.width = 512; c.height = 96;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "rgba(8,10,24,0.78)";
+  g.beginPath(); g.roundRect(0, 0, 512, 96, 18); g.fill();
+  g.fillStyle = "#ff2f45";
+  g.beginPath(); g.roundRect(0, 0, 176, 96, [18, 0, 0, 18]); g.fill();
+  g.fillStyle = "#fff";
+  g.beginPath(); g.arc(40, 48, 13, 0, Math.PI * 2); g.fill();
+  g.font = "italic 900 50px Inter, system-ui, sans-serif";
+  g.textBaseline = "middle";
+  g.fillText("LIVE", 64, 50);
+  g.font = "800 40px Inter, system-ui, sans-serif";
+  g.fillStyle = "#cfd8ff";
+  g.fillText("DLICOM TV", 200, 50);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }
 
 function dressInfield(scene: THREE.Scene, track: Track, quality: Quality) {
@@ -921,12 +958,14 @@ function crowdMaterial() {
         vec2 cuv = vMapUv;
         float col = floor(cuv.x * 68.0);
         float hop = max(0.0, sin(uCrowdT * 7.0 + col * 1.7 + floor(cuv.y * 10.0) * 2.3));
-        cuv.y += hop * hop * 0.012;
+        // A Mexican wave rolling round the stands (twice per lap of the bowl).
+        float wave = pow(max(0.0, sin(col / 68.0 * 0.41888 - uCrowdT * 1.1)), 10.0);
+        cuv.y += hop * hop * 0.012 + wave * 0.035;
         vec4 sampledDiffuseColor = texture2D(map, cuv);
         diffuseColor *= sampledDiffuseColor;`)
       .replace("#include <emissivemap_fragment>", `
         vec4 emissiveColor = texture2D(emissiveMap, cuv);
-        float twinkle = 0.55 + 0.45 * sin(uCrowdT * 3.0 + col * 0.9);
+        float twinkle = 0.55 + 0.45 * sin(uCrowdT * 3.0 + col * 0.9) + wave * 1.2;
         totalEmissiveRadiance *= emissiveColor.rgb * twinkle;`);
   };
   return m;
