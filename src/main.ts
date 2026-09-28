@@ -787,11 +787,19 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
       <div class="rr-unlocks" id="unlocks"></div>
 
       <div class="rr-acts">
-        <button class="rr-again" id="again">${RI.replay}<span>Race again</span><kbd>Enter</kbd></button>
+        <button class="rr-go" id="again" aria-label="Race again">
+          <span class="rr-go-face">
+            <span class="rr-go-shine"></span>
+            <span class="rr-go-ico">${RI.replay}</span>
+            <span class="rr-go-txt"><b>Race again</b><small>${TRACK_INFO[r.track].name} · ${r.laps} laps</small></span>
+            <span class="rr-go-chev"><i></i><i></i><i></i></span>
+          </span>
+          <kbd class="rr-go-key">Enter ↵</kbd>
+        </button>
         <div class="rr-row2">
-          <button class="rr-sec" id="home">${RI.home}<span>Hub</span></button>
-          <button class="rr-sec" id="rank">${ICON.trophy}<span>Board</span></button>
-          <button class="rr-sec" id="share">${RI.share}<span>Share</span></button>
+          <button class="rr-sec" id="home"><i>${RI.home}</i><span>Hub</span></button>
+          <button class="rr-sec" id="rank"><i>${ICON.trophy}</i><span>Leaderboard</span></button>
+          <button class="rr-sec" id="share"><i>${RI.share}</i><span>Share</span></button>
         </div>
       </div>
     </div>
