@@ -490,16 +490,50 @@ export class KartModel {
       add(c, rbox(0.06, 0.34, 0.1, 0.02), dark, 0.36 * s, 1.0, -1.22);
     }
 
-    // Suspension: front wishbones, rear coil-overs.
+    // Suspension. Front: upper and lower A-arms (two tubes each, converging
+    // on the upright), a pushrod and a steering tie-rod. Rear: coil-overs.
+    const tube = (parent: THREE.Object3D, a: THREE.Vector3, b: THREE.Vector3, r: number, mat: THREE.Material) => {
+      const m = new THREE.Mesh(cached(`tube${r}`, () => new THREE.CylinderGeometry(r, r, 1, 8)), mat);
+      m.position.copy(a).add(b).multiplyScalar(0.5);
+      m.scale.y = a.distanceTo(b);
+      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+      parent.add(m);
+      return m;
+    };
+    const V3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
     for (const s of [1, -1]) {
-      for (const [y, z] of [[0.3, 0.9], [0.42, 1.0]]) {
-        const rod = add(d, cyl(0.022, 0.022, 0.36, 6), chromeM, 0.62 * s, y, z, false);
-        rod.rotation.z = Math.PI / 2;
+      for (const [y, spread] of [[0.3, 0.2], [0.46, 0.16]] as const) {
+        const hubP = V3(0.66 * s, y, 0.98);
+        tube(d, V3(0.4 * s, y, 0.98 - spread), hubP, 0.02, chromeM);
+        tube(d, V3(0.4 * s, y, 0.98 + spread), hubP, 0.02, chromeM);
       }
+      add(d, rbox(0.06, 0.24, 0.1, 0.02), metal, 0.68 * s, 0.38, 0.98, false);          // upright
+      tube(d, V3(0.66 * s, 0.31, 0.98), V3(0.34 * s, 0.62, 0.9), 0.016, accent);        // pushrod
+      tube(d, V3(0.14 * s, 0.36, 1.14), V3(0.66 * s, 0.36, 1.1), 0.014, dark);          // tie-rod
       add(d, springGeo(), accent, 0.62 * s, 0.4, -0.86, false);
       add(d, cyl(0.02, 0.02, 0.34, 6), chromeM, 0.62 * s, 0.56, -0.86, false);
+      // Side nerf bars between the wheels, like a real kart.
+      const nb = [V3(0.62 * s, 0.26, 0.62), V3(0.98 * s, 0.26, 0.42), V3(0.98 * s, 0.26, -0.3), V3(0.64 * s, 0.26, -0.5)];
+      for (let k = 0; k < nb.length - 1; k++) tube(c, nb[k], nb[k + 1], 0.035, dark);
+      for (const z of [0.3, -0.2]) tube(c, V3(0.62 * s, 0.26, z), V3(0.98 * s, 0.26, z + 0.05), 0.022, dark);
+      // Radiator intake on each pod: a dark mouth with bright slats.
+      const mouth = add(c, rbox(0.04, 0.2, 0.36, 0.03), carbon, 0.9 * s, 0.42, 0.34);
+      mouth.receiveShadow = true;
+      for (let k = 0; k < 4; k++) add(d, rbox(0.02, 0.018, 0.32, 0.005), chromeM, 0.925 * s, 0.35 + k * 0.045, 0.34, false);
+      // Coolant hoses from the radiators back to the engine.
+      const hose = new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+        V3(0.8 * s, 0.5, 0.2), V3(0.62 * s, 0.62, -0.2), V3(0.42 * s, 0.72, -0.62), V3(0.3 * s, 0.8, -0.78),
+      ]), 16, 0.025, 6, false);
+      add(d, hose, accent, 0, 0, 0, false);
     }
-
+    // Rear axle with the drive sprocket and chain, and a rear bumper bar.
+    tube(c, V3(-0.75, 0.45, -0.86), V3(0.75, 0.45, -0.86), 0.035, metal);
+    const sprocket = add(d, cached("sprocket", () => new THREE.CylinderGeometry(0.16, 0.16, 0.03, 20).rotateZ(Math.PI / 2)), chromeM, -0.42, 0.45, -0.86, false);
+    sprocket.receiveShadow = true;
+    const chain = add(d, cached("chain", () => new THREE.TorusGeometry(0.2, 0.014, 5, 24).rotateY(Math.PI / 2).scale(1, 0.8, 1.6).translate(0, 0.02, 0.18)), dark, -0.42, 0.45, -0.86, false);
+    chain.castShadow = false;
+    tube(c, V3(-0.95, 0.4, -1.52), V3(0.95, 0.4, -1.52), 0.04, dark);
+    for (const s of [1, -1]) tube(c, V3(0.95 * s, 0.4, -1.52), V3(0.7 * s, 0.34, -1.1), 0.03, dark);
     // Wheels: fat rear, smaller front. Rears are baked into the chassis; the
     // fronts sit in groups that steer. Spokes and tread spin by texture.
     const tyreTex = T.tyreTex();
@@ -509,6 +543,7 @@ export class KartModel {
     this.rimTexture = rimT;
     const rimMat = new THREE.MeshStandardMaterial({ map: rimT, roughness: 0.3, metalness: 0.45, alphaTest: 0.5, side: THREE.DoubleSide });
     const discMat = plastic("#8d93a6", 0.35, 0.85);
+    const stripeMat = plastic(L.driver === "custodian" ? L.glow : L.trim, 0.4);
     const hubMat = plastic("#23263a", 0.5, 0.4);
     const caliperMat = plastic(L.driver === "custodian" ? L.glow : L.trim, 0.3, 0.3);
     const mk = (x: number, z: number, r: number, w: number, front: boolean) => {
@@ -520,6 +555,11 @@ export class KartModel {
         this.steerGroups.push(holder);
       }
       add(holder, tyreGeo(r, w), tyreMat, o.x, o.y, o.z).rotation.z = Math.PI / 2;
+      // A thin team-colour stripe round each sidewall.
+      for (const sd of [1, -1]) {
+        const stripe = add(holder, cached(`sidestripe${r}`, () => new THREE.TorusGeometry(r * 0.8, 0.012, 6, 48).rotateY(Math.PI / 2)), stripeMat, o.x + sd * (w * 0.5 + 0.004), o.y, o.z, false);
+        stripe.castShadow = false;
+      }
       // Inside the wheel: a dark well, a drilled disc and the caliper.
       add(holder, cached(`well${r}`, () => new THREE.CylinderGeometry(r * 0.63, r * 0.63, w * 0.6, 24)), hubMat, o.x, o.y, o.z, false).rotation.z = Math.PI / 2;
       for (const sd of [1, -1]) {
@@ -792,7 +832,7 @@ function tyreGeo(r: number, w: number) {
       pts.push(new THREE.Vector2(r - bev + Math.cos(a) * bev, hw - bev + Math.sin(a) * bev));
     }
     pts.push(new THREE.Vector2(inner, hw));
-    return new THREE.LatheGeometry(pts, 32);
+    return new THREE.LatheGeometry(pts, 48);
   });
 }
 

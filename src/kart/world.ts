@@ -7,7 +7,7 @@ import { CURB_W, EDGE, ROAD_HALF, WALL, Track, newFrame } from "./track";
 import { grassTufts, plantAll, type Plant } from "./nature";
 import { buildSky, type Sky } from "./sky";
 import { billboards, streetLamps } from "./trackside";
-import { blimp, floodMasts, pitBuilding } from "./circuit";
+import { blimp, cornerDetail, floodMasts, pitBuilding } from "./circuit";
 
 export type Quality = "high" | "low";
 
@@ -215,6 +215,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
   /* ---------- stadium ---------- */
   buildStadium(scene, track, diliImg);
   pitBuilding(scene, track, keep);
+  if (quality !== "low") cornerDetail(scene, track, keep);
   const bowlC = new THREE.Vector3(bw.cx, 0, bw.cz);
   floodMasts(scene, bowlC, bw.rx, bw.rz, keep);
   const airship = blimp(scene, bowlC, Math.min(bw.rx, bw.rz) * 0.55);

@@ -553,6 +553,12 @@ class CityBlocks {
   private roof = { mat: M.plastic("#23263a", 0.85), geos: [] as THREE.BufferGeometry[] };
   private plinth = { mat: grounded(new THREE.MeshStandardMaterial({ map: T.stoneTex(), color: "#6d6f80", roughness: 0.8 })), geos: [] as THREE.BufferGeometry[] };
   private ac = { mat: M.plastic("#b9bdcb", 0.6, 0.3), geos: [] as THREE.BufferGeometry[] };
+  private slab = { mat: M.plastic("#c9ccd8", 0.7), geos: [] as THREE.BufferGeometry[] };
+  private railGlass = { mat: new THREE.MeshStandardMaterial({ color: "#9fd8ff", transparent: true, opacity: 0.28, roughness: 0.05, metalness: 0.2, depthWrite: false }), geos: [] as THREE.BufferGeometry[] };
+  private bed = { mat: M.plastic("#3e4a3c", 0.9), geos: [] as THREE.BufferGeometry[] };
+  private leaf = { mat: M.plastic("#2f7a4a", 0.85), geos: [] as THREE.BufferGeometry[] };
+  private scaffold = { mat: M.plastic("#3a3f55", 0.5, 0.6), geos: [] as THREE.BufferGeometry[] };
+  private roofSigns = new Map<string, { mat: THREE.Material; geos: THREE.BufferGeometry[] }>();
   private shops = [0, 1, 2, 3, 4, 5].map((v) => {
     const tex = T.shopfrontTex(SHOPS[v * 2], SHOPS[v * 2 + 1], NEON[v % NEON.length]);
     return { mat: new THREE.MeshStandardMaterial({ map: tex, emissive: "#ffffff", emissiveMap: tex, emissiveIntensity: 1.1, roughness: 0.4 }), geos: [] as THREE.BufferGeometry[] };
@@ -638,7 +644,45 @@ class CityBlocks {
       this.neon[c].geos.push(place(new THREE.BoxGeometry(0.14, 0.14, td + 0.7), tw / 2 + 0.3, h + 0.85, 0));
       this.neon[c].geos.push(place(new THREE.BoxGeometry(0.14, 0.14, td + 0.7), -(tw / 2 + 0.3), h + 0.85, 0));
     }
+    // Rooftop: a garden on low roofs, or a big lit sign on scaffolding.
+    if (this.detail && h < 32 && rnd(seed, 60) < 0.45) {
+      this.bed.geos.push(place(new THREE.BoxGeometry(tw * 0.7, 0.6, td * 0.6), 0, h + 1.1, 0));
+      for (let k = 0; k < 5; k++) {
+        const bx = (rnd(seed, 61 + k) - 0.5) * tw * 0.6, bz = (rnd(seed, 70 + k) - 0.5) * td * 0.5;
+        const r = 0.8 + rnd(seed, 80 + k) * 0.9;
+        this.leaf.geos.push(place(new THREE.IcosahedronGeometry(r, 1), bx, h + 1.4 + r * 0.7, bz));
+      }
+    } else if (this.detail && front && rnd(seed, 62) < 0.35) {
+      const text = SHOPS[Math.floor(rnd(seed, 63) * SHOPS.length)];
+      const col = NEON[Math.floor(rnd(seed, 64) * NEON.length)];
+      const key = text + col;
+      let sg = this.roofSigns.get(key);
+      if (!sg) {
+        const tex = T.bladeSignTex(text, col, true);
+        sg = { mat: new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(1.5, 1.5, 1.5), toneMapped: false, side: THREE.DoubleSide }), geos: [] };
+        this.roofSigns.set(key, sg);
+      }
+      const sw = Math.min(tw * 0.9, 16), sh = sw * 0.19;
+      sg.geos.push(place(new THREE.PlaneGeometry(sw, sh), 0, h + 3.2 + sh / 2, -td * 0.3, Math.PI));
+      // Lattice legs and a catwalk behind the sign.
+      for (const lx of [-sw * 0.4, 0, sw * 0.4]) {
+        this.scaffold.geos.push(place(new THREE.BoxGeometry(0.18, 3.2 + sh, 0.18), lx, h + (3.2 + sh) / 2, -td * 0.3 + 0.3));
+        this.scaffold.geos.push(place(new THREE.BoxGeometry(0.12, 0.12, 2.2).rotateX(0.9), lx, h + 1.4, -td * 0.3 + 1.1));
+      }
+      this.scaffold.geos.push(place(new THREE.BoxGeometry(sw, 0.14, 0.9), 0, h + 3, -td * 0.3 + 0.5));
+    }
     if (!front) return;
+    // Balconies up the street face of some buildings: a slab with a glass rail.
+    if (this.detail && rnd(seed, 65) < 0.4 && hb > 16) {
+      const bw = Math.min(w * 0.35, 5);
+      for (let y = 9; y < hb - 3; y += 4) {
+        for (const bx of [-w * 0.25, w * 0.25]) {
+          this.slab.geos.push(place(new THREE.BoxGeometry(bw, 0.22, 1.4), bx, y, -(d / 2 + 0.7)));
+          this.railGlass.geos.push(place(new THREE.BoxGeometry(bw, 1.0, 0.04), bx, y + 0.6, -(d / 2 + 1.38)));
+          this.ac.geos.push(place(new THREE.BoxGeometry(bw, 0.06, 0.06), bx, y + 1.1, -(d / 2 + 1.38)));
+        }
+      }
+    }
     // Street level (local −Z faces the road): shopfront, awning, blade sign.
     const sv = Math.floor(rnd(seed, 30) * this.shops.length);
     this.shops[sv].geos.push(place(new THREE.PlaneGeometry(w - 0.6, 4.6), 0, 2.4, -(d / 2 + 0.05), Math.PI));
@@ -670,7 +714,7 @@ class CityBlocks {
     // Merged per material and per 120 m chunk, so blocks off-screen (and out
     // of the moon's shadow box) are culled instead of drawn every frame.
     const CHUNK = 120;
-    const all = [...this.facades, this.roof, this.plinth, this.ac, ...this.shops, ...this.awnings, ...this.signs.values(), ...this.neon, this.tanks, this.beacons];
+    const all = [...this.facades, this.roof, this.plinth, this.ac, this.slab, this.bed, this.railGlass, this.leaf, this.scaffold, ...this.roofSigns.values(), ...this.shops, ...this.awnings, ...this.signs.values(), ...this.neon, this.tanks, this.beacons];
     for (const b of all) {
       const groups = new Map<string, { geos: THREE.BufferGeometry[]; front: boolean }>();
       for (const g of b.geos) {
@@ -680,7 +724,7 @@ class CityBlocks {
         if (!grp) { grp = { geos: [], front }; groups.set(key, grp); }
         grp.geos.push(g.index ? g.toNonIndexed() : g);
       }
-      const glow = b.mat instanceof THREE.MeshBasicMaterial;
+      const glow = b.mat instanceof THREE.MeshBasicMaterial || b.mat.transparent;
       for (const grp of groups.values()) {
         const g = mergeGeometries(grp.geos, false);
         grp.geos.forEach((x) => x.dispose());

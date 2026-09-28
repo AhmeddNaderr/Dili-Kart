@@ -220,3 +220,68 @@ export function blimp(scene: THREE.Scene, center: THREE.Vector3, radius: number)
     },
   };
 }
+
+/**
+ * Circuit furniture: stacked tyre walls on the outside of the tight corners
+ * (instanced, one draw call), and marshal posts with a flag and a light.
+ */
+export function cornerDetail(scene: THREE.Scene, track: Track, keep: <O extends THREE.Object3D>(o: O) => O) {
+  const f = newFrame();
+  // Find the tight corners from the track's curvature.
+  const corners: { u: number; s: number }[] = [];
+  for (let u = 0; u < track.length; u += 4) {
+    const k = track.curvature(u);
+    if (Math.abs(k) > 0.022 && !corners.some((c) => Math.abs(track.delta(c.u, u)) < 40)) corners.push({ u, s: k > 0 ? -1 : 1 });
+  }
+  const tyre = new THREE.TorusGeometry(0.42, 0.2, 10, 20).rotateX(Math.PI / 2);
+  const spots: THREE.Matrix4[] = [];
+  const cols: THREE.Color[] = [];
+  const q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1);
+  for (const c of corners) {
+    if (track.inGap(c.u) || Math.abs(track.delta(c.u, track.startU)) < 30) continue;
+    for (let du = -14; du <= 14; du += 1.1) {
+      track.frame(c.u + du, f);
+      const flat = new THREE.Vector3(f.side.x, 0, f.side.z).normalize();
+      const base = f.pos.clone().addScaledVector(flat, (WALL - 0.9) * c.s);
+      for (let row = 0; row < 3; row++) {
+        const p = base.clone();
+        p.y = Math.max(f.pos.y, 0) + 0.2 + row * 0.38;
+        spots.push(new THREE.Matrix4().compose(p, q, sc));
+        // Mostly black tyres, every few a red or white one, like real barriers.
+        const band = Math.floor((du + 14) / 3.3) % 3;
+        cols.push(new THREE.Color(row === 2 && band === 0 ? "#e8384f" : row === 2 && band === 1 ? "#f4f6fb" : "#1c1d24"));
+      }
+    }
+  }
+  if (spots.length) {
+    const im = new THREE.InstancedMesh(tyre, new THREE.MeshStandardMaterial({ roughness: 0.85 }), spots.length);
+    spots.forEach((m, i) => { im.setMatrixAt(i, m); im.setColorAt(i, cols[i]); });
+    im.castShadow = true;
+    im.receiveShadow = true;
+    im.computeBoundingSphere();
+    scene.add(im);
+  }
+  // Marshal posts just before each corner: a little booth, a light and a flag.
+  const booth = M.plastic("#f4f6fb", 0.5);
+  const roof = M.plastic("#e8384f", 0.4);
+  const flag = M.cloth("#ffd21f");
+  corners.forEach((c, i) => {
+    if (track.inGap(c.u - 22)) return;
+    track.frame(c.u - 22, f);
+    const flat = new THREE.Vector3(f.side.x, 0, f.side.z).normalize();
+    const pos = f.pos.clone().addScaledVector(flat, (WALL + 2.4) * -c.s);
+    const g = new THREE.Group();
+    g.position.set(pos.x, Math.max(0, f.pos.y - 0.2), pos.z);
+    g.rotation.y = Math.atan2(flat.x * -c.s, flat.z * -c.s) + Math.PI;
+    M.add(g, M.rbox(1.6, 2.2, 1.4, 0.12), booth, 0, 1.1, 0);
+    M.add(g, M.rbox(1.9, 0.18, 1.7, 0.06), roof, 0, 2.3, 0);
+    M.add(g, new THREE.BoxGeometry(1.2, 0.7, 0.05), new THREE.MeshBasicMaterial({ color: hot("#ffe2a8", 1.4), toneMapped: false }), 0, 1.4, -0.71, false);
+    M.add(g, M.cyl(0.03, 0.03, 1.8, 6), M.plastic("#2a2f45", 0.4), 0.95, 2.6, -0.3);
+    const fl = M.add(g, new THREE.PlaneGeometry(0.8, 0.5), flag, 1.35, 3.2, -0.3);
+    fl.rotation.y = (i % 2 ? 0.3 : -0.3);
+    const lamp = new THREE.Mesh(M.sphere(0.14, 10, 8), new THREE.MeshBasicMaterial({ color: hot("#ffb31c", 2.6), toneMapped: false }));
+    lamp.position.set(-0.5, 2.55, 0);
+    g.add(lamp);
+    scene.add(keep(g));
+  });
+}
