@@ -1157,7 +1157,9 @@ function lobby() {
         ${pl.id === r.host ? `<i class="crown" title="Host">${CROWN}</i>` : ""}
       </li>`).join("")
       + (bots ? `<li class="bots"><span class="pic bot">${ICON.flag}</span><span class="nm"><b>${bots} Custodian${bots === 1 ? "" : "s"}</b><small>Fill the empty spots</small></span></li>` : "");
-    view.querySelector("#slots")!.innerHTML = rows;
+    // Only when someone joins or leaves, so rows don't replay their entrance.
+    const slots = view.querySelector<HTMLElement>("#slots")!;
+    if (slots.dataset.html !== rows) { slots.innerHTML = rows; slots.dataset.html = rows; }
     view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => {
       const on = b.dataset.track === r.track;
       b.classList.toggle("on", on);
