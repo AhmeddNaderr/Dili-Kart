@@ -437,11 +437,11 @@ export class RaceAudio {
   /* ================================================================ */
 
   /** Coin bling; a streak climbs the scale. */
-  coin(streak: number) {
+  coin(streak: number, vol = 1) {
     const k = Math.pow(2, [0, 2, 4, 7, 9, 12, 14, 16][Math.min(7, streak)] / 12);
-    this.tone(988 * k, 0.07, "square", 0.035);
-    this.tone(1319 * k, 0.32, "sine", 0.07, { delay: 0.06, verb: 0.4 });
-    this.tone(2638 * k, 0.18, "sine", 0.02, { delay: 0.06 });
+    this.tone(988 * k, 0.07, "square", 0.035 * vol);
+    this.tone(1319 * k, 0.32, "sine", 0.07 * vol, { delay: 0.06, verb: 0.4 });
+    this.tone(2638 * k, 0.18, "sine", 0.02 * vol, { delay: 0.06 });
   }
 
   /** Countdown: lower beeps, then a bright chord for GO. */

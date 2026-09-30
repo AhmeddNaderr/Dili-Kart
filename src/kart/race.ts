@@ -116,6 +116,14 @@ interface Racer {
   frozen: number;
   prevU: number;
   color: string;
+  /** Coins carried: each one adds a little top speed (up to 10); a spin-out drops 3. */
+  purse: number;
+  /** How far a Custodian will swerve for a coin (0 never, 1 always). */
+  greed: number;
+  /** Seconds a Custodian has spent sliding through the current bend. */
+  cornerT: number;
+  /** Already lost coins for the current spin-out. */
+  hurt: boolean;
 }
 
 interface Coin { kind: T.CoinKind; u: number; lat: number; h: number; alive: boolean; respawn: number; pop: number; phase: number; }
@@ -471,7 +479,7 @@ export class DiliCart {
         hop: 0, hopV: 0, squash: 1, air: false, y: 0, vy: 0, airT: 0,
         spin: 0, spinAng: 0, flip: 0, boostT: 0, finished: false,
         skill: 1, bias: 0, aggro: 0, itemT: 12, shoveT: 0, bumpT: 0, frozen: 0,
-        prevU: 0, color: look.trim,
+        prevU: 0, color: look.trim, purse: 0, greed: 0, cornerT: 0, hurt: false,
       };
       r.prevU = this.track.wrap(this.track.startU + r.dist);
       this.racers.push(r);
@@ -482,13 +490,14 @@ export class DiliCart {
     make(0, M.lookFor(this.char, this.skin), RIVALS);
     // Front of the grid is quickest. All of them are a touch slower than a
     // player holding the gas, so passes come steadily rather than in a burst.
-    const skills = [0.955, 0.94, 0.925, 0.91, 0.895, 0.88, 0.865];
+    const skills = [0.97, 0.961, 0.952, 0.943, 0.934, 0.925, 0.916];
     for (let k = 0; k < RIVALS; k++) {
       const r = make(k + 1, M.RIVAL_LOOKS[k], k);
       r.skill = skills[k];
       r.bias = ((k * 37) % 7) / 3 - 1;
       r.aggro = k % 3 === 0 ? 0.9 : k % 3 === 1 ? 0.5 : 0.2;
-      r.itemT = 10 + k * 2.3;
+      r.itemT = 8 + k * 1.8;
+      r.greed = [0.4, 0.9, 0.6, 0.85, 0.35, 0.8, 0.7][k];
     }
   }
 
@@ -1081,9 +1090,9 @@ export class DiliCart {
     // to charge blue → orange → purple; let go to fire the mini-turbo.
     if (!auto && !p.air && p.spin <= 0) {
       if (this.driftDir === 0) {
-        if (want !== 0 && p.speed > 12) {
+        if (want !== 0 && p.speed > 13) {
           this.turnHeld += dt;
-          if (this.turnHeld > 0.28) {
+          if (this.turnHeld > 0.32) {
             this.driftDir = want;
             this.driftT = 0;
             this.driftTier = 0;
@@ -1337,7 +1346,8 @@ export class DiliCart {
 
     // Speed.
     const offroad = !r.air && Math.abs(r.lat) > EDGE + 0.4;
-    let top = TOP * r.skill * (gas ? 1 : CRUISE) * cap;
+    // Coins carried add up to 3.5% top speed, for everyone.
+    let top = TOP * r.skill * (gas ? 1 : CRUISE) * cap * (1 + Math.min(10, r.purse) * 0.0035);
     if (offroad) top *= 0.62;
     if (r.boostT > 0) top = BOOST_TOP * (r.player ? 1 : 0.94);
     if (r.frozen > 0) top *= 0.2;
@@ -1353,17 +1363,20 @@ export class DiliCart {
     const push = r.air ? 0 : -f.curv * r.speed * r.speed * CENTRIFUGAL;
     let target: number;
     if (drifting) {
-      // A drift is a committed arc: it mostly cancels the corner's pull and
-      // creeps inward. Counter-steering holds the line wide.
-      r.steer += (this.driftDir * 0.8 - r.steer) * Math.min(1, dt * 9);
-      target = this.driftHold > 0
-        ? this.driftDir * steerRate * 0.62 + push * 0.45
-        : -this.driftDir * steerRate * 0.38 + push * 0.3;
+      // A drift carves an arc through the bend: the slide soaks up most of
+      // the corner's pull, and the stick sets how tight the arc is — hold
+      // into the drift to tighten it, lean the other way to run it wider.
+      // In a typical bend holding in creeps gently to the inside and
+      // counter-steering drifts gently out, so the line is yours to steer.
+      r.steer += (this.driftDir * (this.driftHold > 0 ? 0.9 : 0.45) - r.steer) * Math.min(1, dt * 8);
+      const arc = this.driftHold > 0 ? 0.42 : 0.06;
+      target = this.driftDir * steerRate * arc + push * 0.6;
     } else {
       r.steer += (steerIn - r.steer) * Math.min(1, dt * 9);
       target = r.steer * steerRate + push;
     }
-    r.latV += (target - r.latV) * Math.min(1, dt * 6);
+    // A drifting kart carries its momentum: it answers the stick a beat slower.
+    r.latV += (target - r.latV) * Math.min(1, dt * (drifting ? 4.5 : 6));
     r.lat += r.latV * dt;
 
     // Soft walls: bounce back, scrub a little speed, throw sparks.
@@ -1387,6 +1400,8 @@ export class DiliCart {
     // Timers.
     r.boostT = Math.max(0, r.boostT - dt);
     r.frozen = Math.max(0, r.frozen - dt);
+    if (r.spin > 0 && !r.hurt) { r.hurt = true; r.purse = Math.max(0, r.purse - 3); }
+    if (r.spin <= 0) r.hurt = false;
     if (r.spin > 0) {
       r.spin -= dt;
       r.spinAng += dt * Math.PI * 2 / 0.8;
@@ -1476,6 +1491,17 @@ export class DiliCart {
         target = o.lat + (r.lat >= o.lat ? 3.2 : -3.2);
       }
     }
+    // Swerve for coins on the way, if they're close to the line.
+    if (r.greed > 0 && !r.air) {
+      let best = Infinity;
+      for (const c of this.coins) {
+        if (!c.alive || c.h > 2) continue;
+        const d = tr.delta(u, c.u);
+        if (d < 5 || d > 30) continue;
+        const off = Math.abs(c.lat - target);
+        if (off < 1.6 + r.greed * 3.4 && off + d * 0.1 < best) { best = off + d * 0.1; target = c.lat; }
+      }
+    }
     // Dodge hazards on the line.
     for (const h of this.hazards) {
       const d = tr.delta(u, h.u);
@@ -1495,13 +1521,22 @@ export class DiliCart {
 
     // Rubber band: close enough to fight, never a runaway.
     let band = 1;
-    if (gapToPlayer > 30) band = 1 + Math.min(0.16, (gapToPlayer - 30) * 0.004);
-    if (gapToPlayer < -25) band = 1 - Math.min(0.22, (-gapToPlayer - 25) * 0.005);
+    if (gapToPlayer > 22) band = 1 + Math.min(0.18, (gapToPlayer - 22) * 0.004);
+    if (gapToPlayer < -40) band = 1 - Math.min(0.12, (-gapToPlayer - 40) * 0.003);
     // Catch-up never makes a Custodian faster than you at full gas.
     const skill = r.skill;
-    r.skill = band > 1 ? Math.min(skill * band, 0.975) : skill * band;
+    r.skill = band > 1 ? Math.min(skill * band, 0.985) : skill * band;
     this.drive(r, steer, true, false, dt);
     r.skill = skill;
+
+    // Custodians drift the bends too, and fire a mini-turbo on the way out.
+    const bend = Math.abs(tr.curvature(u));
+    if (!r.air && bend > 0.018 && r.speed > 14) r.cornerT += dt;
+    else if (bend < 0.01) {
+      if (r.cornerT > 0.9 && r.spin <= 0 && Math.random() < 0.35 + r.skill * 0.4) r.boostT = Math.max(r.boostT, 0.45 + Math.min(0.5, (r.cornerT - 0.9) * 0.25));
+      r.cornerT = 0;
+    }
+    this.rivalCoins(r, u);
 
     if (r.air && Math.random() < dt * 0.6 && r.flip === 0) r.flip = 0.001;
     if (r.flip > 0) r.flip = Math.min(Math.PI * 2, r.flip + dt * 11);
@@ -1511,18 +1546,38 @@ export class DiliCart {
     // if you've got away from them.
     // Attacks share one cooldown across the whole pack, so they never pile up.
     r.itemT -= dt;
-    if (r.itemT <= 0 && this.attackCool <= 0 && this.phase === "race" && this.raceT > 8 && !r.finished) {
-      r.itemT = 14 + Math.random() * 9;
+    if (r.itemT <= 0 && this.attackCool <= 0 && this.phase === "race" && this.raceT > 7 && !r.finished) {
+      r.itemT = 11 + Math.random() * 7;
       if (gapToPlayer < -12 && gapToPlayer > -40 && this.hazards.filter((h) => h.kind === "goo").length < 2) {
         this.dropGoo(r);
-        this.attackCool = 5;
+        this.attackCool = 4;
       } else if (gapToPlayer > 14 && gapToPlayer < 70 && this.orbs.length < 1) {
         this.fireOrb(r);
-        this.attackCool = 17 + Math.random() * 7;
+        this.attackCool = 15 + Math.random() * 6;
       }
     }
 
     if (!r.finished && r.dist >= this.laps * tr.length) r.finished = true;
+  }
+
+  /** A Custodian drives through a coin: it's gone for everyone until it respawns. */
+  private rivalCoins(r: Racer, u: number) {
+    if (r.air || r.spin > 0) return;
+    const tr = this.track;
+    for (const c of this.coins) {
+      if (!c.alive || c.h > 2) continue;
+      if (Math.abs(tr.delta(u, c.u)) < 1.9 && Math.abs(c.lat - r.lat) < 1.7) {
+        c.alive = false;
+        c.pop = 0.35;
+        c.respawn = 7;
+        r.purse++;
+        const w = tr.point(c.u, c.lat, c.h, this.v1);
+        if (w.distanceToSquared(this.camera.position) < 70 * 70) {
+          this.burst(w, c.kind === "eth" ? "#c9b8ff" : "#ffd84d", 8, 3);
+          if (w.distanceToSquared(this.camera.position) < 30 * 30) this.audio.coin(1, 0.35);
+        }
+      }
+    }
   }
 
   private dropGoo(r: Racer) {
@@ -1701,6 +1756,7 @@ export class DiliCart {
         const val = c.kind === "btc" ? 60 : c.kind === "eth" ? 30 : 10;
         this.addScore(val, "coins");
         this.coinCount++;
+        p.purse++;
         this.coinStreak++;
         this.coinStreakT = 1.2;
         this.audio.coin(this.coinStreak);
@@ -1968,7 +2024,7 @@ export class DiliCart {
 
       // Visual yaw: sideways velocity, plus the drift slide.
       const slideTarget = r.player
-        ? this.driftDir * 0.42
+        ? this.driftDir * (this.driftHold < 0 ? 0.3 : 0.48)
         : (Math.abs(this.f.curv) > 0.018 && r.speed > 14 && !r.air ? Math.sign(this.f.curv) * 0.28 : 0);
       r.slide += (slideTarget - r.slide) * Math.min(1, dt * 7);
       const yaw = Math.atan2(r.latV, Math.max(4, r.speed)) * 0.9 + r.slide;
