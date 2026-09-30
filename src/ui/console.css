@@ -1006,6 +1006,9 @@
   .garage .go-wrap .tracks { flex-direction: column; flex: 1; min-width: 0; }
   .garage .go-wrap .go-label { display: none; }
   .garage .launch { --w: 150px; flex: none; }
+  /* Tracks and the launch button share a row; Race friends gets its own. */
+  .garage .go-wrap { flex-wrap: wrap; }
+  .garage .go-wrap .mp-btn { order: 3; flex: 1 0 100%; justify-content: center; padding: 8px 14px; }
   .garage .con-foot .leds { display: none; }
   .garage .con-foot > span { flex-wrap: wrap; }
   .garage .con-foot .key { height: 36px; padding: 0 12px; font-size: 10px; }

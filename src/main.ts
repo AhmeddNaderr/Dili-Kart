@@ -275,7 +275,9 @@ function auth(mode: "signup" | "login" = "signup") {
       else await api.login(handle, pwEl.value);
       sfx.start();
       say("> Engine on!");
-      intro(hub, mode === "signup");
+      // Arrived by an invite: the room is waiting, Dili can say hi later.
+      if (pendingRoom) hub();
+      else intro(hub, mode === "signup");
     } catch (err) {
       fail(err instanceof Error ? err.message : "Something went wrong.");
       submit.disabled = false;
@@ -285,7 +287,8 @@ function auth(mode: "signup" | "login" = "signup") {
   view.querySelector("#guest")!.addEventListener("click", () => {
     sfx.ui();
     api.playAsGuest();
-    intro(hub);
+    if (pendingRoom) hub();
+    else intro(hub);
   });
   view.querySelector("#replay")!.addEventListener("click", () => { sfx.ui(); playFilm(() => {}); });
 
@@ -1333,7 +1336,7 @@ void (async () => {
   // film fades out, so a phone never plays the film and runs the race at once.
   const next = () => {
     if (!p) auth();
-    else if (!greetedThisSession()) intro(hub, false);
+    else if (!greetedThisSession() && !pendingRoom) intro(hub, false);
     else hub();
   };
   if (showFilm) playFilm(next, film);
