@@ -48,7 +48,19 @@ const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 let liveTrack: TrackId = "circuit";
 let backdropTimer = 0;
+/** Phones and low-core machines (set in index.html): lighter everything. */
+const LITE = document.documentElement.classList.contains("lite");
+
 function backdrop(on: boolean) {
+  if (LITE) {
+    // A still of the stadium instead of a whole live 3D track rendering
+    // behind the menus: menus open instantly and stay smooth on a phone.
+    if (on) {
+      liveEl.style.backgroundImage = `url(bg-${trackPick}.jpg)`;
+      liveEl.classList.add("still", "on");
+    } else liveEl.classList.remove("on");
+    return;
+  }
   // The backdrop shows whichever track is picked; switching rebuilds it.
   if (on && live && liveTrack !== trackPick) {
     live.destroy();
@@ -1232,17 +1244,21 @@ function mpStandings(el: HTMLElement) {
   const grid = s.start.grid;
   const draw = () => {
     if (!el.isConnected) return;
+    const here = new Set((s.room.room?.players ?? []).map((p) => p.id));
+    // Finishers by time, then those still racing, then anyone who left.
     const rows = grid
-      .map((g) => ({ g, t: s.fins.get(g.id) }))
-      .sort((a, b) => (a.t ?? Infinity) - (b.t ?? Infinity));
+      .map((g) => ({ g, t: s.fins.get(g.id), gone: !s.fins.has(g.id) && !here.has(g.id) }))
+      .sort((a, b) => (a.t ?? (a.gone ? 2e9 : 1e9)) - (b.t ?? (b.gone ? 2e9 : 1e9)));
     const best = rows[0]?.t;
     // Places count everyone who crossed the line, Custodians too.
     const all = [...s.fins.values()];
     const place = (t: number) => 1 + all.filter((x) => x < t).length;
-    el.innerHTML = `<header><span>Room ${s.room.code}</span><small>${rows.filter((x) => x.t !== undefined).length}/${grid.length} finished</small></header>
-      <ol>${rows.map(({ g, t }, i) => `<li class="${g.id === s.room.you ? "me" : ""} ${t === undefined ? "racing" : ""}">
+    const done = rows.filter((x) => x.t !== undefined).length;
+    const out = done + rows.filter((x) => x.t === undefined && !x.gone).length;
+    el.innerHTML = `<header><span>Room ${s.room.code}</span><small>${done === out ? "Everyone's in" : `${done}/${out} finished`}</small></header>
+      <ol>${rows.map(({ g, t, gone }, i) => `<li class="${g.id === s.room.you ? "me" : ""} ${t === undefined ? "racing" : ""}">
         <em>${t === undefined ? "–" : ORD(place(t))}</em><span class="pic">${face(g.char)}</span><b>${esc(g.name)}</b>
-        <span class="t">${t === undefined ? "racing…" : i === 0 || best === undefined ? fmtTime(t) : "+" + (t - best).toFixed(2)}</span></li>`).join("")}</ol>`;
+        <span class="t">${t !== undefined ? (i === 0 || best === undefined ? fmtTime(t) : "+" + (t - best).toFixed(2)) : gone ? "left" : "racing…"}</span></li>`).join("")}</ol>`;
   };
   s.onFin = draw;
   s.onRoom = draw;

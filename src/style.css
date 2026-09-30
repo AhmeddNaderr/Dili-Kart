@@ -524,3 +524,13 @@ h1 span { color: var(--yellow); }
 @media (prefers-reduced-motion: reduce) {
   .btn.primary::after { animation: none; }
 }
+
+/* Phones: frosted glass re-blurs the live 3D view behind it every frame,
+   which costs more than it's worth on a phone GPU. Use tinted glass. */
+html.lite *, html.lite *::before, html.lite *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+html.lite .kh { --glass: rgba(14, 17, 36, 0.8); }
+/* Phones: the menus' backdrop is a still frame of the track. */
+.live-bg.still { background: #04050b center / cover no-repeat; }

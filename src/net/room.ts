@@ -68,6 +68,7 @@ export class RoomClient {
   private jit = 0;
   private sendAt = 0;
   private recvAt = 0;
+  private outbox: ClientMsg[] = [];
 
   constructor(code: string, who: { token?: string | null; char: CharId }) {
     this.code = code;
@@ -117,6 +118,12 @@ export class RoomClient {
   }
 
   send(msg: ClientMsg) {
+    // A finish or "loaded" must never be lost to a dropped connection: hold
+    // them until we're back (the room ignores repeats).
+    if ((msg.t === "fin" || msg.t === "loaded") && this.ws?.readyState !== WebSocket.OPEN) {
+      if (this.outbox.length < 40) this.outbox.push(msg);
+      return;
+    }
     this.raw(JSON.stringify(msg));
   }
 
@@ -208,6 +215,8 @@ export class RoomClient {
       // A first rough offset until the pings come back.
       if (!this.synced) this.offset = msg.now - Date.now();
       this.setStatus("online");
+      const held = this.outbox.splice(0);
+      for (const m of held) this.raw(JSON.stringify(m));
     }
     if (msg.t === "room") this.room = msg.room;
     this.emit(msg.t, msg as never);

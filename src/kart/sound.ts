@@ -1,4 +1,4 @@
-import { audioCtx } from "../engine/audio";
+import { audioCtx, master } from "../engine/audio";
 
 /**
  * Everything you hear during a race, synthesised live with WebAudio — no
@@ -13,6 +13,10 @@ import { audioCtx } from "../engine/audio";
  *  - A synthwave soundtrack (the trailer's style) and every one-shot effect,
  *    through a shared stadium reverb and a glue compressor.
  */
+
+/** Music level (the bus gain at full volume). */
+const MUSIC = 0.2;
+const lite = typeof document !== "undefined" && document.documentElement.classList.contains("lite");
 
 const midi = (n: number) => 440 * Math.pow(2, (n - 69) / 12);
 
@@ -74,13 +78,14 @@ export class RaceAudio {
   private noise!: AudioBuffer;
   private brown!: AudioBuffer;
   private stoppers: (() => void)[] = [];
+  private arpBus: StereoPannerNode[] = [];
 
   private eng: {
     osc: OscillatorNode; sub: OscillatorNode; rasp: OscillatorNode; lfo: OscillatorNode; lfoDepth: GainNode;
     raspG: GainNode; raspF: BiquadFilterNode; lp: BiquadFilterNode; g: GainNode; intake: Loop; whistle: OscillatorNode; whistleG: GainNode;
   } | null = null;
   private rival: { osc: OscillatorNode; sub: OscillatorNode; lp: BiquadFilterNode; pan: StereoPannerNode; g: GainNode } | null = null;
-  private squeal: { tone: OscillatorNode; toneG: GainNode; hiss: Loop; vib: OscillatorNode } | null = null;
+  private squeal: { band: Loop; band2: Loop; hiss: Loop; vib: OscillatorNode } | null = null;
   private wind: Loop | null = null;
   private rumble: Loop | null = null;
   private crowd: Loop | null = null;
@@ -100,20 +105,28 @@ export class RaceAudio {
     if (!c) return;
     this.c = c;
 
-    // Master: glue compressor, then out.
+    // The race's own glue compressor, then the shared master chain (phone
+    // speaker tuning and the limiter).
     const comp = c.createDynamicsCompressor();
-    comp.threshold.value = -14; comp.ratio.value = 3.5; comp.attack.value = 0.004; comp.release.value = 0.2;
+    comp.threshold.value = -16; comp.knee.value = 8; comp.ratio.value = 3; comp.attack.value = 0.005; comp.release.value = 0.2;
     this.out = c.createGain();
-    this.out.gain.value = 1.35;
-    comp.connect(this.out).connect(c.destination);
+    this.out.gain.value = 1.1;
+    comp.connect(this.out).connect(master(c));
     const bus = (v: number) => { const g = c.createGain(); g.gain.value = v; g.connect(comp); return g; };
     this.sfxBus = bus(0.9);
-    this.musicBus = bus(0.14);
+    this.musicBus = bus(MUSIC);
     this.engBus = bus(0.85);
+    // The arpeggio bounces left and right: the music gets some width.
+    for (const side of [-0.45, 0.45]) {
+      const p = c.createStereoPanner(); p.pan.value = side;
+      p.connect(this.musicBus);
+      this.arpBus.push(p);
+    }
 
     // Stadium reverb and a dotted-eighth delay, shared by music and effects.
     const verb = c.createConvolver();
-    const ir = c.createBuffer(2, c.sampleRate * 1.9, c.sampleRate);
+    // A shorter tail on phones: convolution is the priciest thing in here.
+    const ir = c.createBuffer(2, Math.floor(c.sampleRate * (lite ? 1.1 : 1.9)), c.sampleRate);
     for (let ch = 0; ch < 2; ch++) {
       const d = ir.getChannelData(ch);
       for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3);
@@ -164,6 +177,7 @@ export class RaceAudio {
     for (const s of this.stoppers) { try { s(); } catch { /* already stopped */ } }
     this.stoppers = [];
     this.out?.disconnect();
+    this.arpBus = [];
     this.c = null;
     this.eng = null;
     this.rival = null;
@@ -215,7 +229,7 @@ export class RaceAudio {
     const lfo = this.osc("sine", 25);
 
     const mix = c.createGain(); mix.gain.value = 0.6;
-    const subG = c.createGain(); subG.gain.value = 0.2;
+    const subG = c.createGain(); subG.gain.value = 0.12;
     osc.connect(mix); sub.connect(subG).connect(mix);
     // Amplitude lope at half the firing rate: the kart "putt-putt".
     const am = c.createGain(); am.gain.value = 0.75;
@@ -253,18 +267,28 @@ export class RaceAudio {
     this.rival = { osc, sub, lp, pan, g };
   }
 
-  /** Tyre screech: a wobbling tone over a narrow hiss. */
+  /**
+   * Tyre screech: rubber singing is a narrow, restless band of noise, not a
+   * clean tone. Two resonant bands wander at unrelated rates (so it never
+   * sounds like a synth vibrato), over a wider hiss of scrubbing rubber.
+   */
   private buildSqueal() {
     const c = this.c!;
-    const tone = this.osc("triangle", 1100);
-    const vib = this.osc("sine", 8);
-    const vibG = c.createGain(); vibG.gain.value = 45;
-    vib.connect(vibG).connect(tone.frequency);
-    const toneG = c.createGain(); toneG.gain.value = 0;
-    const bp = c.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 1400; bp.Q.value = 3;
-    tone.connect(bp).connect(toneG).connect(this.engBus);
-    const hiss = this.loop(this.noise, "bandpass", 2400, 5, this.engBus);
-    this.squeal = { tone, toneG, hiss, vib };
+    const band = this.loop(this.noise, "bandpass", 1150, 16, this.engBus, "peaking", 1150);
+    band.f2!.gain.value = 6;
+    const band2 = this.loop(this.noise, "bandpass", 2300, 12, band.g);
+    band2.g.gain.value = 0.45;
+    const wob = (hz: number, depth: number, target: AudioParam) => {
+      const o = this.osc("sine", hz);
+      const g = c.createGain(); g.gain.value = depth;
+      o.connect(g).connect(target);
+      return o;
+    };
+    const vib = wob(5.3, 55, band.f.frequency);
+    wob(13.7, 25, band.f.frequency);
+    wob(7.9, 70, band2.f.frequency);
+    const hiss = this.loop(this.noise, "bandpass", 2400, 3, this.engBus);
+    this.squeal = { band, band2, hiss, vib };
   }
 
   /** Gear and rpm from road speed, with the gearbox's shift points. */
@@ -351,8 +375,10 @@ export class RaceAudio {
     const c = this.c, q = this.squeal;
     if (!c || !q) return;
     const t = c.currentTime;
-    q.toneG.gain.setTargetAtTime(on ? 0.03 : 0, t, on ? 0.04 : 0.08);
-    q.tone.frequency.setTargetAtTime(1050 + tier * 170, t, 0.08);
+    q.band.g.gain.setTargetAtTime(on ? 0.5 + tier * 0.08 : 0, t, on ? 0.04 : 0.08);
+    q.band.f.frequency.setTargetAtTime(1050 + tier * 170, t, 0.08);
+    q.band.f2!.frequency.setTargetAtTime(1050 + tier * 170, t, 0.08);
+    q.band2.f.frequency.setTargetAtTime(2150 + tier * 300, t, 0.08);
     q.hiss.g.gain.setTargetAtTime(on ? 0.02 + tier * 0.006 : 0, t, 0.05);
     q.hiss.f.frequency.setTargetAtTime(2200 + tier * 400, t, 0.08);
     // Sparks crackle as the charge builds.
@@ -365,7 +391,7 @@ export class RaceAudio {
   hurry() { this.stepLen = STEP / 1.1; }
 
   setMusic(level: number) {
-    if (this.c) this.musicBus.gain.setTargetAtTime(level * 0.14, this.c.currentTime, 0.3);
+    if (this.c) this.musicBus.gain.setTargetAtTime(level * MUSIC, this.c.currentTime, 0.3);
   }
 
   /* ================================================================ */
@@ -592,10 +618,15 @@ export class RaceAudio {
   private mKick(t: number) {
     const c = this.c!;
     const o = c.createOscillator();
-    o.frequency.setValueAtTime(165, t);
-    o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
-    o.connect(this.env(t, 0.75, 0.002, 0.3, this.musicBus));
+    o.frequency.setValueAtTime(190, t);
+    o.frequency.exponentialRampToValueAtTime(50, t + 0.11);
+    o.connect(this.env(t, 0.6, 0.002, 0.28, this.musicBus));
     o.start(t); o.stop(t + 0.4);
+    // The beater click: what makes a kick punch through a phone speaker.
+    const src = c.createBufferSource(); src.buffer = this.noise;
+    const f = c.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = 3200; f.Q.value = 1.2;
+    src.connect(f).connect(this.env(t, 0.22, 0.001, 0.018, this.musicBus));
+    src.start(t, Math.random(), 0.05);
   }
   private mSnare(t: number) {
     const c = this.c!;
@@ -632,22 +663,27 @@ export class RaceAudio {
     const o = c.createOscillator(); o.type = "square"; o.frequency.value = freq;
     const f = c.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 2400;
     o.connect(f);
-    f.connect(this.env(t, 0.06, 0.003, 0.12, this.musicBus));
+    f.connect(this.env(t, 0.06, 0.003, 0.12, this.arpBus[this.step & 1] ?? this.musicBus));
     f.connect(this.env(t, 0.05, 0.003, 0.12, this.delayIn));
     o.start(t); o.stop(t + 0.2);
   }
   private mPad(t: number, notes: number[], len: number) {
     const c = this.c!;
-    const f = c.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 1300;
     const g = c.createGain();
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(0.045, t + 0.3);
     g.gain.setValueAtTime(0.045, t + len - 0.2);
     g.gain.linearRampToValueAtTime(0.0001, t + len + 0.3);
-    f.connect(g); g.connect(this.musicBus); g.connect(this.verbIn);
-    for (const n of notes) for (const det of [-9, 9]) {
-      const o = c.createOscillator(); o.type = "sawtooth"; o.frequency.value = midi(n); o.detune.value = det;
-      o.connect(f); o.start(t); o.stop(t + len + 0.4);
+    g.connect(this.musicBus); g.connect(this.verbIn);
+    // Two detuned layers spread left and right: a wide, lush pad.
+    for (const det of [-9, 9]) {
+      const f = c.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 1300;
+      const p = c.createStereoPanner(); p.pan.value = det > 0 ? 0.6 : -0.6;
+      f.connect(p).connect(g);
+      for (const n of notes) {
+        const o = c.createOscillator(); o.type = "sawtooth"; o.frequency.value = midi(n); o.detune.value = det;
+        o.connect(f); o.start(t); o.stop(t + len + 0.4);
+      }
     }
   }
   private mLead(t: number, freq: number, len: number) {

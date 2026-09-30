@@ -140,6 +140,8 @@ export class Hud {
   private mapDots: SVGCircleElement[] = [];
   private mapXf: (x: number, z: number) => [number, number] = () => [0, 0];
   private rollTimer = 0;
+  private rankRows: HTMLLIElement[] = [];
+  private rankKey = "";
 
   constructor(parent: HTMLElement, private actions: HudActions, course: { name: string; laps: number; night: boolean; online?: { code: string; people: number } } = { name: "Dili Circuit", laps: 3, night: false }) {
     this.el = document.createElement("div");
@@ -153,6 +155,7 @@ export class Hud {
       </div>
       <div class="kh-top"><div class="kh-lap">LAP <b>1</b><i>/${course.laps}</i></div><span class="kh-sep"></span><div class="kh-clock">0:00.00</div></div>
       <div class="kh-mapbox"><svg class="kh-map" viewBox="0 0 170 200"><g class="kh-map-g"></g></svg></div>
+      <ol class="kh-rank"></ol>
       <div class="kh-bl">
         <div class="kh-coins"><span class="kh-coin">${COIN}</span><b>0</b></div>
         <div class="kh-score"><b>0</b><span>Score</span></div>
@@ -170,7 +173,7 @@ export class Hud {
           <strong>${course.name}</strong>
           <span>${course.online ? `${course.laps} laps · ${course.online.people} players${course.online.people < 8 ? ` + ${8 - course.online.people} Custodians` : ""}` : `${course.laps} laps · 8 racers · beat the Custodians`}</span>
         </div>
-        <em>Press any arrow to skip</em>
+        <em>${matchMedia("(pointer: coarse)").matches ? "Tap to skip" : "Press any arrow to skip"}</em>
       </div>
       <div class="kh-hint"><span><kbd>←</kbd><kbd>→</kbd>Steer</span><span><kbd>hold</kbd>Drift</span><span><kbd>↑</kbd>Gas</span><span><kbd>↓</kbd>Item</span><span><kbd>Esc</kbd>Pause</span></div>
       <div class="kh-pause">
@@ -339,6 +342,42 @@ export class Hud {
     g.appendChild(this.mapDots[0]);
   }
 
+  /** The live standings: one row per racer, moved (not rebuilt) as places change. */
+  buildRank(racers: { name: string; color: string; me: boolean; human: boolean }[]) {
+    const ol = this.q(".kh-rank");
+    this.rankRows = racers.map((r) => {
+      const li = document.createElement("li");
+      li.className = r.me ? "me" : r.human ? "hu" : "";
+      li.innerHTML = `<b>0</b><i style="background:${r.color}"></i><span></span>`;
+      li.querySelector("span")!.textContent = r.me ? "You" : r.name || "Custodian";
+      ol.appendChild(li);
+      return li;
+    });
+    this.rankKey = "";
+  }
+
+  /**
+   * `order` is racer indices, first place first. Shows the top three and you
+   * (the top four if you're in them); only touches the DOM when that changes.
+   */
+  rank(order: number[]) {
+    const me = order.indexOf(0);
+    const shown = me < 4 ? order.slice(0, 4) : [...order.slice(0, 3), 0];
+    const key = shown.join(",") + "|" + me;
+    if (key === this.rankKey) return;
+    this.rankKey = key;
+    this.rankRows.forEach((li, i) => {
+      const slot = shown.indexOf(i);
+      if (slot < 0) { li.classList.remove("on"); return; }
+      li.classList.add("on");
+      li.classList.toggle("gap", slot === 3 && me >= 4);
+      li.style.setProperty("--y", String(slot));
+      const pos = order.indexOf(i) + 1;
+      li.firstElementChild!.textContent = String(pos);
+      li.dataset.p = String(pos);
+    });
+  }
+
   /** Another person (online): a bigger dot with a white ring. */
   mapHuman(i: number) {
     const c = this.mapDots[i];
@@ -352,8 +391,13 @@ export class Hud {
     const c = this.mapDots[i];
     if (!c) return;
     const [px, py] = this.mapXf(x, z);
-    c.setAttribute("cx", px.toFixed(1));
-    c.setAttribute("cy", py.toFixed(1));
+    // Only touch the DOM when a dot actually moved (a repaint each time).
+    const cx = px.toFixed(1), cy = py.toFixed(1);
+    if (c.dataset.p !== cx + cy) {
+      c.dataset.p = cx + cy;
+      c.setAttribute("cx", cx);
+      c.setAttribute("cy", cy);
+    }
     if (color && c.getAttribute("fill") !== color) c.setAttribute("fill", color);
   }
 

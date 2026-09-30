@@ -30,6 +30,8 @@ interface Meta {
   /** When loading started (for the timeout), and when the lights go out. */
   loadingSince: number;
   goAt: number;
+  /** Finish times this race (room clock, s), so a reconnect gets them all. */
+  fins?: Record<string, number>;
 }
 
 interface Att {
@@ -139,6 +141,7 @@ export class Room extends DurableObject<Env> {
     } else if (m.phase === "race" && m.grid.some((g) => g.id === who.id)) {
       this.send(server, { t: "start", raceId: m.raceId, track: m.track, seed: m.raceId, grid: m.grid });
       this.send(server, { t: "go", raceId: m.raceId, at: m.goAt });
+      for (const [fid, time] of Object.entries(m.fins ?? {})) this.send(server, { t: "fin", id: fid, time, raceId: m.raceId });
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -188,6 +191,7 @@ export class Room extends DurableObject<Env> {
         m.loaded = [];
         m.loadingSince = Date.now();
         m.goAt = 0;
+        m.fins = {};
         await this.save();
         this.broadcast({ t: "start", raceId: m.raceId, track: m.track, seed: m.raceId, grid: m.grid });
         this.broadcast({ t: "room", room: this.snapshot() });
@@ -201,9 +205,22 @@ export class Room extends DurableObject<Env> {
         break;
       case "fin": {
         if (msg.raceId !== m.raceId || !racing || !Number.isFinite(msg.time)) return;
-        // The host reports the bots it drives; everyone else only themselves.
-        const who = typeof msg.who === "string" && msg.who.startsWith("bot") && id === m.host ? msg.who : id;
-        this.broadcast({ t: "fin", id: who, time: Math.max(0, msg.time), raceId: m.raceId });
+        // The host reports the karts it drives (the bots, and anyone who left
+        // mid-race); everyone else only themselves.
+        let who = id;
+        if (msg.who !== undefined && msg.who !== id) {
+          const hostDrives = typeof msg.who === "string" && id === m.host
+            && (/^bot\d$/.test(msg.who) || (m.grid.some((g) => g.id === msg.who) && !this.live().some((p) => p.id === msg.who)));
+          if (!hostDrives) return;
+          who = msg.who as string;
+        }
+        m.fins ??= {};
+        // First report wins: a finish time never changes once it's set.
+        if (m.fins[who] !== undefined) return;
+        const time = Math.max(0, msg.time);
+        m.fins[who] = time;
+        await this.save();
+        this.broadcast({ t: "fin", id: who, time, raceId: m.raceId });
         break;
       }
       case "ev":

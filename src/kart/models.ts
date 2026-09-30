@@ -287,7 +287,11 @@ export class KartModel {
   private flag: THREE.Mesh | null = null;
   private flagBase: Float32Array | null = null;
 
-  constructor(readonly look: KartLook, shadowTex: THREE.Texture) {
+  /**
+   * `lite` (phones): glossy clear-coat parts become plain gloss plastic too,
+   * so even more of the kart collapses into a handful of draw calls.
+   */
+  constructor(readonly look: KartLook, shadowTex: THREE.Texture, opts: { lite?: boolean } = {}) {
     this.root.add(this.body);
     this.body.add(this.chassis, this.driver);
     this.chassis.add(this.detail);
@@ -296,12 +300,19 @@ export class KartModel {
     else this.buildMascotDriver(look.driver);
     this.buildGlider();
 
-    // Collapse every static part into one mesh per material.
-    for (const x of [...this.exhaustGlow, ...this.flames]) this.keepApart.add(x);
-    mergeChildren(this.chassis, this.keepApart);
+    // Collapse every static part into as few meshes as possible: plain
+    // coloured parts carry their colour in the vertices and share one of a
+    // few materials, then every group merges its children per material.
+    // (A kart was ~86 draw calls; now it's around 20.)
+    for (const x of [...this.exhaustGlow, ...this.flames, ...this.tips]) this.keepApart.add(x);
+    bakeColors(this.root, this.keepApart, opts.lite === true);
     mergeChildren(this.detail, this.keepApart, false);
-    mergeChildren(this.head, this.keepApart);
-    mergeChildren(this.driver, this.keepApart);
+    const groups: THREE.Object3D[] = [];
+    this.root.traverse((o) => {
+      if (o === this.detail || (o as THREE.Mesh).isMesh || this.keepApart.has(o)) return;
+      if (o.children.filter((c) => (c as THREE.Mesh).isMesh).length > 1) groups.push(o);
+    });
+    for (const g of groups) mergeChildren(g, this.keepApart);
 
     this.shadow = new THREE.Mesh(
       cached("shadowPlane", () => new THREE.PlaneGeometry(2.7, 3.6).rotateX(-Math.PI / 2)),
@@ -366,6 +377,11 @@ export class KartModel {
     pool.position.set(0, 0.07, 5.2);
     pool.renderOrder = 1;
     this.shadowRoot.add(pool);
+  }
+
+  /** Stop casting into the sun's shadow map (phones: only the player's kart does; the blob shadow stays). */
+  noShadows() {
+    this.root.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = false; });
   }
 
   /** Show or hide the fine detail (suspension, springs, harness...). */
@@ -692,6 +708,7 @@ export class KartModel {
     this.armL = rig.armL;
     this.armR = rig.armR;
     for (const k of rig.keep) this.keepApart.add(k);
+    for (const k of [...rig.eyes, rig.mouth, rig.torso, rig.cape]) if (k) this.keepApart.add(k);
     // Arms and head are posed every frame, so each merges on its own.
     for (const g of [rig.armL, rig.armR]) mergeChildren(g, new Set());
     mergeChildren(rig.root, this.keepApart);
@@ -785,6 +802,89 @@ export class KartModel {
   }
 }
 
+/** Shared vertex-coloured materials for baked parts, by surface. */
+const vcMats = new Map<string, THREE.MeshStandardMaterial>();
+function vcMat(rough: number, metal: number, side: THREE.Side, lite: boolean) {
+  // Snap to a few surfaces so parts can share: that's the point. Big
+  // screens keep gloss/matte and metal/plastic apart; phones use one.
+  const r = lite ? 0.4 : rough < 0.45 ? 0.3 : 0.7;
+  const m = lite ? 0.15 : metal > 0.5 ? 0.9 : 0.05;
+  const k = `${r},${m},${side}`;
+  let mat = vcMats.get(k);
+  if (!mat) {
+    mat = rimLight(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: r, metalness: m, side }));
+    vcMats.set(k, mat);
+  }
+  return mat;
+}
+
+/** A MeshStandardMaterial twin of a physical one (no clear-coat, sheen or iridescence). */
+const plainCache = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+function plainOf(mat: THREE.MeshPhysicalMaterial) {
+  let p = plainCache.get(mat);
+  if (!p) {
+    p = rimLight(new THREE.MeshStandardMaterial({
+      color: mat.color, map: mat.map, roughness: mat.roughness, metalness: mat.metalness,
+      emissive: mat.emissive, emissiveIntensity: mat.emissiveIntensity, emissiveMap: mat.emissiveMap,
+      transparent: mat.transparent, opacity: mat.opacity, alphaTest: mat.alphaTest, side: mat.side,
+      depthWrite: mat.depthWrite, flatShading: mat.flatShading,
+    }));
+    plainCache.set(mat, p);
+  }
+  return p;
+}
+
+function glowVc(side: THREE.Side) {
+  const k = `glow${side}`;
+  let mat = vcMats.get(k) as unknown as THREE.MeshBasicMaterial | undefined;
+  if (!mat) {
+    mat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, side });
+    vcMats.set(k, mat as unknown as THREE.MeshStandardMaterial);
+  }
+  return mat;
+}
+
+/**
+ * Plain untextured parts keep their colour in a vertex attribute and switch
+ * to a shared material, so parts of different colours can merge.
+ */
+function bakeColors(root: THREE.Object3D, skip: Set<THREE.Object3D>, lite: boolean) {
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || skip.has(m) || Array.isArray(m.material)) return;
+    const mat = m.material as THREE.MeshPhysicalMaterial;
+    if (!(mat instanceof THREE.MeshStandardMaterial)) return;
+    // Clear-coat paint and glass keep their special material on big screens.
+    if (mat.isMeshPhysicalMaterial && !lite) return;
+    if (mat.map || mat.emissiveMap || mat.normalMap || mat.roughnessMap || mat.metalnessMap || mat.alphaMap || mat.aoMap || mat.envMap) {
+      // Phones: textured clear-coat parts keep their texture on a plain material.
+      if (lite && mat.isMeshPhysicalMaterial) m.material = plainOf(mat);
+      return;
+    }
+    if (mat.transparent || mat.opacity < 1 || mat.alphaTest > 0 || mat.vertexColors) {
+      if (lite && mat.isMeshPhysicalMaterial) m.material = plainOf(mat);
+      return;
+    }
+    const glowing = mat.emissiveIntensity > 0 && mat.emissive.getHex() !== 0;
+    if (glowing && !lite) return;
+    const g = m.geometry.clone();
+    const n = g.attributes.position.count;
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { col[i * 3] = mat.color.r; col[i * 3 + 1] = mat.color.g; col[i * 3 + 2] = mat.color.b; }
+    g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    m.geometry = g;
+    if (glowing) {
+      // Phones: lights and LED strips share one unlit material, their glow
+      // (colour × intensity) baked in, still bright enough to bloom.
+      const e = mat.emissive.clone().multiplyScalar(mat.emissiveIntensity).add(mat.color.clone().multiplyScalar(0.25));
+      for (let i = 0; i < n; i++) { col[i * 3] = e.r; col[i * 3 + 1] = e.g; col[i * 3 + 2] = e.b; }
+      m.material = glowVc(mat.side);
+      return;
+    }
+    m.material = vcMat(mat.roughness, mat.metalness, mat.side, lite);
+  });
+}
+
 /** Merge a group's direct mesh children, one mesh per material. */
 function mergeChildren(group: THREE.Object3D, skip: Set<THREE.Object3D>, shadows = true) {
   const buckets = new Map<THREE.Material, { geos: THREE.BufferGeometry[]; shadow: boolean }>();
@@ -795,9 +895,11 @@ function mergeChildren(group: THREE.Object3D, skip: Set<THREE.Object3D>, shadows
     m.updateMatrix();
     let g = m.geometry.clone().applyMatrix4(m.matrix);
     for (const name of Object.keys(g.attributes)) {
-      if (!["position", "normal", "uv"].includes(name)) g.deleteAttribute(name);
+      if (!["position", "normal", "uv", "color"].includes(name)) g.deleteAttribute(name);
     }
     if (g.index) g = g.toNonIndexed();
+    // Everything in a bucket needs the same attributes to merge.
+    if (!g.attributes.uv) g.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
     const b = buckets.get(m.material) ?? { geos: [], shadow: false };
     b.geos.push(g);
     b.shadow ||= m.castShadow;

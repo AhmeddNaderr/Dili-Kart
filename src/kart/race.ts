@@ -237,6 +237,9 @@ export class DiliCart {
   private menuOpen = false;
   /** Online: finishing times (room clock) by racer id, bots included. */
   private finTimes = new Map<string, number>();
+  /** When each racer was first seen finished (for the standings list). */
+  private finSeen = new Map<number, number>();
+  private rankT = 0;
   /** Goo used mid-jump, dropped when the kart lands. */
   private gooOnLand = false;
   /** Dev: per-frame positions of every kart, for smoothness tests. */
@@ -383,6 +386,8 @@ export class DiliCart {
     });
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+    // Error checks make every shader compile block: that was the in-race hang.
+    this.renderer.debug.checkShaderErrors = import.meta.env.DEV;
     // The attract backdrop sits behind the menus, so it can afford fewer pixels.
     // Retina-sharp on capable machines; the frame-rate watchdog steps it down if needed.
     const maxRatio = this.trailer ? 1 : this.attract ? (this.quality === "low" ? 0.75 : 1) : this.quality === "low" ? 1.25 : 2;
@@ -455,6 +460,7 @@ export class DiliCart {
 
     this.hud.buildMap(this.track.outline(10), this.racers.length);
     for (const r of this.racers) if (r.human && !r.player) this.hud.mapHuman(r.i);
+    this.hud.buildRank(this.racers.map((r) => ({ name: r.name || (r.id.startsWith("bot") ? `Custodian ${Number(r.id.slice(3)) + 1}` : ""), color: r.color, me: r.player, human: r.human })));
 
     const composerTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: this.quality === "low" ? 2 : 4 });
     this.composer = new EffectComposer(this.renderer, composerTarget);
@@ -566,7 +572,11 @@ export class DiliCart {
   private buildRacers() {
     const shadowTex = T.blobTex("rgba(10,12,40,.62)", "rgba(10,12,40,0)");
     const make = (i: number, look: M.KartLook, slot: number, id = i === 0 ? "me" : botId(i - 1), human = i === 0, name = "") => {
-      const model = new M.KartModel(look, shadowTex);
+      const lite = this.quality === "low";
+      const model = new M.KartModel(look, shadowTex, { lite });
+      // Phones: only your own kart casts into the shadow map; the rest keep
+      // their soft blob shadow on the road.
+      if (lite && i !== 0) model.noShadows();
       this.scene.add(model.root, model.shadowRoot);
       if (this.trackId === "town") model.lightsOn();
       const g = gridSlot(slot);
@@ -809,8 +819,11 @@ export class DiliCart {
   };
 
   private onTap = () => {
-    if (this.phase === "intro" && this.phaseT > 0.3) this.skipIntro = true;
+    // Real time, not game time: on a slow phone the fly-in's first frames
+    // can take a while, and the tap should still count.
+    if (this.phase === "intro" && performance.now() - this.introAt > 350) this.skipIntro = true;
   };
+  private introAt = 0;
 
   private onBlur = () => {
     this.input = { left: false, right: false, gas: false, down: false };
@@ -891,7 +904,7 @@ export class DiliCart {
       for (const r of this.racers) this.updateRival(r, dt);
       this.bumps(dt);
       // Endless race: roll everyone back a lap together so nobody "finishes".
-      if (player.dist > this.track.length * 2) for (const r of this.racers) { r.dist -= this.track.length; r.finished = false; }
+      if (player.dist > this.track.length * 2) for (const r of this.racers) { r.dist -= this.track.length; r.finished = false; this.finSeen.clear(); }
     } else if (moving) {
       this.updatePlayer(player, dt);
       for (let k = 1; k < this.racers.length; k++) if (this.sims(this.racers[k])) this.updateRival(this.racers[k], dt);
@@ -1056,6 +1069,7 @@ export class DiliCart {
   private startIntro() {
     this.phase = "intro";
     this.phaseT = 0;
+    this.introAt = performance.now();
     const tr = this.track;
     const p = this.racers[0];
     const u = tr.wrap(tr.startU + p.dist);
@@ -1103,6 +1117,8 @@ export class DiliCart {
     if (any && this.phaseT > 0.3) this.skipIntro = true;
     if (this.room) {
       // Online the lights go out for everyone at once: wait for the room.
+      // Skipping just cuts the fly-in short and waits on the grid.
+      if (this.skipIntro && this.phaseT < INTRO_LEN) this.phaseT = INTRO_LEN;
       const now = this.room.now();
       if (!this.goAt) this.hud.waiting("Waiting for racers…");
       else if (now >= this.goAt - 3000) {
@@ -1938,6 +1954,14 @@ export class DiliCart {
         if (this.sims(back)) back.speed *= 0.96;
       }
     }
+  }
+
+  /** Racer indices, first place first: finishers by time, then by distance. */
+  private liveOrder(): number[] {
+    for (const r of this.racers) if (r.finished && !this.finSeen.has(r.i)) this.finSeen.set(r.i, this.raceT + r.i * 1e-4);
+    const fin = (r: Racer) => (r.finished ? this.finTimes.get(r.id) ?? this.finSeen.get(r.i) ?? Infinity : Infinity);
+    const ahead = (r: Racer) => r.dist + (r.net && !this.sims(r) ? r.net.lead : 0);
+    return [...this.racers].sort((a, b) => fin(a) - fin(b) || ahead(b) - ahead(a)).map((r) => r.i);
   }
 
   private standings() {
@@ -3250,6 +3274,8 @@ export class DiliCart {
     hud.score(this.score);
     hud.coins(this.coinCount);
     hud.position(this.lastPos);
+    // The standings list: a few times a second is plenty.
+    if ((this.rankT -= 1) <= 0) { this.rankT = 12; hud.rank(this.liveOrder()); }
     hud.lap(Math.min(this.laps, this.lap), this.laps);
     hud.clock(this.raceT);
     for (const r of this.racers) {

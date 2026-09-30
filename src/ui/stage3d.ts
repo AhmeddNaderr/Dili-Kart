@@ -28,14 +28,40 @@ export type Prop = "none" | "phone" | "coin" | "custodian" | "keys" | "kart";
 
 type Mode = { kind: "squad"; chars: CharId[] } | { kind: "kart"; look: KartLook; far?: boolean } | { kind: "solo"; char: DriverId };
 
+/** Menu renderers not in use, kept warm for the next menu. */
+const pool: THREE.WebGLRenderer[] = [];
+
+function takeRenderer(): THREE.WebGLRenderer {
+  const r = pool.pop();
+  if (r) return r;
+  const n = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
+  // Checking every shader for errors blocks on the compile: phones froze.
+  n.debug.checkShaderErrors = import.meta.env.DEV;
+  if (import.meta.env.DEV) (window as unknown as { __stageR: unknown }).__stageR = n;
+  return n;
+}
+
+function giveRenderer(r: THREE.WebGLRenderer) {
+  r.setAnimationLoop(null);
+  r.renderLists.dispose();
+  if (pool.length < 2) pool.push(r);
+  else { r.dispose(); r.forceContextLoss(); }
+}
+
 export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): MenuStage {
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));   // retina-sharp menus
+  // Phones (index.html sets "lite"): fewer pixels, smaller shadows, no
+  // studio photo to decode — the menus must stay smooth.
+  const lite = document.documentElement.classList.contains("lite");
+  const renderer = takeRenderer();
+  renderer.setPixelRatio(Math.min(devicePixelRatio, lite ? 1.5 : 2));   // retina-sharp menus
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NeutralToneMapping;
   renderer.toneMappingExposure = 1.3;
   renderer.shadowMap.enabled = true;
   const cv = renderer.domElement;
+  // The canvas is reused by the next menu: its listeners go with this stage.
+  const ctl = new AbortController();
+  const sig = { signal: ctl.signal };
   Object.assign(cv.style, { width: "100%", height: "100%", display: "block", touchAction: "pan-y", cursor: mode.kind === "kart" ? "grab" : "pointer" });
   host.appendChild(cv);
 
@@ -46,7 +72,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   pmrem.dispose();
   // Swap in a photographed studio (softboxes, real falloff) once it arrives.
   let alive = true;
-  void hdriEnvironment(renderer, "studio").then((env) => {
+  if (!lite) void hdriEnvironment(renderer, "studio").then((env) => {
     if (!alive) { env.dispose(); return; }
     scene.environment?.dispose();
     scene.environment = env;
@@ -56,7 +82,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   const key = new THREE.DirectionalLight("#fff3e2", 2.4);
   key.position.set(-4, 8, 7);
   key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
+  key.shadow.mapSize.set(lite ? 1024 : 2048, lite ? 1024 : 2048);
   key.shadow.radius = 4;
   Object.assign(key.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6 });
   key.shadow.bias = -0.0005;
@@ -136,7 +162,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
 
   const buildKart = (l: KartLook) => {
     if (kart) spin.remove(kart.root, kart.shadowRoot);
-    kart = new KartModel(l, shadowTex);
+    kart = new KartModel(l, shadowTex, { lite });
     kart.root.rotation.y = 0.5;
     spin.add(kart.root, kart.shadowRoot);
   };
@@ -235,7 +261,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       g.position.set(2.0, 1.7, 0.3);
       g.rotation.y = -0.35;
     } else if (p === "kart") {
-      introKart = new KartModel(DILI_LOOK, shadowTex);
+      introKart = new KartModel(DILI_LOOK, shadowTex, { lite });
       introKart.root.rotation.y = -0.9;
       introKart.driver.visible = false;   // Dili is standing right there
       g.add(introKart.root, introKart.shadowRoot);
@@ -255,7 +281,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
     moved = 0;
     lastX = e.clientX;
     cv.setPointerCapture(e.pointerId);
-  });
+  }, sig);
   cv.addEventListener("pointermove", (e) => {
     if (!dragging) return;
     const dx = e.clientX - lastX;
@@ -265,7 +291,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       spin.rotation.y += dx * 0.012;
       vel = dx * 0.6;
     }
-  });
+  }, sig);
   const up = (e: PointerEvent) => {
     if (!dragging) return;
     dragging = false;
@@ -276,8 +302,8 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       for (const m of mascots) m.pose = "wave";
     }
   };
-  cv.addEventListener("pointerup", up);
-  cv.addEventListener("pointercancel", up);
+  cv.addEventListener("pointerup", up, sig);
+  cv.addEventListener("pointercancel", up, sig);
 
   const resize = () => {
     const r = host.getBoundingClientRect();
@@ -353,7 +379,18 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
     ring.rotation.z += dt * 0.3;
     renderer.render(scene, camera);
   };
-  raf = requestAnimationFrame(tick);
+  // Compile the scene's shaders first (in the background where the GPU
+  // allows), then fade the stage in: the menu stays responsive instead of
+  // freezing on the first frame.
+  cv.style.opacity = "0";
+  const reveal = () => {
+    if (!alive) return;
+    cv.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: "ease-out" });
+    cv.style.opacity = "";
+    last = performance.now();
+    raf = requestAnimationFrame(tick);
+  };
+  renderer.compileAsync(scene, camera).then(reveal, reveal);
 
   return {
     setChar(c: DriverId) {
@@ -382,13 +419,13 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       alive = false;
       cancelAnimationFrame(raf);
       ro.disconnect();
-      // Models and textures are shared with the live backdrop (and cached for
-      // the next menu), so only this stage's own GL context is released;
-      // dropping the context frees everything it uploaded.
+      ctl.abort();
+      // The renderer goes back to the pool with its compiled shaders and
+      // uploaded models, so the next menu opens without a stall (building a
+      // fresh GL context and recompiling cost phones well over a second).
       scene.environment?.dispose();
-      renderer.dispose();
-      renderer.forceContextLoss();
       cv.remove();
+      giveRenderer(renderer);
     },
   };
 }

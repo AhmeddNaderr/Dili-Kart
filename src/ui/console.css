@@ -560,6 +560,10 @@
 @media (min-aspect-ratio: 16 / 10) { .film-v { object-fit: cover; } }
 .film-ui { position: absolute; right: max(18px, env(safe-area-inset-right)); bottom: max(22px, env(safe-area-inset-bottom)); display: flex; gap: 10px; opacity: 0; transition: opacity 0.6s ease 0.8s; }
 .film.on .film-ui, .film.blocked .film-ui { opacity: 1; }
+/* Skip is there from the first frame, even while the film buffers or when
+   the phone blocks autoplay; only the sound key waits for playback. */
+.film-ui { opacity: 1; transition: none; }
+.film:not(.on):not(.blocked) [data-f="sound"] { opacity: 0; pointer-events: none; }
 .film-key {
   display: inline-flex; align-items: center; gap: 8px;
   height: 42px; padding: 0 16px;
@@ -872,7 +876,9 @@
   .shop-info h2 { font-size: 28px; }
 }
 @media (max-width: 520px) {
-  .dash-board { display: none; }
+  /* Phones keep the board too: a compact top three. */
+  .dboard li:nth-child(n + 4):not(.me) { display: none; }
+  .dboard li { padding-top: 3px; padding-bottom: 3px; }
   .wallet b { display: none; }
   .wallet { padding: 0 6px; }
 }

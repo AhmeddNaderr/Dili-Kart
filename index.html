@@ -7,6 +7,13 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no"
     />
     <meta name="theme-color" content="#04050b" />
+    <script>
+      // Phones and small or low-core devices get the "lite" treatment (the
+      // same test the game uses for its lighter graphics): no live glass blur.
+      try {
+        if (matchMedia("(pointer: coarse)").matches || Math.min(screen.width, screen.height) < 700 || (navigator.hardwareConcurrency || 8) <= 4) document.documentElement.classList.add("lite");
+      } catch (e) {}
+    </script>
     <link rel="icon" href="favicon.png" type="image/png" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <meta property="og:title" content="Dili Cart · Dlicom Arcade" />
