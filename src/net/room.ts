@@ -84,9 +84,18 @@ export class RoomClient {
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const offWelcome = this.on("welcome", () => { if (!settled) { settled = true; offWelcome(); offErr(); resolve(); } });
-      const offErr = this.on("err", (m) => { if (!settled) { settled = true; offWelcome(); offErr(); this.closedByUs = true; reject(new Error(m.msg)); } });
-      this.open((why) => { if (!settled) { settled = true; offWelcome(); offErr(); reject(new Error(why)); } });
+      // Never hang on a connection that neither opens nor fails.
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.closedByUs = true;
+        try { this.ws?.close(); } catch { /* not open */ }
+        reject(new Error("The room server isn't answering. Try again."));
+      }, 12_000);
+      const done = () => clearTimeout(timer);
+      const offWelcome = this.on("welcome", () => { if (!settled) { settled = true; done(); offWelcome(); offErr(); resolve(); } });
+      const offErr = this.on("err", (m) => { if (!settled) { settled = true; done(); offWelcome(); offErr(); this.closedByUs = true; reject(new Error(m.msg)); } });
+      this.open((why) => { if (!settled) { settled = true; done(); offWelcome(); offErr(); reject(new Error(why)); } });
     });
   }
 

@@ -1113,7 +1113,7 @@ function lobby() {
       <div class="shop-title"><b>Room ${room.code}</b><span id="sub">Waiting for racers</span></div>
       <div class="bar-right">${soundButton()}</div>
     </header>
-    <div class="mp-body lob">
+    <div class="mp-body"><div class="lob">
       <section class="lob-code">
         <small>Room code</small>
         <div class="lob-tiles" aria-label="Room code ${room.code}">${[...room.code].map((c, i) => `<b style="--i:${i}">${c}</b>`).join("")}</div>
@@ -1137,7 +1137,7 @@ function lobby() {
         <p class="lob-wait" id="wait"></p>
         <p class="lob-net" id="net"></p>
       </section>
-    </div>
+    </div></div>
   </div>`);
 
   const render = () => {

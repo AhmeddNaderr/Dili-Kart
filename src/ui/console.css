@@ -1250,9 +1250,14 @@
 .mp .bar-right { margin-left: auto; }
 .mp-body {
   flex: 1; min-height: 0; overflow: auto;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 22px;
   padding: 18px 0 8px; color: #fff; font-family: "Inter", sans-serif;
 }
+/* Centred when it fits, scrollable from the top when it doesn't (plain
+   justify-content: center would push the top out of reach). */
+.mp-body > * { flex-shrink: 0; }
+.mp-body > :first-child { margin-top: auto; }
+.mp-body > :last-child { margin-bottom: auto; }
 .mp-hero { text-align: center; max-width: 560px; animation: mp-up 0.7s cubic-bezier(0.22, 1, 0.36, 1) both 0.1s; }
 .mp-hero-ico {
   display: inline-grid; place-items: center; width: 64px; height: 64px; border-radius: 22px; margin-bottom: 12px;
@@ -1420,8 +1425,13 @@
   .lob-go { grid-column: 1 / -1; }
 }
 @media (max-width: 700px) {
-  .mp-body { justify-content: flex-start; }
   .mp-cards, .lob { grid-template-columns: minmax(0, 1fr); }
+  .lob > section { min-height: 0; }
+  /* On a phone: the code, then the start button, then who's in. */
+  .lob-code { order: 0; }
+  .lob-go { order: 1; }
+  .lob-grid { order: 2; }
+  .lob-go .lob-start { height: 92px; }
   .lob-tiles b { width: 40px; height: 50px; font-size: 27px; }
   .mp-hero h1 { font-size: 34px; }
   .mp-hero p { font-size: 13px; }

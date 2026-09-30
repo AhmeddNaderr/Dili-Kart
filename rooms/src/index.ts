@@ -155,8 +155,13 @@ export class Room extends DurableObject<Env> {
     const m = this.meta;
     const id = a.p.id;
 
+    // Only the racers on the grid take part in a race (not someone who
+    // joined halfway and is waiting for the next one).
+    const racing = m.phase !== "lobby" && m.grid.some((g) => g.id === id);
+
     // Hot path: kart states, relayed without parsing.
     if (raw.charCodeAt(1) === 124 /* | */) {
+      if (!racing) return;
       const kind = raw[0];
       if (kind === "s") this.broadcastRaw(`s|${id}|${raw.slice(2)}`, ws);
       else if (kind === "b" && id === m.host) this.broadcastRaw(raw, ws);
@@ -195,14 +200,14 @@ export class Room extends DurableObject<Env> {
         await this.maybeGo();
         break;
       case "fin": {
-        if (msg.raceId !== m.raceId || !Number.isFinite(msg.time)) return;
+        if (msg.raceId !== m.raceId || !racing || !Number.isFinite(msg.time)) return;
         // The host reports the bots it drives; everyone else only themselves.
         const who = typeof msg.who === "string" && msg.who.startsWith("bot") && id === m.host ? msg.who : id;
         this.broadcast({ t: "fin", id: who, time: Math.max(0, msg.time), raceId: m.raceId });
         break;
       }
       case "ev":
-        if (m.phase !== "race" || !msg.ev || typeof msg.ev !== "object") return;
+        if (m.phase !== "race" || !racing || !msg.ev || typeof msg.ev !== "object") return;
         this.broadcast({ t: "ev", id, ev: msg.ev }, ws);
         break;
       case "lobby":

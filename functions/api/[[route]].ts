@@ -126,7 +126,7 @@ function rooms(env: Env): RoomNamespace {
 
 async function newRoom(req: Request, env: Env) {
   const ns = rooms(env);
-  await limit(env, `room:${clientIp(req)}`, 30, 3600, "That's a lot of rooms — try again in a bit.");
+  await limit(env, `room:${clientIp(req)}`, 60, 3600, "That's a lot of rooms — try again in a bit.");
   const body = await req.json().catch(() => ({})) as { track?: string };
   const track = typeof body.track === "string" ? body.track : "circuit";
   for (let k = 0; k < 6; k++) {
