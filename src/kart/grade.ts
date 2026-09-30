@@ -37,8 +37,8 @@ export function gradePass() {
         if (uBlur > 0.01) {
           // Speed blur: smear outward from the centre, strongest at the edges,
           // leaving the kart in the middle sharp.
-          float edge = smoothstep(0.12, 0.7, length(d * vec2(1.4, 1.0)));
-          vec2 step = d * uBlur * edge * 0.012;
+          float edge = smoothstep(0.2, 0.75, length(d * vec2(1.4, 1.0)));
+          vec2 step = d * uBlur * edge * 0.0065;
           vec3 acc = c.rgb;
           for (int i = 1; i < 7; i++) acc += texture2D(tDiffuse, vUv - step * float(i)).rgb;
           c.rgb = acc / 7.0;

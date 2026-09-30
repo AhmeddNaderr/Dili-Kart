@@ -2279,7 +2279,28 @@ export class DiliCart {
         : this.phase === "finish" ? 2
         : this.phase === "intro" && this.phaseT > 2.2 && this.phaseT < 4.9 ? 1 : 0;
       // Distant karts drop their fine detail.
-      r.model.setDetail(r.player || r.model.root.position.distanceToSquared(this.camera.position) < 48 * 48);
+      const camD2 = r.model.root.position.distanceToSquared(this.camera.position);
+      r.model.setDetail(r.player || camD2 < 48 * 48);
+      // A kart right on the lens (tailgating the camera) would fill the
+      // screen from the inside: hide it until it pulls clear.
+      if (!r.player) {
+        let near = camD2 < (r.model.root.visible ? 2.6 * 2.6 : 3.2 * 3.2);
+        // Also a kart sitting between the camera and the player: it would
+        // hide your own kart behind its dome.
+        if (!near && !this.attract && !this.replay && !this.director) {
+          const cam = this.camera.position, me = this.racers[0].model.root.position;
+          const vx = me.x - cam.x, vy = me.y - cam.y, vz = me.z - cam.z;
+          const kx = r.model.root.position.x - cam.x, ky = r.model.root.position.y - cam.y, kz = r.model.root.position.z - cam.z;
+          const len2 = vx * vx + vy * vy + vz * vz;
+          const t = len2 > 1 ? (kx * vx + ky * vy + kz * vz) / len2 : 1;
+          if (t > 0 && t < 0.8) {
+            const px = kx - vx * t, py = ky - vy * t, pz = kz - vz * t;
+            near = px * px + py * py + pz * pz < (r.model.root.visible ? 1.5 * 1.5 : 1.9 * 1.9);
+          }
+        }
+        r.model.root.visible = !near;
+        if (r.net?.label) r.net.label.visible = !near;
+      }
       const pose: M.KartPose = {
         speed: r.speed,
         steer: r.steer,
@@ -2674,6 +2695,7 @@ export class DiliCart {
     const from = Math.min(tape.length - 0.1, cross + 6);
     const to = Math.max(0, cross - 1.4);
     this.replay = { t: 0, from, to, shot: -1, shotT: 99, pos: V(), side: 1 };
+    for (const r of this.racers) r.model.root.visible = true;
     this.hud.replay(true);
   }
 
@@ -2935,10 +2957,13 @@ export class DiliCart {
             this.col.set("#9fc4ff"), 0.14 + Math.random() * 0.08, 0.35 + Math.random() * 0.25, { grav: 16, drag: 1.2, alpha: 0.5 });
         }
       }
-      if (Math.random() < (r.player ? 0.8 : 0.3) * k) {
+      // Fine mist behind: small and faint for your own kart (it's right by
+      // the lens), fuller behind the others.
+      if (Math.random() < (r.player ? 0.5 : 0.3) * k) {
         const w = root.localToWorld(this.v1.set((Math.random() - 0.5) * 1.8, 0.3, -1.4));
         this.puffs.spawn(w.x, w.y, w.z, back.x * r.speed * 0.15, 0.5, back.z * r.speed * 0.15,
-          this.col.set("#7d8fb0"), 0.9, 0.7, { grow: 2.6, drag: 2, alpha: 0.18 + (sliding ? 0.12 : 0) });
+          this.col.set("#7d8fb0"), r.player ? 0.45 : 0.9, r.player ? 0.45 : 0.7,
+          { grow: r.player ? 1.6 : 2.6, drag: 2, alpha: (r.player ? 0.1 : 0.18) + (sliding ? 0.08 : 0) });
       }
     }
   }
