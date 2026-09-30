@@ -1,6 +1,6 @@
 import "./style.css";
 import "./ui/console.css";
-import { DiliCart, type RaceResult } from "./kart/race";
+import { DiliCart, type RaceResult, type NetRace as RaceNet } from "./kart/race";
 import { buildIntro, greetedThisSession } from "./ui/intro";
 import { filmSeen, playFilm, prepareFilm } from "./ui/film";
 import { dropLoader, finishLoader, progress } from "./ui/loader";
@@ -10,6 +10,8 @@ import { lookFor } from "./kart/models";
 import { MASCOT } from "./kart/mascot";
 import { sfx, setMuted, isMuted } from "./engine/audio";
 import * as api from "./app/api";
+import { RoomClient, checkRoom, createRoom } from "./net/room";
+import { CODE_LEN, ROOM_MAX, normaliseCode, type NetPlayer } from "../shared/net";
 import {
   CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, SKIN_IDS, SKIN_INFO, TIERS, TRACK_IDS, TRACK_INFO, isTrackId, nextTier, normaliseHandle,
   type BoardEntry, type CharId, type RaceReply, type SkinId, type TrackId,
@@ -427,6 +429,7 @@ function hub() {
             </span>
           </button>
           <span class="go-label"><kbd>Enter</kbd> to race</span>
+          <button type="button" class="mp-btn" id="mp"><i>${PEOPLE}</i><span><b>Race friends</b><small>Online · room code</small></span></button>
         </div>
       </div>
       <div class="con-foot">
@@ -468,6 +471,7 @@ function hub() {
     backdropTimer = window.setTimeout(() => { if (view.isConnected && !leaving && trackPick === t) backdrop(true); }, 1400);
   }));
   for (const id of ["#shop", "#wallet"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); shop(); });
+  view.querySelector("#mp")!.addEventListener("click", () => { if (leaving) return; sfx.ui(); mpHome(); });
   view.querySelector("#out")!.addEventListener("click", async () => {
     sfx.ui();
     if (p.guest) return auth("signup");
@@ -531,6 +535,12 @@ function hub() {
   }), calm ? 0 : 1100);
 
   void miniBoard(view.querySelector<HTMLElement>("#mini")!, p);
+  // Arrived by an invite link: straight into that room.
+  if (pendingRoom) {
+    const code = pendingRoom;
+    pendingRoom = null;
+    void joinFromLink(code);
+  }
   // Races that finished offline get sent now; refresh the board if any did.
   if (!p.guest && api.pendingCount()) {
     void api.syncPending().then((n) => { if (n && view.isConnected) hub(); });
@@ -695,9 +705,10 @@ function confetti(from: HTMLElement) {
 /* Race                                                                */
 /* ================================================================== */
 
-function race() {
+function race(net?: NetRace) {
   const p = api.player();
   if (!p) return auth();
+  if (mp && !net) mpLeave();
 
   const view = h(`<div class="screen race-view">
     <div class="race-stage" id="stage"></div>
@@ -714,11 +725,13 @@ function race() {
 
   const game = new DiliCart();
   racer = game;
+  if (mp) mp.at = "race";
   game.mount(stageEl, {
     onEnd: (r) => void results(stageEl, r),
-    onRestart: () => { sfx.ui(); race(); },
-    onQuit: () => { sfx.ui(); hub(); },
-  }, p.char, { skin: p.skin, track: trackPick });
+    // Online there's no restarting on your own; the pause menu's button just closes it.
+    onRestart: () => { sfx.ui(); if (net) dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })); else race(); },
+    onQuit: () => { sfx.ui(); if (net) mpLeave(); hub(); },
+  }, p.char, { skin: p.skin, track: net ? net.track : trackPick, net });
 }
 
 const RI = {
@@ -737,6 +750,9 @@ const RI = {
 /** End-of-race card, over the still-running finish camera. */
 async function results(stageEl: HTMLElement, r: RaceResult) {
   const p = api.player()!;
+  const mpRes = mp && mp.at === "race" ? mp : null;
+  if (mpRes) mpRes.at = "results";
+  const hostNow = () => !!mpRes && mpRes.room.isHost();
   const podium = r.position <= 3;
   const tiles: [string, string, number, string, string][] = [
     // icon, label, points, detail, accent
@@ -781,24 +797,28 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
         <i class="rr-ribbon" hidden>New best</i>
       </div>
 
+      ${mpRes ? `<div class="rr-room" id="mpst"></div>` : ""}
       <div class="rr-rewards" id="earn">
         <div class="rw sk"></div><div class="rw sk"></div><div class="rw sk"></div>
       </div>
       <div class="rr-unlocks" id="unlocks"></div>
 
       <div class="rr-acts">
-        <button class="rr-go" id="again" aria-label="Race again">
+        <button class="rr-go" id="again" aria-label="${mpRes ? "Rematch" : "Race again"}">
           <span class="rr-go-face">
             <span class="rr-go-shine"></span>
             <span class="rr-go-ico">${RI.replay}</span>
-            <span class="rr-go-txt"><b>Race again</b><small>${TRACK_INFO[r.track].name} · ${r.laps} laps</small></span>
+            <span class="rr-go-txt"><b id="againTxt">${mpRes ? "Rematch" : "Race again"}</b><small id="againSub">${mpRes ? `Room ${mpRes.room.code} · everyone races again` : `${TRACK_INFO[r.track].name} · ${r.laps} laps`}</small></span>
             <span class="rr-go-chev"><i></i><i></i><i></i></span>
           </span>
           <kbd class="rr-go-key">Enter ↵</kbd>
         </button>
         <div class="rr-row2">
-          <button class="rr-sec" id="home"><i>${RI.home}</i><span>Hub</span></button>
-          <button class="rr-sec" id="rank"><i>${ICON.trophy}</i><span>Leaderboard</span></button>
+          ${mpRes
+            ? `<button class="rr-sec" id="lobby"><i>${PEOPLE}</i><span>Lobby</span></button>
+               <button class="rr-sec" id="leave"><i>${RI.home}</i><span>Leave room</span></button>`
+            : `<button class="rr-sec" id="home"><i>${RI.home}</i><span>Hub</span></button>
+               <button class="rr-sec" id="rank"><i>${ICON.trophy}</i><span>Leaderboard</span></button>`}
           <button class="rr-sec" id="share"><i>${RI.share}</i><span>Share</span></button>
         </div>
       </div>
@@ -825,13 +845,41 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
     }, calm ? 0 : (total ? 950 : 220 + i * 90));
   });
 
-  const again = () => { sfx.ui(); race(); };
+  const againBtn = over.querySelector<HTMLButtonElement>("#again")!;
+  const again = () => {
+    if (!mpRes) { sfx.ui(); race(); return; }
+    // Online only the host can call the rematch.
+    if (!hostNow() || againBtn.disabled) { sfx.miss(); return; }
+    sfx.ui();
+    againBtn.disabled = true;
+    mpRes.room.send({ t: "start" });
+  };
   const onKey = (e: KeyboardEvent) => { if (e.key === "Enter") again(); };
   addEventListener("keydown", onKey);
-  cleanup = () => removeEventListener("keydown", onKey);
-  over.querySelector("#again")!.addEventListener("click", again);
-  over.querySelector("#home")!.addEventListener("click", () => { sfx.ui(); hub(); });
-  over.querySelector("#rank")!.addEventListener("click", () => { sfx.ui(); void board("best"); });
+  cleanup = () => { removeEventListener("keydown", onKey); if (mpRes) { mpRes.onFin = null; mpRes.onRoom = null; } };
+  againBtn.addEventListener("click", again);
+  over.querySelector("#home")?.addEventListener("click", () => { sfx.ui(); hub(); });
+  over.querySelector("#rank")?.addEventListener("click", () => { sfx.ui(); void board("best"); });
+  if (mpRes) {
+    const st = over.querySelector<HTMLElement>("#mpst")!;
+    const syncHost = () => {
+      const host = hostNow();
+      againBtn.classList.toggle("waiting", !host);
+      over.querySelector("#againTxt")!.textContent = host ? "Rematch" : "Waiting for host";
+      over.querySelector("#againSub")!.textContent = host ? `Room ${mpRes.room.code} · everyone races again` : "The host starts the next race";
+    };
+    mpStandings(st);
+    const draw = mpRes.onRoom;
+    mpRes.onRoom = () => { draw?.(); syncHost(); };
+    syncHost();
+    over.querySelector("#lobby")!.addEventListener("click", () => {
+      sfx.ui();
+      // The host brings everyone back; anyone else just looks at the lobby.
+      if (hostNow()) mpRes.room.send({ t: "lobby" });
+      lobby();
+    });
+    over.querySelector("#leave")!.addEventListener("click", () => { sfx.ui(); mpLeave(); hub(); });
+  }
   const shareBtn = over.querySelector<HTMLButtonElement>("#share")!;
   shareBtn.addEventListener("click", async () => {
     const line = `I finished ${ORD(r.position)} on ${TRACK_INFO[r.track].name} in DILI CART with ${fmt(r.score)} points. Beat me: ${location.origin}`;
@@ -884,6 +932,307 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
       sfx.perfect(9);
     }
   }
+}
+
+/* ================================================================== */
+/* Multiplayer                                                         */
+/* ================================================================== */
+
+type NetRace = RaceNet & { track: TrackId };
+
+/** The room we're in, if any, and what it's up to. */
+interface MpSession {
+  room: RoomClient;
+  offs: (() => void)[];
+  /** Where this player is: the lobby, in a race, or on the results card. */
+  at: "lobby" | "race" | "results" | "away";
+  start: { raceId: number; track: TrackId; grid: NetPlayer[] } | null;
+  goAt: number;
+  fins: Map<string, number>;
+  /** Redraw hooks for whatever screen is showing. */
+  onRoom: (() => void) | null;
+  onFin: (() => void) | null;
+}
+let mp: MpSession | null = null;
+
+const PEOPLE = `<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.6" fill="currentColor"/><path d="M2.5 20c.6-3.8 3.3-6 6.5-6s5.9 2.2 6.5 6z" fill="currentColor"/><circle cx="17" cy="9" r="2.8" fill="currentColor" opacity=".6"/><path d="M15.8 13.6c3 .1 5.2 2.2 5.7 5.4h-4.3" fill="currentColor" opacity=".6"/></svg>`;
+const CROWN = `<svg viewBox="0 0 24 24"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z" fill="currentColor"/></svg>`;
+const COPY = `<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M16 5.5A2.5 2.5 0 0 0 13.5 3H6a3 3 0 0 0-3 3v7.5A2.5 2.5 0 0 0 5.5 16" fill="none" stroke="currentColor" stroke-width="2.2"/></svg>`;
+const LINK = `<svg viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4L11.6 6M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1.6-1.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`;
+
+const inviteUrl = (code: string) => `${location.origin}${location.pathname}?room=${code}`;
+
+/** A room code from an invite link, waiting until the player is signed in. */
+let pendingRoom: string | null = normaliseCode(new URLSearchParams(location.search).get("room") ?? "");
+
+async function joinFromLink(code: string) {
+  try {
+    await mpJoin(code);
+    lobby();
+  } catch (e) {
+    mpHome(e instanceof Error ? e.message : "Couldn't join that room.", code);
+  }
+}
+
+/** Connect to a room and wire up the events that move between screens. */
+async function mpJoin(code: string) {
+  const p = api.player()!;
+  if (mp && mp.room.code === code && mp.room.status !== "closed") return;
+  if (mp) mpLeave();
+  const room = new RoomClient(code, { token: api.token(), char: p.char });
+  await room.connect();
+  const s: MpSession = { room, offs: [], at: "lobby", start: null, goAt: 0, fins: new Map(), onRoom: null, onFin: null };
+  mp = s;
+  s.offs.push(
+    room.on("start", (m) => {
+      // The same race again after a reconnect: we're already in it.
+      if (s.start?.raceId === m.raceId && (s.at === "race" || s.at === "results")) return;
+      s.start = { raceId: m.raceId, track: m.track, grid: m.grid };
+      s.goAt = 0;
+      s.fins = new Map();
+      if (!m.grid.some((g) => g.id === room.you)) { s.onRoom?.(); return; }
+      if (s.at === "away") return;
+      sfx.start();
+      race({ room, raceId: m.raceId, grid: m.grid, track: m.track, goAt: () => s.goAt });
+    }),
+    room.on("go", (m) => { if (s.start?.raceId === m.raceId) s.goAt = m.at; }),
+    room.on("fin", (m) => { if (s.start?.raceId === m.raceId) { s.fins.set(m.id, m.time); s.onFin?.(); } }),
+    room.on("room", (m) => {
+      // The host took everyone back to the lobby.
+      if (m.room.phase === "lobby" && s.at === "results") lobby();
+      else s.onRoom?.();
+    }),
+    room.on("status", (st) => { s.onRoom?.(); if (st === "closed" && mp === s && s.at === "lobby") { mpLeave(); mpHome("You left the room."); } }),
+  );
+}
+
+function mpLeave() {
+  if (!mp) return;
+  for (const off of mp.offs) off();
+  mp.room.leave();
+  mp = null;
+  try { history.replaceState(null, "", location.pathname); } catch { /* sandboxed */ }
+}
+
+/** Create or join: the front door. */
+function mpHome(msg = "", prefill = "") {
+  const p = api.player();
+  if (!p) return auth();
+  if (mp) mpLeave();
+  const view = h(`<div class="screen stage-screen mp" data-scene="hub">
+    <header class="bar">
+      <button class="iconbtn" id="back" aria-label="Back to the hub">${ICON.back}</button>
+      <div class="shop-title"><b>Race friends</b><span>Online rooms · up to ${ROOM_MAX} racers</span></div>
+      <div class="bar-right">${soundButton()}</div>
+    </header>
+    <div class="mp-body">
+      <div class="mp-hero">
+        <i class="mp-hero-ico">${PEOPLE}</i>
+        <h1>Race your friends</h1>
+        <p>Make a room, send the code, race. Empty spots on the grid fill up with Custodians.</p>
+      </div>
+      <div class="mp-cards">
+        <section class="mp-card make">
+          <header><b>Create a room</b><small>You pick the track and start the race</small></header>
+          <div class="mp-tracks" role="radiogroup" aria-label="Track">${TRACK_IDS.map((t) => `<button type="button" class="mp-trk ${t} ${t === trackPick ? "on" : ""}" data-track="${t}" role="radio" aria-checked="${t === trackPick}"><i></i><b>${TRACK_INFO[t].name}</b><small>${TRACK_INFO[t].laps} laps</small></button>`).join("")}</div>
+          <button class="mp-cta" id="create"><span>Create room</span><i>${PEOPLE}</i></button>
+        </section>
+        <section class="mp-card join">
+          <header><b>Join a room</b><small>Type the ${CODE_LEN}-character code</small></header>
+          <label class="mp-code">
+            <input id="code" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="${CODE_LEN + 2}" placeholder="ABC12" value="${esc(prefill)}" aria-label="Room code">
+          </label>
+          <button class="mp-cta alt" id="join"><span>Join room</span><i>${ICON.back}</i></button>
+        </section>
+      </div>
+      <p class="mp-msg" id="msg" role="status">${esc(msg)}</p>
+    </div>
+  </div>`);
+  const say = (t: string, bad = true) => { const m = view.querySelector<HTMLElement>("#msg")!; m.textContent = t; m.classList.toggle("bad", bad); };
+  const busy = (b: boolean) => view.querySelectorAll<HTMLButtonElement>(".mp-cta").forEach((x) => (x.disabled = b));
+  view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); hub(); });
+  view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => b.addEventListener("click", () => {
+    sfx.pop();
+    setTrack(b.dataset.track as TrackId);
+    view.querySelectorAll<HTMLElement>("[data-track]").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", String(x === b)); });
+  }));
+  view.querySelector("#create")!.addEventListener("click", async () => {
+    sfx.ui();
+    busy(true);
+    say("Opening a room…", false);
+    try {
+      const code = await createRoom(trackPick);
+      await mpJoin(code);
+      lobby();
+    } catch (e) {
+      busy(false);
+      say(e instanceof Error ? e.message : "Couldn't create a room.");
+    }
+  });
+  const input = view.querySelector<HTMLInputElement>("#code")!;
+  input.addEventListener("input", () => { input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); say("", false); });
+  const join = async () => {
+    const code = normaliseCode(input.value);
+    if (!code) { sfx.miss(); say(`Room codes are ${CODE_LEN} letters and numbers.`); input.focus(); return; }
+    sfx.ui();
+    busy(true);
+    say("Finding the room…", false);
+    try {
+      await checkRoom(code);
+      await mpJoin(code);
+      lobby();
+    } catch (e) {
+      busy(false);
+      sfx.miss();
+      say(e instanceof Error ? e.message : "Couldn't join that room.");
+    }
+  };
+  view.querySelector("#join")!.addEventListener("click", () => void join());
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") void join(); });
+  wireCommon(view);
+  show(view, true);
+  if (!prefill) setTimeout(() => { if (matchMedia("(pointer: fine)").matches) input.focus(); }, 300);
+}
+
+/** The room: who's in, the code to share, the track, and the start button. */
+function lobby() {
+  const s = mp;
+  if (!s) return mpHome();
+  s.at = "lobby";
+  const room = s.room;
+  try { history.replaceState(null, "", `?room=${room.code}`); } catch { /* sandboxed */ }
+  const view = h(`<div class="screen stage-screen mp lobby" data-scene="hub">
+    <header class="bar">
+      <button class="iconbtn" id="back" aria-label="Leave the room">${ICON.back}</button>
+      <div class="shop-title"><b>Room ${room.code}</b><span id="sub">Waiting for racers</span></div>
+      <div class="bar-right">${soundButton()}</div>
+    </header>
+    <div class="mp-body lob">
+      <section class="lob-code">
+        <small>Room code</small>
+        <div class="lob-tiles" aria-label="Room code ${room.code}">${[...room.code].map((c, i) => `<b style="--i:${i}">${c}</b>`).join("")}</div>
+        <div class="lob-share">
+          <button class="lob-btn" id="copy">${COPY}<span>Copy code</span></button>
+          <button class="lob-btn" id="link">${LINK}<span>Invite link</span></button>
+        </div>
+        <p>Friends tap <b>Race friends → Join</b> and type the code, or open the link.</p>
+      </section>
+      <section class="lob-grid">
+        <header><span>Racers</span><b id="count"></b></header>
+        <ol id="slots"></ol>
+      </section>
+      <section class="lob-go">
+        <header><span>Track</span><small id="trkNote"></small></header>
+        <div class="mp-tracks" id="tracks">${TRACK_IDS.map((t) => `<button type="button" class="mp-trk ${t}" data-track="${t}" role="radio"><i></i><b>${TRACK_INFO[t].name}</b><small>${TRACK_INFO[t].laps} laps</small></button>`).join("")}</div>
+        <button class="launch lob-start" id="start" aria-label="Start the race">
+          <span class="launch-ring"></span>
+          <span class="launch-body"><span class="launch-shine"></span><span class="launch-chev"><i></i><i></i><i></i></span><b>START</b><small id="startSub"></small></span>
+        </button>
+        <p class="lob-wait" id="wait"></p>
+        <p class="lob-net" id="net"></p>
+      </section>
+    </div>
+  </div>`);
+
+  const render = () => {
+    const r = room.room;
+    if (!r || !view.isConnected) return;
+    const host = r.host === room.you;
+    const hostP = r.players.find((x) => x.id === r.host);
+    const inRace = r.phase !== "lobby";
+    view.querySelector("#count")!.textContent = `${r.players.length}/${ROOM_MAX}`;
+    const bots = Math.max(0, ROOM_MAX - r.players.length);
+    const rows = r.players.map((pl, i) => `<li class="${pl.id === room.you ? "me" : ""}" style="--i:${i}">
+        <span class="pic">${face(pl.char)}</span>
+        <span class="nm"><b>${esc(pl.name)}</b><small>${pl.id === room.you ? "You" : pl.guest ? "Guest" : "Player"}</small></span>
+        ${pl.id === r.host ? `<i class="crown" title="Host">${CROWN}</i>` : ""}
+      </li>`).join("")
+      + (bots ? `<li class="bots"><span class="pic bot">${ICON.flag}</span><span class="nm"><b>${bots} Custodian${bots === 1 ? "" : "s"}</b><small>Fill the empty spots</small></span></li>` : "");
+    view.querySelector("#slots")!.innerHTML = rows;
+    view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => {
+      const on = b.dataset.track === r.track;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-checked", String(on));
+      b.toggleAttribute("disabled", !host || inRace);
+    });
+    view.querySelector("#trkNote")!.textContent = host ? "You choose" : `${hostP ? hostP.name : "The host"} chooses`;
+    const start = view.querySelector<HTMLButtonElement>("#start")!;
+    start.hidden = !host;
+    start.disabled = inRace || room.status !== "online";
+    view.querySelector("#startSub")!.textContent = `${r.players.length} racer${r.players.length === 1 ? "" : "s"}${bots ? ` + ${bots} bots` : ""}`;
+    const wait = view.querySelector<HTMLElement>("#wait")!;
+    wait.textContent = inRace
+      ? (s.start && !s.start.grid.some((g) => g.id === room.you) ? "A race is on — you're in the next one." : "Race starting…")
+      : host ? (r.players.length > 1 ? "Everyone's here? Hit start." : "Share the code — or start now against the Custodians.") : `Waiting for ${hostP ? hostP.name : "the host"} to start…`;
+    view.querySelector("#sub")!.textContent = `${r.players.length} in the room · ${TRACK_INFO[r.track].name}`;
+    const net = view.querySelector<HTMLElement>("#net")!;
+    net.textContent = room.status === "reconnecting" ? "Connection dropped — reconnecting…" : room.status === "online" && room.rtt ? `Connected · ${room.rtt} ms` : "";
+    net.classList.toggle("bad", room.status !== "online");
+  };
+  s.onRoom = render;
+  s.onFin = null;
+
+  view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); mpLeave(); hub(); });
+  view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => b.addEventListener("click", () => {
+    if (!room.isHost()) return;
+    sfx.pop();
+    room.send({ t: "track", track: b.dataset.track as TrackId });
+  }));
+  const startBtn = view.querySelector<HTMLButtonElement>("#start")!;
+  startBtn.addEventListener("click", () => {
+    if (!room.isHost() || startBtn.disabled) return;
+    startBtn.classList.add("press");
+    startBtn.disabled = true;
+    room.send({ t: "start" });
+  });
+  const flash = (btn: HTMLElement, txt: string) => {
+    const span = btn.querySelector("span")!;
+    const was = span.textContent;
+    span.textContent = txt;
+    btn.classList.add("ok");
+    setTimeout(() => { span.textContent = was; btn.classList.remove("ok"); }, 1500);
+  };
+  view.querySelector("#copy")!.addEventListener("click", async (e) => {
+    sfx.pop();
+    try { await navigator.clipboard.writeText(room.code); flash(e.currentTarget as HTMLElement, "Copied!"); } catch { flash(e.currentTarget as HTMLElement, room.code); }
+  });
+  view.querySelector("#link")!.addEventListener("click", async (e) => {
+    sfx.pop();
+    const url = inviteUrl(room.code);
+    const text = `Race me in Dili Kart! Room ${room.code}: ${url}`;
+    try {
+      if (navigator.share && matchMedia("(pointer: coarse)").matches) await navigator.share({ text, url });
+      else { await navigator.clipboard.writeText(url); flash(e.currentTarget as HTMLElement, "Link copied!"); }
+    } catch { /* cancelled */ }
+  });
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Enter" && room.isHost()) startBtn.click(); };
+  addEventListener("keydown", onKey);
+  const tick = setInterval(render, 2000);
+  cleanup = () => { removeEventListener("keydown", onKey); clearInterval(tick); if (mp) mp.onRoom = null; };
+  wireCommon(view);
+  show(view, true);
+  render();
+}
+
+/** On the results card: everyone's finish, live as they come in. */
+function mpStandings(el: HTMLElement) {
+  const s = mp;
+  if (!s?.start) return;
+  const grid = s.start.grid;
+  const draw = () => {
+    if (!el.isConnected) return;
+    const rows = grid
+      .map((g) => ({ g, t: s.fins.get(g.id) }))
+      .sort((a, b) => (a.t ?? Infinity) - (b.t ?? Infinity));
+    const best = rows[0]?.t;
+    el.innerHTML = `<header><span>Room ${s.room.code}</span><small>${rows.filter((x) => x.t !== undefined).length}/${grid.length} finished</small></header>
+      <ol>${rows.map(({ g, t }, i) => `<li class="${g.id === s.room.you ? "me" : ""} ${t === undefined ? "racing" : ""}">
+        <em>${t === undefined ? "–" : i + 1}</em><span class="pic">${face(g.char)}</span><b>${esc(g.name)}</b>
+        <span class="t">${t === undefined ? "racing…" : i === 0 || best === undefined ? fmtTime(t) : "+" + (t - best).toFixed(2)}</span></li>`).join("")}</ol>`;
+  };
+  s.onFin = draw;
+  s.onRoom = draw;
+  draw();
 }
 
 /* ================================================================== */
@@ -957,6 +1306,7 @@ void (async () => {
     return hub();
   }
   if (dev === "#intro") { dropLoader(); return intro(hub); }
+  if (dev === "#mp") { dropLoader(); if (!p) api.playAsGuest(); return mpHome(); }
 
   // Fonts, then the film: the loader's kart drives as they arrive.
   progress(0.3, "Painting the karts");

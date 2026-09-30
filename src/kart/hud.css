@@ -577,3 +577,16 @@
 .kh.replaying .kh-replay { opacity: 1; transform: none; }
 @keyframes kh-rec { 50% { opacity: .25; } }
 @media (max-width: 700px) { .kh-replay { top: 12px; left: 12px; font-size: 12px; } }
+
+/* Online: waiting for the other racers to load. */
+.kh-wait {
+  position: absolute; left: 50%; bottom: 18%; transform: translate(-50%, 10px);
+  display: flex; align-items: center; gap: 12px; padding: 12px 22px; border-radius: 999px;
+  font: 800 16px/1 Inter, system-ui, sans-serif; letter-spacing: .04em; color: #fff;
+  background: rgba(10, 12, 32, .72); border: 1px solid rgba(143, 160, 255, .35);
+  backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+  opacity: 0; pointer-events: none; transition: opacity .3s, transform .3s;
+}
+.kh-wait.on { opacity: 1; transform: translate(-50%, 0); }
+.kh-wait i { width: 16px; height: 16px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, .25); border-top-color: #8fa0ff; animation: kh-spin .8s linear infinite; }
+@keyframes kh-spin { to { transform: rotate(360deg); } }

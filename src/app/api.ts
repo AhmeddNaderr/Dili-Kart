@@ -34,6 +34,8 @@ const store = {
 let current: Player | null = null;
 
 export const player = () => current;
+/** The session token, for connections that can't send headers (multiplayer rooms). */
+export const token = () => (current && !current.guest ? store.get(TOKEN_KEY) : null);
 
 /** Profiles saved before the shop existed have no wallet yet. */
 function fill(p: Player): Player {

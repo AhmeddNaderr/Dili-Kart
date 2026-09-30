@@ -12,6 +12,8 @@
  *   POST /api/skin/equip   { skin | null }             → { player }
  *   GET  /api/leaderboard?by=best|points               → { entries, me }
  *   GET  /api/stats                                    → { players, races }
+ *   POST /api/room         { track }                   → { code }   (new multiplayer room)
+ *   GET  /api/room/CODE    WebSocket upgrade           → the room (see shared/net.ts)
  *
  * Passwords are hashed with PBKDF2-SHA256 and a per-user salt. Sessions are
  * random tokens; only their SHA-256 hash is stored.
@@ -21,6 +23,7 @@ import {
   CHAR_UNLOCK, PASSWORD_MAX, PASSWORD_MIN, RACE_LIMITS, SKIN_INFO, isCharId, isSkinId, normaliseHandle, parseSkins,
   streakMultiplier, tierOf, type BoardEntry, type PlayerDTO, type RaceReply,
 } from "../../shared/rules";
+import { CODE_ALPHABET, CODE_LEN, normaliseCode, type NetPlayer } from "../../shared/net";
 
 /* ---- Minimal D1 / Pages types, so no extra type packages are needed ---- */
 interface D1Stmt {
@@ -33,8 +36,12 @@ interface D1Database {
   prepare(sql: string): D1Stmt;
   batch(stmts: D1Stmt[]): Promise<unknown[]>;
 }
+interface RoomStub { fetch(r: Request): Promise<Response> }
+interface RoomNamespace { idFromName(name: string): unknown; get(id: unknown): RoomStub }
 interface Env {
   DB: D1Database;
+  /** Multiplayer rooms (the dili-rooms Worker's Durable Objects). */
+  ROOMS?: RoomNamespace;
   /** Optional override for the PBKDF2 work factor. */
   PBKDF2_ITERATIONS?: string;
 }
@@ -99,11 +106,76 @@ async function route({ request, env }: Ctx): Promise<Response> {
   if (m === "POST" && path === "skin/equip") return equipSkin(request, env);
   if (m === "GET" && path === "leaderboard") return board(request, env, url);
   if (m === "GET" && path === "stats") return json({ ok: true, ...(await stats(env, url)) });
+  if (m === "POST" && path === "room") return newRoom(request, env);
+  if (m === "GET" && path.startsWith("room/")) return joinRoom(request, env, url, path.slice(5));
   if (m === "GET" && path === "health") {
     await env.DB.prepare("SELECT 1").first();
     return json({ ok: true });
   }
   throw new HttpError(404, "Not found");
+}
+
+/* ------------------------------------------------------------------ */
+/* Multiplayer rooms                                                   */
+/* ------------------------------------------------------------------ */
+
+function rooms(env: Env): RoomNamespace {
+  if (!env.ROOMS) throw new HttpError(503, "Multiplayer isn't switched on for this server yet.");
+  return env.ROOMS;
+}
+
+async function newRoom(req: Request, env: Env) {
+  const ns = rooms(env);
+  await limit(env, `room:${clientIp(req)}`, 30, 3600, "That's a lot of rooms — try again in a bit.");
+  const body = await req.json().catch(() => ({})) as { track?: string };
+  const track = typeof body.track === "string" ? body.track : "circuit";
+  for (let k = 0; k < 6; k++) {
+    const pick = crypto.getRandomValues(new Uint8Array(CODE_LEN));
+    const code = Array.from(pick, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+    const res = await ns.get(ns.idFromName(code)).fetch(new Request(`https://room/init?code=${code}&track=${encodeURIComponent(track)}`, { method: "POST" }));
+    const out = await res.json() as { ok: boolean };
+    if (out.ok) return json({ ok: true, code });
+  }
+  throw new HttpError(503, "Couldn't open a room. Try again.");
+}
+
+/** Who's connecting: a signed-in player, or a guest with a device id. */
+async function roomPlayer(env: Env, url: URL): Promise<NetPlayer> {
+  const token = url.searchParams.get("t") ?? "";
+  if (token) {
+    const p = await sessionPlayer(env, token);
+    if (!p) throw new HttpError(401, "Please log in again.");
+    const skins = parseSkins(p.skins);
+    return {
+      id: p.handle,
+      name: "@" + p.handle,
+      char: isCharId(p.char) ? p.char : "dili",
+      skin: isSkinId(p.skin) && skins.includes(p.skin) ? p.skin : null,
+      guest: false,
+    };
+  }
+  const gid = (url.searchParams.get("g") ?? "").toLowerCase();
+  if (!/^[a-z0-9]{8,24}$/.test(gid)) throw new HttpError(400, "Missing player id.");
+  const char = url.searchParams.get("c");
+  return { id: "g-" + gid, name: "Guest " + gid.slice(-4).toUpperCase(), char: isCharId(char) ? char : "dili", skin: null, guest: true };
+}
+
+async function joinRoom(req: Request, env: Env, url: URL, rawCode: string) {
+  const ns = rooms(env);
+  const code = normaliseCode(rawCode);
+  if (!code) throw new HttpError(404, "That room code isn't right.");
+  const stub = ns.get(ns.idFromName(code));
+  if (req.headers.get("Upgrade") !== "websocket") {
+    // Plain GET: does the room exist? (The join box checks before connecting.)
+    const res = await stub.fetch(new Request("https://room/peek"));
+    const info = await res.json() as { ok: boolean; players: number; phase: string | null };
+    if (!info.ok) throw new HttpError(404, "No room with that code. Check it and try again.");
+    return json({ ok: true, code, players: info.players, phase: info.phase });
+  }
+  const who = await roomPlayer(env, url);
+  const headers = new Headers(req.headers);
+  headers.set("X-Player", JSON.stringify(who));
+  return stub.fetch(new Request("https://room/ws", { headers }));
 }
 
 /* ------------------------------------------------------------------ */

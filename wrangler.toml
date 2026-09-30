@@ -9,3 +9,10 @@ database_name = "dili-cart"
 # The production database (created with `npx wrangler d1 create dili-cart`).
 database_id = "41a60118-3c4c-4e31-a7fd-d451d022827e"
 migrations_dir = "migrations"
+
+# Multiplayer rooms live in the dili-rooms Worker (rooms/); Pages reaches
+# them through this binding. Deploy that Worker first (npm run deploy does).
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+script_name = "dili-rooms"

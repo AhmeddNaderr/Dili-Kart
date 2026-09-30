@@ -162,6 +162,7 @@ export class Hud {
       <div class="kh-count"></div>
       <div class="kh-banner"></div>
       <div class="kh-replay"><i></i>REPLAY<span>Dlicom TV</span></div>
+      <div class="kh-wait"><i></i><span></span></div>
       <div class="kh-warn">${G.warn}Incoming</div>
       <div class="kh-title">
         <div class="kh-title-card">
@@ -445,6 +446,13 @@ export class Hud {
 
   paused(on: boolean) {
     this.q(".kh-pause").classList.toggle("on", on);
+  }
+
+  /** Online: a quiet line while the room gets everyone ready. */
+  waiting(text: string | null) {
+    const el = this.q(".kh-wait");
+    if (text) el.querySelector("span")!.textContent = text;
+    el.classList.toggle("on", !!text);
   }
 
   replay(on: boolean) {
