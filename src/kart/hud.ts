@@ -141,7 +141,7 @@ export class Hud {
   private mapXf: (x: number, z: number) => [number, number] = () => [0, 0];
   private rollTimer = 0;
 
-  constructor(parent: HTMLElement, private actions: HudActions, course = { name: "Dili Circuit", laps: 3, night: false }) {
+  constructor(parent: HTMLElement, private actions: HudActions, course: { name: string; laps: number; night: boolean; online?: { code: string; people: number } } = { name: "Dili Circuit", laps: 3, night: false }) {
     this.el = document.createElement("div");
     this.el.className = "kh";
     this.el.innerHTML = `
@@ -166,9 +166,9 @@ export class Hud {
       <div class="kh-warn">${G.warn}Incoming</div>
       <div class="kh-title">
         <div class="kh-title-card">
-          <small>${course.night ? "Dlicom Night Series" : "Dlicom Grand Prix"}</small>
+          <small>${course.online ? `Online · Room ${course.online.code}` : course.night ? "Dlicom Night Series" : "Dlicom Grand Prix"}</small>
           <strong>${course.name}</strong>
-          <span>${course.laps} laps · 8 racers · beat the Custodians</span>
+          <span>${course.online ? `${course.laps} laps · ${course.online.people} players${course.online.people < 8 ? ` + ${8 - course.online.people} Custodians` : ""}` : `${course.laps} laps · 8 racers · beat the Custodians`}</span>
         </div>
         <em>Press any arrow to skip</em>
       </div>
@@ -337,6 +337,15 @@ export class Hud {
     }
     // Player on top.
     g.appendChild(this.mapDots[0]);
+  }
+
+  /** Another person (online): a bigger dot with a white ring. */
+  mapHuman(i: number) {
+    const c = this.mapDots[i];
+    if (!c || i === 0) return;
+    c.setAttribute("r", "6");
+    c.setAttribute("stroke", "#fff");
+    c.setAttribute("stroke-width", "2");
   }
 
   mapDot(i: number, x: number, z: number, color?: string) {

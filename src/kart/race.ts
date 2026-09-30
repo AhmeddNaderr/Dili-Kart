@@ -377,7 +377,10 @@ export class DiliCart {
       resume: () => this.setPaused(false),
       restart: () => this.hooks.onRestart(),
       quit: () => this.hooks.onQuit(),
-    }, { name: TRACK_INFO[this.trackId].name, laps: this.laps, night: this.trackId === "town" });
+    }, {
+      name: TRACK_INFO[this.trackId].name, laps: this.laps, night: this.trackId === "town",
+      online: opts.net ? { code: opts.net.room.code, people: Math.min(8, opts.net.grid.length) } : undefined,
+    });
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
     // The attract backdrop sits behind the menus, so it can afford fewer pixels.
@@ -451,6 +454,7 @@ export class DiliCart {
     this.racers[0].model.body.add(this.magnet);
 
     this.hud.buildMap(this.track.outline(10), this.racers.length);
+    for (const r of this.racers) if (r.human && !r.player) this.hud.mapHuman(r.i);
 
     const composerTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: this.quality === "low" ? 2 : 4 });
     this.composer = new EffectComposer(this.renderer, composerTarget);
@@ -2330,6 +2334,7 @@ export class DiliCart {
       room.on("go", (m) => { if (m.raceId === nr.raceId) this.goAt = m.at; }),
       room.on("ev", (m) => this.onEvent(m.id, m.ev)),
       room.on("left", (m) => this.netLeft(m.id)),
+      room.on("status", (st) => this.hud.waiting(st === "reconnecting" ? "Connection dropped — reconnecting…" : st === "closed" && this.alive ? "Disconnected from the room" : null)),
       room.on("fin", (m) => {
         if (m.raceId !== nr.raceId) return;
         this.finTimes.set(m.id, m.time);
@@ -2493,10 +2498,11 @@ export class DiliCart {
     const n = r.net!;
     if (n.label) {
       const w = r.model.root.position;
-      n.label.position.set(w.x, w.y + 2.55 + r.hop, w.z);
+      n.label.position.set(w.x, w.y + 2.95 + r.hop, w.z);
       const d = w.distanceTo(this.camera.position);
-      const k = THREE.MathUtils.clamp(d / 14, 0.55, 2.4);
-      n.label.scale.set(2.6 * k, 0.62 * k, 1);
+      // Grows with distance so a name stays readable down the straight.
+      const k = THREE.MathUtils.clamp(d / 13, 0.7, 2.6);
+      n.label.scale.set(3.1 * k, 0.74 * k, 1);
       (n.label.material as THREE.SpriteMaterial).opacity = THREE.MathUtils.clamp(1.3 - d / 140, 0, 1);
     }
     if (this.sims(r)) return;
@@ -2544,6 +2550,7 @@ export class DiliCart {
   private netLeft(id: string) {
     const r = this.byId.get(id);
     if (!r || r.player || !r.human) return;
+    if (this.phase === "race") this.hud.pop(`${r.name} left · a Custodian takes over`, "purple");
     r.human = false;
     r.skill = 0.95;
     r.greed = 0.6;

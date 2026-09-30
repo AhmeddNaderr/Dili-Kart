@@ -42,7 +42,7 @@ interface Att {
 /** Lights out this long after everyone has loaded (the countdown is 3 s). */
 const GO_DELAY = 3800;
 /** Don't wait for a slow loader longer than this. */
-const LOAD_WAIT = 20_000;
+const LOAD_WAIT = 30_000;
 /** An empty room lingers this long so a dropped player can come back. */
 const EMPTY_TTL = 10 * 60_000;
 const MAX_MSG = 4096;
