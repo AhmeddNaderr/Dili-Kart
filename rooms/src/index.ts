@@ -194,10 +194,13 @@ export class Room extends DurableObject<Env> {
         if (!m.loaded.includes(id)) m.loaded.push(id);
         await this.maybeGo();
         break;
-      case "fin":
+      case "fin": {
         if (msg.raceId !== m.raceId || !Number.isFinite(msg.time)) return;
-        this.broadcast({ t: "fin", id, time: Math.max(0, msg.time), raceId: m.raceId });
+        // The host reports the bots it drives; everyone else only themselves.
+        const who = typeof msg.who === "string" && msg.who.startsWith("bot") && id === m.host ? msg.who : id;
+        this.broadcast({ t: "fin", id: who, time: Math.max(0, msg.time), raceId: m.raceId });
         break;
+      }
       case "ev":
         if (m.phase !== "race" || !msg.ev || typeof msg.ev !== "object") return;
         this.broadcast({ t: "ev", id, ev: msg.ev }, ws);

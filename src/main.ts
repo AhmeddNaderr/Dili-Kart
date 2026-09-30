@@ -764,7 +764,7 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
     [RI.flag, "Laps", r.tally.laps, `${r.laps} laps`, "#9db4ff"],
   ];
   const title = r.position === 1 ? "Custodians defeated!" : podium ? "On the podium!" : "Good race. Go again!";
-  const over = h(`<div class="rr ${podium ? "podium" : ""} p${r.position}">
+  const over = h(`<div class="rr ${podium ? "podium" : ""} p${r.position} ${mpRes ? "online" : ""}">
     <div class="rr-card">
       <header class="rr-head">
         <div class="rr-medal"><b>${r.position}</b><sup>${ORD(r.position).replace(/\d+/, "")}</sup></div>
@@ -983,6 +983,9 @@ async function mpJoin(code: string) {
   await room.connect();
   const s: MpSession = { room, offs: [], at: "lobby", start: null, goAt: 0, fins: new Map(), onRoom: null, onFin: null };
   mp = s;
+  // The start that arrives with the welcome is a replay of a race in progress.
+  let fresh = true;
+  setTimeout(() => { fresh = false; }, 1500);
   s.offs.push(
     room.on("start", (m) => {
       // The same race again after a reconnect: we're already in it.
@@ -992,6 +995,9 @@ async function mpJoin(code: string) {
       s.fins = new Map();
       if (!m.grid.some((g) => g.id === room.you)) { s.onRoom?.(); return; }
       if (s.at === "away") return;
+      // Came back (a reload, a new tab) while that race was already running:
+      // starting from the grid now would be no fun. Next race.
+      if (room.room?.phase === "race" && s.at === "lobby" && fresh) { s.onRoom?.(); return; }
       sfx.start();
       race({ room, raceId: m.raceId, grid: m.grid, track: m.track, goAt: () => s.goAt });
     }),
@@ -1162,7 +1168,7 @@ function lobby() {
     view.querySelector("#startSub")!.textContent = `${r.players.length} racer${r.players.length === 1 ? "" : "s"}${bots ? ` + ${bots} bots` : ""}`;
     const wait = view.querySelector<HTMLElement>("#wait")!;
     wait.textContent = inRace
-      ? (s.start && !s.start.grid.some((g) => g.id === room.you) ? "A race is on — you're in the next one." : "Race starting…")
+      ? (r.phase === "race" && s.at === "lobby" ? "A race is on — you're in the next one." : "Race starting…")
       : host ? (r.players.length > 1 ? "Everyone's here? Hit start." : "Share the code — or start now against the Custodians.") : `Waiting for ${hostP ? hostP.name : "the host"} to start…`;
     view.querySelector("#sub")!.textContent = `${r.players.length} in the room · ${TRACK_INFO[r.track].name}`;
     const net = view.querySelector<HTMLElement>("#net")!;
@@ -1225,9 +1231,12 @@ function mpStandings(el: HTMLElement) {
       .map((g) => ({ g, t: s.fins.get(g.id) }))
       .sort((a, b) => (a.t ?? Infinity) - (b.t ?? Infinity));
     const best = rows[0]?.t;
+    // Places count everyone who crossed the line, Custodians too.
+    const all = [...s.fins.values()];
+    const place = (t: number) => 1 + all.filter((x) => x < t).length;
     el.innerHTML = `<header><span>Room ${s.room.code}</span><small>${rows.filter((x) => x.t !== undefined).length}/${grid.length} finished</small></header>
       <ol>${rows.map(({ g, t }, i) => `<li class="${g.id === s.room.you ? "me" : ""} ${t === undefined ? "racing" : ""}">
-        <em>${t === undefined ? "–" : i + 1}</em><span class="pic">${face(g.char)}</span><b>${esc(g.name)}</b>
+        <em>${t === undefined ? "–" : ORD(place(t))}</em><span class="pic">${face(g.char)}</span><b>${esc(g.name)}</b>
         <span class="t">${t === undefined ? "racing…" : i === 0 || best === undefined ? fmtTime(t) : "+" + (t - best).toFixed(2)}</span></li>`).join("")}</ol>`;
   };
   s.onFin = draw;

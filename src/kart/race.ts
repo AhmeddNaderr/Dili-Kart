@@ -235,6 +235,10 @@ export class DiliCart {
   private netOff: (() => void)[] = [];
   private nextId = 0;
   private menuOpen = false;
+  /** Online: finishing times (room clock) by racer id, bots included. */
+  private finTimes = new Map<string, number>();
+  /** Goo used mid-jump, dropped when the kart lands. */
+  private gooOnLand = false;
   /** Dev: per-frame positions of every kart, for smoothness tests. */
   private trace: { t: number; k: Record<string, number[]> }[] | null = null;
   private confetti = new Confetti();
@@ -495,6 +499,8 @@ export class DiliCart {
         karts: this.racers.map((r) => ({ id: r.id, human: r.human, sim: this.sims(r), dist: +r.dist.toFixed(2), lat: +r.lat.toFixed(2), speed: +r.speed.toFixed(1), delay: r.net ? Math.round(r.net.delay) : 0, buf: r.net?.buf.length ?? 0, late: r.net ? Math.round(r.net.lateMean) : 0, dev: r.net ? Math.round(r.net.lateDev) : 0, gap: r.net ? Math.round(r.net.gap) : 0 })),
         fps: this.frameMs.length ? Math.round(1000 / (this.frameMs.reduce((a, b) => a + b, 0) / this.frameMs.length)) : 0,
       });
+      w.__room = this.room;
+      w.__fins = () => Object.fromEntries([...this.finTimes].map(([k, v]) => [k, +v.toFixed(2)]));
       w.__trace = (on: boolean) => { this.trace = on ? [] : null; return this.trace; };
       w.__traced = () => this.trace;
       w.__step = (sec: number, fps = 60) => {
@@ -1185,14 +1191,21 @@ export class DiliCart {
     this.phaseT = 0;
     this.driftDir = 0; this.driftTier = 0; this.driftT = 0;
     this.hud.banner("FINISH!", "", 2600);
-    if (this.room && this.netRace) this.room.send({ t: "fin", time: this.raceT, raceId: this.netRace.raceId });
+    if (this.room && this.netRace) {
+      this.finTimes.set(this.room.you, this.raceT);
+      this.room.send({ t: "fin", time: this.raceT, raceId: this.netRace.raceId });
+    }
     this.audio.fanfare();
     this.audio.setMusic(0.45);
     this.confetti.burst(this.v1.copy(this.racers[0].model.root.position).add(new THREE.Vector3(0, 5, 0)), 160, 9, 12);
   }
 
   private endRace() {
-    const pos = this.lastPos;
+    let pos = this.lastPos;
+    // Online, finishing times on the room clock decide places: a photo
+    // finish reads the same in every game.
+    const mine = this.room ? this.finTimes.get(this.room.you) : undefined;
+    if (mine !== undefined) pos = 1 + [...this.finTimes.values()].filter((t) => t < mine).length;
     const finishBonus = [1000, 700, 500, 350, 250, 150, 100, 50][pos - 1] ?? 50;
     const timeBonus = Math.max(0, Math.round((this.track.def.par - this.raceT) * 8));
     const r: RaceResult = {
@@ -1408,7 +1421,9 @@ export class DiliCart {
         this.hud.flash("#b58cff");
         break;
       case "goo":
-        this.dropGoo(p);
+        // Mid-jump there's no road to drop it on: it goes down on landing.
+        if (p.air) this.gooOnLand = true;
+        else this.dropGoo(p);
         this.audio.land();
         this.hud.flash("#6dff9e");
         break;
@@ -1589,6 +1604,7 @@ export class DiliCart {
       if (r.y < road + 1.2) { r.y = road + 1.2; r.vy = Math.max(r.vy, 0); }
     } else if (r.y <= road && r.vy < 0) {
       r.air = false;
+      if (r.player && this.gooOnLand) { this.gooOnLand = false; this.dropGoo(r); }
       r.squash = 0.72;
       r.model.thump(2.4);
       const pos = r.model.root.position;
@@ -1701,7 +1717,17 @@ export class DiliCart {
       }
     }
 
-    if (!r.finished && r.dist >= this.laps * tr.length) r.finished = true;
+    if (!r.finished && r.dist >= this.laps * tr.length) {
+      r.finished = true;
+      // Online the host reports its bots' finishes, so every game's
+      // standings agree.
+      if (this.room && this.netRace && this.phase !== "load") {
+        // The room clock, not raceT: that stops when our own race ends.
+        const t = Math.max(0, (this.room.now() - this.goAt) / 1000);
+        this.finTimes.set(r.id, t);
+        this.room.send({ t: "fin", time: t, raceId: this.netRace.raceId, who: r.id });
+      }
+    }
   }
 
   /** A Custodian drives through a coin: it's gone for everyone until it respawns. */
@@ -1727,6 +1753,8 @@ export class DiliCart {
   }
 
   private dropGoo(r: Racer) {
+    const at = this.track.wrap(this.track.startU + r.dist - 3.5);
+    if (r.air || this.track.inGap(at)) return;
     const obj = M.goo();
     this.scene.add(obj);
     const u = this.track.wrap(this.track.startU + r.dist - 3.5);
@@ -2303,8 +2331,10 @@ export class DiliCart {
       room.on("ev", (m) => this.onEvent(m.id, m.ev)),
       room.on("left", (m) => this.netLeft(m.id)),
       room.on("fin", (m) => {
+        if (m.raceId !== nr.raceId) return;
+        this.finTimes.set(m.id, m.time);
         const r = this.byId.get(m.id);
-        if (r && !r.player && m.raceId === nr.raceId) r.finished = true;
+        if (r && !r.player) r.finished = true;
       }),
     );
     room.send({ t: "loaded", raceId: nr.raceId });

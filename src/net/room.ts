@@ -236,6 +236,10 @@ export class RoomClient {
   }
 
   private emit<K extends keyof Handlers>(t: K, ...args: Parameters<Handlers[K]>) {
+    if (import.meta.env.DEV && t !== "state" && t !== "bots" && t !== "pong") {
+      const w = window as unknown as { __netlog?: string[] };
+      (w.__netlog ??= []).push(`${Math.round(performance.now())} ${t} ${JSON.stringify(args).slice(0, 120)}`);
+    }
     const set = this.handlers.get(t) as Set<(...a: unknown[]) => void> | undefined;
     if (!set) return;
     for (const fn of [...set]) {

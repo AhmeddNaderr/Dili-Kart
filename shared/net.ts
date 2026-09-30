@@ -68,7 +68,8 @@ export type ClientMsg =
   | { t: "track"; track: TrackId }
   | { t: "start" }
   | { t: "loaded"; raceId: number }
-  | { t: "fin"; time: number; raceId: number }
+  /** I crossed the line (or, from the host, a bot did: `who`). */
+  | { t: "fin"; time: number; raceId: number; who?: string }
   | { t: "ev"; ev: GameEvent }
   | { t: "lobby" };
 

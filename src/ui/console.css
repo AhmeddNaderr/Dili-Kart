@@ -1333,7 +1333,8 @@
 .mp-msg.bad { color: #ff8c9e; }
 
 /* ---------- the lobby ---------- */
-.lob { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 380px) minmax(0, 300px); align-items: stretch; justify-content: center; gap: 18px; }
+.lob { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 380px) minmax(0, 300px); align-items: start; align-content: center; justify-content: center; gap: 18px; }
+.lob > section { min-height: 300px; }
 .lob > section {
   display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 26px; min-width: 0;
   background: linear-gradient(180deg, rgba(18, 24, 56, 0.9), rgba(8, 11, 30, 0.93));
@@ -1395,7 +1396,7 @@
 .lob-start:disabled { cursor: progress; }
 .lob-start:disabled .launch-body { filter: grayscale(0.5) brightness(0.85); }
 .lob-wait { margin: 0; min-height: 18px; font: 700 14px/1.35 "Inter", sans-serif; color: rgba(230, 236, 255, 0.86); text-align: center; }
-.lob-net { margin: auto 0 0; font: 600 11px/1 "Inter", sans-serif; color: rgba(160, 230, 190, 0.8); text-align: center; }
+.lob-net { margin: 4px 0 0; min-height: 11px; font: 600 11px/1 "Inter", sans-serif; color: rgba(160, 230, 190, 0.8); text-align: center; }
 .lob-net.bad { color: #ffb36b; }
 
 /* Results card: the room's finishing order. */
@@ -1403,7 +1404,7 @@
 .rr-room header { display: flex; justify-content: space-between; margin-bottom: 8px; font: 800 11px/1 "Inter", sans-serif; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(200, 212, 255, 0.7); }
 .rr-room header small { font: inherit; color: #5ff3ff; letter-spacing: 0.04em; text-transform: none; }
 .rr-room ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
-.rr-room li { display: grid; grid-template-columns: 20px 28px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 4px 8px 4px 6px; border-radius: 11px; background: rgba(255, 255, 255, 0.04); }
+.rr-room li { display: grid; grid-template-columns: 30px 28px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 4px 8px 4px 6px; border-radius: 11px; background: rgba(255, 255, 255, 0.04); }
 .rr-room li.me { background: rgba(61, 99, 255, 0.3); }
 .rr-room li em { font: 900 italic 14px/1 "Inter", sans-serif; color: #ffd84a; text-align: center; }
 .rr-room li .pic { width: 28px; height: 28px; border-radius: 9px; overflow: hidden; background: #1b2250; }
@@ -1426,3 +1427,17 @@
   .mp-hero p { font-size: 13px; }
   .mp-hero-ico { width: 50px; height: 50px; }
 }
+/* Online the card also carries the room's standings: tighten the rest so it
+   still fits a laptop screen without scrolling. */
+.rr.online .rr-head { margin-bottom: 10px; }
+.rr.online .rr-grid { gap: 6px; }
+.rr.online .rr-tile { padding-top: 7px; padding-bottom: 7px; min-height: 0; }
+.rr.online .rr-tile .lab small { display: none; }
+.rr.online .rr-bonus { display: none; }
+.rr.online .rr-total { margin-top: 8px; padding-top: 9px; padding-bottom: 9px; }
+.rr.online .rr-total b { font-size: 30px; }
+.rr.online .rr-room { margin: 8px 0 8px; }
+.rr.online .rr-tile { flex-direction: row; align-items: center; gap: 7px; padding: 7px 9px; }
+.rr.online .rr-tile .ico { width: 22px; height: 22px; flex: none; }
+.rr.online .rr-tile .lab { font-size: 11.5px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rr.online .rr-tile b { margin-left: auto; font-size: 14px; }
