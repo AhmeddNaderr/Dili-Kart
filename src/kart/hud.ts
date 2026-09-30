@@ -176,10 +176,10 @@ export class Hud {
       <div class="kh-pause">
         <div class="kh-pause-card">
           <strong>Paused</strong>
-          <p>The Custodians are waiting.</p>
+          <p>${course.online ? "The race keeps going online." : "The Custodians are waiting."}</p>
           <button data-a="resume" class="primary">${G.play}Resume</button>
-          <button data-a="restart">${G.restart}Restart race</button>
-          <button data-a="quit">${G.home}Quit to hub</button>
+          ${course.online ? "" : `<button data-a="restart">${G.restart}Restart race</button>`}
+          <button data-a="quit">${G.home}${course.online ? "Leave the room" : "Quit to hub"}</button>
         </div>
       </div>
       <div class="kh-touch">

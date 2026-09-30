@@ -1178,9 +1178,6 @@ function lobby() {
     net.textContent = room.status === "reconnecting" ? "Connection dropped — reconnecting…" : room.status === "online" && room.rtt ? `Connected · ${room.rtt} ms` : "";
     net.classList.toggle("bad", room.status !== "online");
   };
-  s.onRoom = render;
-  s.onFin = null;
-
   view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); mpLeave(); hub(); });
   view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => b.addEventListener("click", () => {
     if (!room.isHost()) return;
@@ -1214,12 +1211,15 @@ function lobby() {
       else { await navigator.clipboard.writeText(url); flash(e.currentTarget as HTMLElement, "Link copied!"); }
     } catch { /* cancelled */ }
   });
+  wireCommon(view);
+  // show() runs the previous screen's cleanup, so hook up after it.
+  show(view, true);
+  s.onRoom = render;
+  s.onFin = null;
   const onKey = (e: KeyboardEvent) => { if (e.key === "Enter" && room.isHost()) startBtn.click(); };
   addEventListener("keydown", onKey);
   const tick = setInterval(render, 2000);
-  cleanup = () => { removeEventListener("keydown", onKey); clearInterval(tick); if (mp) mp.onRoom = null; };
-  wireCommon(view);
-  show(view, true);
+  cleanup = () => { removeEventListener("keydown", onKey); clearInterval(tick); if (mp?.onRoom === render) mp.onRoom = null; };
   render();
 }
 
