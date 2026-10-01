@@ -7,10 +7,11 @@
  *   POST /api/logout                                   → { }
  *   GET  /api/me                                       → { player }
  *   POST /api/race         { score, position, time, coins } → RaceReply
+ *   POST /api/endless      { score, distance, time, coins, stage } → EndlessReply (Infinite mode)
  *   POST /api/char         { char }                    → { player }
  *   POST /api/skin/buy     { skin }                    → { player }
  *   POST /api/skin/equip   { skin | null }             → { player }
- *   GET  /api/leaderboard?by=best|points               → { entries, me }
+ *   GET  /api/leaderboard?by=best|points|endless       → { entries, me }
  *   GET  /api/stats                                    → { players, races }
  *   POST /api/room         { track }                   → { code }   (new multiplayer room)
  *   GET  /api/room/CODE    WebSocket upgrade           → the room (see shared/net.ts)
@@ -20,8 +21,8 @@
  */
 
 import {
-  CHAR_UNLOCK, PASSWORD_MAX, PASSWORD_MIN, RACE_LIMITS, SKIN_INFO, isCharId, isSkinId, normaliseHandle, parseSkins,
-  streakMultiplier, tierOf, type BoardEntry, type PlayerDTO, type RaceReply,
+  CHAR_UNLOCK, ENDLESS_LIMITS, PASSWORD_MAX, PASSWORD_MIN, RACE_LIMITS, SKIN_INFO, endlessPoints, isCharId, isSkinId, normaliseHandle, parseSkins,
+  streakMultiplier, tierOf, type BoardBy, type BoardEntry, type EndlessReply, type PlayerDTO, type RaceReply,
 } from "../../shared/rules";
 import { CODE_ALPHABET, CODE_LEN, normaliseCode, type NetPlayer } from "../../shared/net";
 
@@ -67,6 +68,10 @@ interface PlayerRow {
   coins: number;
   skins: string;
   skin: string;
+  endless?: number;
+  endless_dist?: number;
+  endless_runs?: number;
+  last_run_at?: number;
 }
 
 const SESSION_DAYS = 60;
@@ -101,6 +106,7 @@ async function route({ request, env }: Ctx): Promise<Response> {
     return json({ ok: true, player: dto(p) });
   }
   if (m === "POST" && path === "race") return race(request, env);
+  if (m === "POST" && path === "endless") return endless(request, env);
   if (m === "POST" && path === "char") return setChar(request, env);
   if (m === "POST" && path === "skin/buy") return buySkin(request, env);
   if (m === "POST" && path === "skin/equip") return equipSkin(request, env);
@@ -323,8 +329,59 @@ async function race(req: Request, env: Env) {
   return json({ ok: true, ...reply });
 }
 
+/**
+ * An Infinite run. Checked against its own length: points per second,
+ * metres per second and coins per second all have a ceiling.
+ */
+async function endless(req: Request, env: Env) {
+  const p = await authed(req, env);
+  const b = await readJson(req);
+  const rid = typeof b.rid === "string" && /^[0-9a-f]{16,32}$/.test(b.rid) ? b.rid : null;
+  const rankOf = async (score: number) => {
+    const ahead = await env.DB.prepare("SELECT COUNT(*) AS n FROM players WHERE endless > ?").bind(score).first<{ n: number }>();
+    return (ahead?.n ?? 0) + 1;
+  };
+  if (rid) {
+    const seen = await env.DB.prepare("SELECT earned FROM runs WHERE rid = ?").bind(rid).first<{ earned: number }>();
+    if (seen) {
+      const reply: EndlessReply = { player: dto(p), earned: seen.earned, isBest: false, rank: await rankOf(p.endless ?? 0) };
+      return json({ ok: true, ...reply });
+    }
+  }
+  const score = Math.round(Number(b.score));
+  const distance = Math.round(Number(b.distance));
+  const time = Number(b.time);
+  const coins = Math.round(Number(b.coins));
+  const stage = Math.round(Number(b.stage));
+  const L = ENDLESS_LIMITS;
+  if (!(time >= L.minTime && time <= L.maxTime)) throw new HttpError(400, "That run time isn't possible.");
+  if (!(score >= 0 && score <= time * L.maxRate + 500)) throw new HttpError(400, "That score isn't possible.");
+  if (!(distance >= 0 && distance <= time * L.maxSpeed + 50)) throw new HttpError(400, "That distance isn't possible.");
+  if (!(coins >= 0 && coins <= time * L.maxCoinRate + 20)) throw new HttpError(400, "Bad coin count.");
+  if (!(stage >= 1 && stage <= 1000)) throw new HttpError(400, "Bad stage.");
+  const now = Date.now();
+  if (now - (p.last_run_at ?? 0) < L.cooldown * 1000) throw new HttpError(429, "Runs can't end that quickly.");
+
+  const earned = endlessPoints(score);
+  const isBest = score > (p.endless ?? 0);
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE players SET points = points + ?, coins = coins + ?, endless_runs = endless_runs + 1, last_run_at = ?,
+         endless_dist = CASE WHEN ? > endless THEN ? ELSE endless_dist END, endless = MAX(endless, ?)
+       WHERE handle = ?`,
+    ).bind(earned, coins, now, score, distance, score, p.handle),
+    env.DB.prepare(
+      "INSERT INTO runs (handle, score, distance, time, coins, stage, earned, created_at, rid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(p.handle, score, distance, time, coins, stage, earned, now, rid),
+  ]);
+  const fresh = (await getPlayer(env, p.handle))!;
+  const reply: EndlessReply = { player: dto(fresh), earned, isBest, rank: await rankOf(fresh.endless ?? 0) };
+  return json({ ok: true, ...reply });
+}
+
 async function board(req: Request, env: Env, url: URL) {
-  const by = url.searchParams.get("by") === "points" ? "points" : "best";
+  const q = url.searchParams.get("by");
+  const by: BoardBy = q === "points" ? "points" : q === "endless" ? "endless" : "best";
   const entries = await topList(env, url, by);
 
   // Where the signed-in player stands, even if they're outside the top 50.
@@ -332,8 +389,9 @@ async function board(req: Request, env: Env, url: URL) {
   const token = bearer(req);
   if (token) {
     const p = await sessionPlayer(env, token);
-    if (p && p.races > 0) {
-      const value = by === "points" ? p.points : p.best;
+    const played = by === "endless" ? (p?.endless_runs ?? 0) > 0 : (p?.races ?? 0) > 0;
+    if (p && played) {
+      const value = by === "points" ? p.points : by === "endless" ? p.endless ?? 0 : p.best;
       const ahead = await env.DB.prepare(`SELECT COUNT(*) AS n FROM players WHERE ${by} > ?`).bind(value).first<{ n: number }>();
       me = { rank: (ahead?.n ?? 0) + 1, value };
     }
@@ -346,16 +404,18 @@ async function board(req: Request, env: Env, url: URL) {
  * the database answers this query a few times a minute instead of on every
  * page view.
  */
-async function topList(env: Env, url: URL, by: "best" | "points"): Promise<BoardEntry[]> {
+async function topList(env: Env, url: URL, by: BoardBy): Promise<BoardEntry[]> {
   const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default;
   const key = new Request(`${url.origin}/api/_board/${by}`);
   if (cache) {
     const hit = await cache.match(key).catch(() => undefined);
     if (hit) return hit.json();
   }
-  const rows = await env.DB.prepare(
-    `SELECT handle, best, points, races, wins FROM players WHERE races > 0
-     ORDER BY ${by} DESC, created_at ASC LIMIT 50`,
+  const rows = await env.DB.prepare(by === "endless"
+    ? `SELECT handle, best, points, races, wins, endless, endless_dist AS endlessDist FROM players WHERE endless_runs > 0
+       ORDER BY endless DESC, created_at ASC LIMIT 50`
+    : `SELECT handle, best, points, races, wins FROM players WHERE races > 0
+       ORDER BY ${by} DESC, created_at ASC LIMIT 50`,
   ).all<Omit<BoardEntry, "tier">>();
   const entries: BoardEntry[] = rows.results.map((r) => ({ ...r, tier: tierOf(r.points) }));
   if (cache) {
@@ -480,6 +540,9 @@ function dto(p: PlayerRow): PlayerDTO {
     coins: p.coins ?? 0,
     skins: parseSkins(p.skins),
     skin: isSkinId(p.skin) && parseSkins(p.skins).includes(p.skin) ? p.skin : null,
+    endless: p.endless ?? 0,
+    endlessDist: p.endless_dist ?? 0,
+    endlessRuns: p.endless_runs ?? 0,
   };
 }
 

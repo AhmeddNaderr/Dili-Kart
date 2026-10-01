@@ -1460,3 +1460,35 @@
 .rr.online .rr-tile .ico { width: 22px; height: 22px; flex: none; }
 .rr.online .rr-tile .lab { font-size: 11.5px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rr.online .rr-tile b { margin-left: auto; font-size: 14px; }
+
+/* ---------- Infinite mode ---------- */
+.go-modes { display: flex; gap: 8px; width: 100%; }
+.go-modes .mp-btn { flex: 1 1 0; min-width: 0; }
+.go-modes .mp-btn span { min-width: 0; }
+.go-modes .mp-btn small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Infinite: the Skyway's sunset on a key. */
+.mp-btn.inf {
+  background: linear-gradient(180deg, #ff9bd0 0%, #ff5fa2 45%, #e2457a 100%);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.5), 0 4px 0 #a82a5c, 0 12px 20px -8px rgba(255, 70, 140, 0.8);
+}
+.mp-btn.inf:active { box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.35), 0 0 0 #a82a5c, 0 4px 8px -4px rgba(255, 70, 140, 0.7); }
+@media (max-width: 900px) {
+  .garage .go-wrap .go-modes { order: 3; flex: 1 0 100%; }
+  .garage .go-wrap .go-modes .mp-btn { order: 0; flex: 1 1 0; justify-content: flex-start; padding: 8px 10px 8px 8px; }
+}
+
+.rr-medal.inf {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0;
+  background: radial-gradient(circle at 35% 25%, #ffd2ea, #ff5fa2 50%, #b02a68); color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 0 0 4px rgba(255, 95, 162, 0.25), 0 18px 40px -10px rgba(255, 70, 140, 0.9);
+}
+.rr-medal.inf i { width: 26px; height: 18px; display: block; margin-bottom: -2px; opacity: 0.9; }
+.rr-medal.inf i svg { width: 100%; height: 100%; display: block; }
+.rr-medal.inf b { font-size: 40px; }
+.rr-medal.inf sup { position: static; font-size: 9px; letter-spacing: 0.14em; opacity: 0.85; }
+.rr-chips .out { color: #ff7a9c; }
+.rr-chips .out svg { color: #ff3d6b; }
+@media (max-width: 700px) {
+  .rr-medal.inf b { font-size: 30px; }
+  .rr-medal.inf i { width: 20px; height: 14px; }
+}

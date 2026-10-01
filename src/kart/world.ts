@@ -374,7 +374,14 @@ export function underside(track: Track, from: number, to: number, mat: THREE.Mat
 
 export function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture, withLake = true) {
   const f = newFrame();
-  // Kicker ramp: the last few metres before the lip rise into a lip.
+  buildRamp(scene, track);
+  abutments(scene, track, f);
+  if (withLake) lake(scene, track, water, f);
+}
+
+/** Kicker ramp: the last few metres before the lip rise into a lip. */
+export function buildRamp(scene: THREE.Scene, track: Track) {
+  const f = newFrame();
   const rampLen = 7;
   const chev = T.chevronTex();
   chev.repeat.set(3, 1);
@@ -404,7 +411,9 @@ export function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture
   const ramp = new THREE.Mesh(rg, rampMat);
   ramp.receiveShadow = true;
   scene.add(ramp);
+}
 
+function abutments(scene: THREE.Scene, track: Track, f: ReturnType<typeof newFrame>) {
   // Stone abutments where the road stops and starts again. Each one is the
   // full cross-section — embankment slopes, walls and deck — so every cut
   // end at the gap is closed off.
@@ -444,8 +453,9 @@ export function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture
     band.rotation.y = Math.atan2(f.tan.x, f.tan.z);
     scene.add(keep(band));
   }
+}
 
-  if (!withLake) return;
+function lake(scene: THREE.Scene, track: Track, water: THREE.Texture, f: ReturnType<typeof newFrame>) {
   // A round lake under the gap, with a sandy shore and lily pads.
   track.frame((track.lipU + track.landU) / 2, f);
   const c = new THREE.Vector3(f.pos.x, 0, f.pos.z);

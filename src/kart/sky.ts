@@ -14,7 +14,7 @@ export interface Sky {
   update(t: number): void;
 }
 
-export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THREE.Vector3, mood: "dusk" | "night" = "dusk"): Sky {
+export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THREE.Vector3, mood: "dusk" | "night" = "dusk", withCity = true): Sky {
   const uTime = { value: 0 };
   const night = mood === "night";
   const dome = new THREE.Mesh(
@@ -95,7 +95,8 @@ export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THRE
 
   // Dlicom City: detailed towers around the stadium, and a hazy far layer
   // of plain towers behind them for depth.
-  const city = buildCity(center);
+  // The Skyway keeps only the far towers: its city is a skyline on the horizon.
+  const city = withCity ? buildCity(center) : { group: new THREE.Group(), update: () => {} };
   const skyline = city.group;
   const windows = windowTexture();
   const farMat = new THREE.MeshLambertMaterial({
@@ -115,7 +116,7 @@ export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THRE
     b.translate(center.x + Math.cos(a) * r, h / 2 - 2, center.z + Math.sin(a) * r);
     geos.push(b);
   }
-  skyline.add(new THREE.Mesh(mergeBoxes(geos), farMat));
+  if (withCity) skyline.add(new THREE.Mesh(mergeBoxes(geos), farMat));
   scene.add(skyline);
 
   return {
@@ -150,7 +151,7 @@ function mergeBoxes(geos: THREE.BufferGeometry[]) {
 }
 
 /** A cumulus painted from many overlapping soft puffs, flat base, lit top. */
-function cloudTexture(seed: number) {
+export function cloudTexture(seed: number) {
   const W = 512, H = 220;
   const c = document.createElement("canvas");
   c.width = W; c.height = H;

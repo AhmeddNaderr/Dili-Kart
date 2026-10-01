@@ -51,6 +51,20 @@ const LEAD_NIGHT = [
   [67, 0, 69, 0, 72, 0, 0, 0, 76, 0, 74, 0, 72, 0, 0, 0],
 ];
 
+/** The Skyway (Infinite): a soaring C – G – Am – F, brighter and driving. */
+const PROG_SKY = [
+  { root: 48, notes: [60, 64, 67] },   // C
+  { root: 43, notes: [59, 62, 67] },   // G
+  { root: 45, notes: [60, 64, 69] },   // Am
+  { root: 41, notes: [60, 65, 69] },   // F
+];
+const LEAD_SKY = [
+  [79, 0, 79, 0, 76, 0, 79, 0, 81, 0, 79, 76, 74, 0, 72, 0],
+  [74, 0, 74, 0, 71, 0, 74, 0, 79, 0, 77, 76, 74, 0, 0, 0],
+  [76, 0, 76, 0, 72, 0, 76, 0, 81, 0, 79, 0, 76, 0, 74, 0],
+  [72, 0, 74, 0, 77, 0, 76, 0, 74, 0, 72, 0, 69, 0, 72, 0],
+];
+
 /** Speed bands for the gearbox, m/s. */
 const GEARS = [0, 7, 13, 19, 25, 45];
 
@@ -388,7 +402,8 @@ export class RaceAudio {
   /** The crowd roars. */
   cheer(k = 1) { this.cheerLevel = Math.min(1.2, this.cheerLevel + k); }
 
-  hurry() { this.stepLen = STEP / 1.1; }
+  /** Speed the soundtrack up (×1.1 for the final lap; Infinite ramps it per stage). */
+  hurry(k = 1.1) { this.stepLen = STEP / k; }
 
   setMusic(level: number) {
     if (this.c) this.musicBus.gain.setTargetAtTime(level * MUSIC, this.c.currentTime, 0.3);
@@ -558,6 +573,39 @@ export class RaceAudio {
     this.cheer(0.6);
   }
 
+  /** Infinite: a heart lost — a heavy thud and a falling tone. */
+  heartLost() {
+    this.tone(150, 0.45, "sine", 0.3, { slide: 55 });
+    this.tone(420, 0.5, "triangle", 0.07, { slide: 140, verb: 0.4 });
+    this.burst(0.3, 0.16, "lowpass", 900, { to: 160, buf: this.brown });
+  }
+
+  /** Infinite: a heart found — a bright rising sparkle. */
+  heartGain() {
+    [72, 76, 79, 84, 88].forEach((n, i) => this.tone(midi(n), 0.2, "triangle", 0.05, { delay: i * 0.05, verb: 0.6 }));
+    this.tone(midi(96), 0.4, "sine", 0.025, { delay: 0.25, verb: 0.6 });
+  }
+
+  /** Infinite: a near miss — air ripping past. */
+  whoosh() {
+    this.burst(0.32, 0.14, "bandpass", 500, { to: 2600, q: 1.8 });
+    this.tone(1250, 0.12, "sine", 0.03, { slide: 1700, delay: 0.05 });
+  }
+
+  /** Infinite: the multiplier steps up. */
+  multUp(m: number) {
+    const base = 72 + m * 2;
+    [0, 4, 7, 12].forEach((d, i) => this.tone(midi(base + d), 0.16, "square", 0.035, { delay: i * 0.06, verb: 0.5 }));
+    this.cheer(0.4);
+  }
+
+  /** Infinite: out of hearts. */
+  gameOver() {
+    this.tone(220, 1.1, "sawtooth", 0.06, { slide: 55, verb: 0.6 });
+    this.tone(110, 0.9, "square", 0.05, { slide: 40 });
+    this.burst(0.8, 0.2, "lowpass", 1400, { to: 120, buf: this.brown, verb: 0.5 });
+  }
+
   fanfare() {
     const brass = (n: number, d: number, len: number) => {
       const c = this.c;
@@ -594,14 +642,15 @@ export class RaceAudio {
     }
   }
 
-  /** Neon Town plays the night version of the soundtrack. */
+  /** Neon Town plays the night version of the soundtrack; the Skyway its own. */
   night = false;
+  sky = false;
 
   private playStep(step: number, t: number) {
     const bar = Math.floor(step / 16) % 4;
     const s = step % 16;
     const withLead = Math.floor(step / 64) === 1;
-    const ch = (this.night ? PROG_NIGHT : PROG)[bar];
+    const ch = (this.sky ? PROG_SKY : this.night ? PROG_NIGHT : PROG)[bar];
     if (s % 4 === 0) this.mKick(t);
     // At night the backbeat drops to half time, which makes it feel wider.
     if (this.night ? s === 8 : s === 4 || s === 12) this.mSnare(t);
@@ -610,7 +659,7 @@ export class RaceAudio {
     this.mArp(t, midi(ch.notes[ARP[s % 8]] + 12));
     if (s === 0) this.mPad(t, ch.notes, STEP * 16);
     if (withLead) {
-      const n = (this.night ? LEAD_NIGHT : LEAD)[bar][s];
+      const n = (this.sky ? LEAD_SKY : this.night ? LEAD_NIGHT : LEAD)[bar][s];
       if (n) this.mLead(t, midi(n), STEP * 1.7);
     }
   }

@@ -1558,3 +1558,116 @@ export function seeker() {
   g.add(haloSprite("#ffc21a", 3.4, 0.75));
   return g;
 }
+
+/* ------------------------------------------------------------------ */
+/* Infinite mode                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Laser gate: two emitter pylons at the edges of the deck and a red beam
+ * across the whole road that pulses on and off. The game drives
+ * `userData.beam` (visible / brightness) and `userData.cores` (charge lights).
+ * Built for a road `half` metres either side of the centre.
+ */
+export function laserGate(half: number) {
+  const g = new THREE.Group();
+  const body = plastic("#262a42", 0.3, 0.75);
+  const trim = plastic("#ff3355", 0.3, 0.2);
+  const cores: THREE.MeshBasicMaterial[] = [];
+  for (const s of [-1, 1]) {
+    add(g, rbox(1.1, 0.3, 1.1, 0.12), body, half * s, 0.15, 0);
+    add(g, rbox(0.62, 2.5, 0.62, 0.2), body, half * s, 1.5, 0);
+    add(g, rbox(0.7, 0.18, 0.7, 0.08), trim, half * s, 2.75, 0, false);
+    const core = new THREE.MeshBasicMaterial({ color: new THREE.Color("#ff2a4a").multiplyScalar(2.6), toneMapped: false });
+    cores.push(core);
+    for (const y of [0.55, 1.05, 1.55]) {
+      const lens = new THREE.Mesh(cached("laserLens", () => new THREE.CylinderGeometry(0.17, 0.17, 0.12, 16).rotateZ(Math.PI / 2)), core);
+      lens.position.set((half - 0.33) * s, y, 0);
+      g.add(lens);
+    }
+  }
+  // The beams: hot cores with a wide soft glow around them.
+  const beam = new THREE.Group();
+  const coreMat = texMat("laserCore", () => new THREE.MeshBasicMaterial({ color: new THREE.Color("#ff5a74").multiplyScalar(4), toneMapped: false }));
+  const glowMat = texMat("laserGlow", () => new THREE.MeshBasicMaterial({
+    map: T.blobTex("rgba(255,255,255,1)", "rgba(255,255,255,0)"), color: new THREE.Color("#ff2244").multiplyScalar(1.6),
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+  }));
+  const len = half * 2 - 0.66;
+  for (const y of [0.55, 1.05, 1.55]) {
+    const c = new THREE.Mesh(cached(`laserBeam${len}`, () => new THREE.CylinderGeometry(0.045, 0.045, len, 6).rotateZ(Math.PI / 2)), coreMat);
+    c.position.y = y;
+    beam.add(c);
+  }
+  const sheet = new THREE.Mesh(cached(`laserSheet${len}`, () => new THREE.PlaneGeometry(len, 2.2)), glowMat);
+  sheet.position.y = 1.05;
+  beam.add(sheet);
+  g.add(beam);
+  g.userData.beam = beam;
+  g.userData.cores = cores;
+  return g;
+}
+
+/**
+ * Shifter: a hovering energy barrier two lanes wide that slides from side
+ * to side across the road. Red and black chevrons, a glowing frame, and a
+ * pool of light underneath.
+ */
+export function shifter(width: number) {
+  const g = new THREE.Group();
+  const frame = plastic("#1d2036", 0.3, 0.7);
+  const panelTex = T.stripeTex("#ff2d55", "#14101f", 7);
+  const panel = texMat("shifterPanel", () => new THREE.MeshStandardMaterial({
+    map: panelTex, emissive: "#ffffff", emissiveMap: panelTex, emissiveIntensity: 1.1, roughness: 0.4,
+  }));
+  const body = add(g, rbox(width, 1.4, 0.7, 0.2), frame, 0, 1.15, 0);
+  body.castShadow = true;
+  for (const z of [0.36, -0.36]) {
+    const face = new THREE.Mesh(cached(`shiftFace${width}`, () => new THREE.PlaneGeometry(width - 0.5, 1.0)), panel);
+    face.position.set(0, 1.15, z);
+    if (z < 0) face.rotation.y = Math.PI;
+    g.add(face);
+  }
+  const edge = glow("#ff4d6d", 2.6);
+  add(g, rbox(width + 0.1, 0.12, 0.8, 0.05), edge, 0, 1.9, 0, false);
+  add(g, rbox(width + 0.1, 0.12, 0.8, 0.05), edge, 0, 0.4, 0, false);
+  for (const s of [-1, 1]) {
+    add(g, rbox(0.3, 1.6, 0.9, 0.1), frame, (width / 2) * s, 1.15, 0);
+    const thr = add(g, cyl(0.28, 0.2, 0.2, 14), glow("#ff7a90", 2.2), (width / 2 - 0.8) * s, 0.36, 0, false);
+    thr.rotation.x = Math.PI;
+  }
+  const pool = new THREE.Mesh(cached(`shiftPool${width}`, () => new THREE.PlaneGeometry(width + 2, 3).rotateX(-Math.PI / 2)), texMat("shiftPool", () => new THREE.MeshBasicMaterial({
+    map: T.blobTex("rgba(255,255,255,.9)", "rgba(255,255,255,0)"), color: new THREE.Color("#ff2d55").multiplyScalar(1.2),
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  })));
+  pool.position.y = 0.04;
+  g.add(pool);
+  return g;
+}
+
+/** A spare heart: glossy red, bevelled, spinning in a pink glow. */
+export function heartPickup() {
+  const g = new THREE.Group();
+  const geo = cached("heartGeo", () => {
+    const s = new THREE.Shape();
+    s.moveTo(0, -0.55);
+    s.bezierCurveTo(-0.15, -0.38, -0.62, -0.12, -0.62, 0.18);
+    s.bezierCurveTo(-0.62, 0.48, -0.32, 0.62, -0.16, 0.55);
+    s.bezierCurveTo(-0.06, 0.5, 0, 0.42, 0, 0.36);
+    s.bezierCurveTo(0, 0.42, 0.06, 0.5, 0.16, 0.55);
+    s.bezierCurveTo(0.32, 0.62, 0.62, 0.48, 0.62, 0.18);
+    s.bezierCurveTo(0.62, -0.12, 0.15, -0.38, 0, -0.55);
+    const e = new THREE.ExtrudeGeometry(s, { depth: 0.22, bevelEnabled: true, bevelThickness: 0.12, bevelSize: 0.1, bevelSegments: 4, curveSegments: 18 });
+    e.center();
+    return e;
+  });
+  const mat = texMat("heartMat", () => new THREE.MeshPhysicalMaterial({
+    color: "#ff2d55", emissive: "#ff1f4b", emissiveIntensity: 0.55, roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.08,
+  }));
+  const heart = new THREE.Mesh(geo, mat);
+  heart.scale.setScalar(1.35);
+  g.add(heart);
+  g.add(haloSprite("#ff5d8a", 3.6, 0.7));
+  g.userData.heart = heart;
+  return g;
+}

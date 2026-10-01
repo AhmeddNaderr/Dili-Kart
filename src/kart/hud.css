@@ -321,6 +321,7 @@
   margin-top: -8%;
 }
 .kh .kh-ban { --grad: linear-gradient(180deg, #ffffff 0%, #fff4b8 40%, #ffc21f 75%, #ff9500 100%); }
+.kh .kh-ban.red { --grad: linear-gradient(180deg, #ffffff 0%, #ffc2cc 40%, #ff4d6d 75%, #c8102e 100%); }
 .kh .kh-ban.white { --grad: linear-gradient(180deg, #ffffff 0%, #e2ecff 55%, #8fb8ff 100%); }
 
 .kh-count {
@@ -653,3 +654,74 @@
 .kh-wait.on { opacity: 1; transform: translate(-50%, 0); }
 .kh-wait i { width: 16px; height: 16px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, .25); border-top-color: #8fa0ff; animation: kh-spin .8s linear infinite; }
 @keyframes kh-spin { to { transform: rotate(360deg); } }
+
+/* ---------- Infinite mode: hearts, distance and the multiplier ---------- */
+.kh.endless .kh-pos, .kh.endless .kh-rank { display: none; }
+.kh-hearts {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+.kh.live .kh-hearts, .kh.live .kh-run { opacity: 1; }
+.kh-hearts i { width: 30px; height: 30px; display: block; }
+.kh-hearts svg { width: 100%; height: 100%; display: block; fill: rgba(255, 255, 255, 0.16); stroke: rgba(255, 255, 255, 0.35); stroke-width: 1.4; }
+.kh-hearts i.on svg {
+  fill: #ff3d6b; stroke: #ffd0dc;
+  filter: drop-shadow(0 0 8px rgba(255, 45, 95, 0.7)) drop-shadow(0 2px 0 rgba(90, 0, 30, 0.5));
+}
+.kh-hearts.last i.on { animation: kh-beat 0.9s ease-in-out infinite; }
+@keyframes kh-beat { 0%, 100% { transform: scale(1); } 15% { transform: scale(1.25); } 30% { transform: scale(1); } 45% { transform: scale(1.15); } }
+
+.kh-run {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+.kh.touch .kh-run { bottom: 118px; }
+.kh-dist {
+  display: flex; align-items: baseline; gap: 4px;
+  font-weight: 900; font-style: italic; letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 0 rgba(10, 12, 40, 0.5), 0 0 18px rgba(80, 140, 255, 0.45);
+}
+.kh-dist b { font-size: 46px; color: #fff; }
+.kh-dist small { font-size: 18px; color: rgba(255, 255, 255, 0.7); }
+.kh-mult { position: relative; width: 64px; height: 64px; display: grid; place-items: center; }
+.kh-mult svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.kh-mult circle { fill: rgba(10, 13, 32, 0.66); stroke: rgba(255, 255, 255, 0.14); stroke-width: 4; }
+.kh-mult circle.arc { fill: none; stroke: #ffd84a; stroke-linecap: round; stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke-dashoffset 0.3s ease; }
+.kh-mult b { position: relative; font-size: 22px; font-weight: 900; font-style: italic; color: #fff; }
+.kh-mult[data-m="2"] circle.arc { stroke: #7fe0ff; }
+.kh-mult[data-m="3"] circle.arc { stroke: #7dff9a; }
+.kh-mult[data-m="4"] circle.arc { stroke: #ff9bd6; }
+.kh-mult[data-m="5"] circle.arc { stroke: #ffae3d; }
+.kh-mult[data-m="5"] { filter: drop-shadow(0 0 14px rgba(255, 170, 60, 0.8)); }
+@media (max-width: 700px) {
+  .kh-hearts { top: 58px; gap: 4px; }
+  .kh-hearts i { width: 24px; height: 24px; }
+  .kh-dist b { font-size: 32px; }
+  .kh-dist small { font-size: 14px; }
+  .kh-mult { width: 50px; height: 50px; }
+  .kh-mult b { font-size: 17px; }
+  .kh-run { right: 14px; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { .kh-hearts.last i.on { animation: none; } }
+/* Short landscape phones: the run counter tucks under the minimap. */
+@media (max-height: 480px) {
+  .kh-run, .kh.touch .kh-run { bottom: auto; top: 200px; right: 16px; }
+  .kh-dist b { font-size: 30px; }
+  .kh-mult { width: 48px; height: 48px; }
+  .kh-mult b { font-size: 16px; }
+  .kh-hearts { top: 60px; }
+  .kh-hearts i { width: 24px; height: 24px; }
+}

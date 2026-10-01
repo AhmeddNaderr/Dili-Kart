@@ -76,6 +76,51 @@ export const TRACK_INFO: Record<TrackId, { name: string; laps: number; blurb: st
 export const isTrackId = (t: unknown): t is TrackId => typeof t === "string" && (TRACK_IDS as readonly string[]).includes(t);
 
 /**
+ * Every course the game can load: the race tracks, plus the Dlicom Skyway,
+ * which only runs Infinite mode (it isn't on the race or room track lists).
+ */
+export type CourseId = TrackId | "sky";
+export const COURSE_INFO: Record<CourseId, { name: string; laps: number; blurb: string }> = {
+  ...TRACK_INFO,
+  sky: { name: "Dlicom Skyway", laps: Infinity, blurb: "A highway above the clouds · endless" },
+};
+
+/**
+ * Infinite mode: one run on the Skyway until your four hearts are gone.
+ * Scores are checked against how long the run lasted.
+ */
+export const ENDLESS_HEARTS = 4;
+export const ENDLESS_LIMITS = {
+  minTime: 8,
+  maxTime: 3 * 3600,
+  /** Score per second of running can't beat this (a perfect run is ~250/s). */
+  maxRate: 900,
+  /** Metres per second: faster than the top boost speed at the top stage. */
+  maxSpeed: 50,
+  maxCoinRate: 4,
+  cooldown: 8,
+} as const;
+
+export interface EndlessSubmit {
+  score: number;
+  /** Metres covered. */
+  distance: number;
+  time: number;
+  coins: number;
+  stage: number;
+}
+
+export interface EndlessReply {
+  player: PlayerDTO;
+  earned: number;
+  isBest: boolean;
+  rank: number;
+}
+
+/** Lifetime points from an Infinite run: a share of the score, so racing still pays best per minute. */
+export const endlessPoints = (score: number) => Math.round(score * 0.4);
+
+/**
  * Plausibility bounds for a submitted race. A clean three-lap race takes
  * around two minutes, and even a perfect one can't score beyond these.
  */
@@ -104,6 +149,10 @@ export interface PlayerDTO {
   coins: number;
   skins: SkinId[];
   skin: SkinId | null;
+  /** Infinite mode: best score, the distance of that run (m), and runs played. */
+  endless: number;
+  endlessDist: number;
+  endlessRuns: number;
 }
 
 export interface BoardEntry {
@@ -113,7 +162,12 @@ export interface BoardEntry {
   races: number;
   wins: number;
   tier: string;
+  /** Infinite mode best and its distance (the Infinite board). */
+  endless?: number;
+  endlessDist?: number;
 }
+
+export type BoardBy = "best" | "points" | "endless";
 
 export interface RaceSubmit {
   score: number;

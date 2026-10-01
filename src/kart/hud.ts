@@ -143,9 +143,10 @@ export class Hud {
   private rankRows: HTMLLIElement[] = [];
   private rankKey = "";
 
-  constructor(parent: HTMLElement, private actions: HudActions, course: { name: string; laps: number; night: boolean; online?: { code: string; people: number } } = { name: "Dili Circuit", laps: 3, night: false }) {
+  constructor(parent: HTMLElement, private actions: HudActions, course: { name: string; laps: number; night: boolean; online?: { code: string; people: number }; endless?: boolean } = { name: "Dili Circuit", laps: 3, night: false }) {
     this.el = document.createElement("div");
-    this.el.className = "kh";
+    this.el.className = course.endless ? "kh endless" : "kh";
+    const heart = `<svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 4.4 2.6.8-1.4 2.3-2.6 4.4-2.6 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z"/></svg>`;
     this.el.innerHTML = `
       <div class="kh-lines"></div>
       <div class="kh-vignette"></div>
@@ -153,7 +154,7 @@ export class Hud {
         <div class="kh-slot"><i class="kh-ring"></i><div class="kh-ico"></div></div>
         <div class="kh-iname"><span></span><kbd>↓</kbd></div>
       </div>
-      <div class="kh-top"><div class="kh-lap">LAP <b>1</b><i>/${course.laps}</i></div><span class="kh-sep"></span><div class="kh-clock">0:00.00</div></div>
+      <div class="kh-top"><div class="kh-lap">${course.endless ? "STAGE <b>1</b>" : `LAP <b>1</b><i>/${course.laps}</i>`}</div><span class="kh-sep"></span><div class="kh-clock">0:00.00</div></div>
       <div class="kh-mapbox"><svg class="kh-map" viewBox="0 0 170 200"><g class="kh-map-g"></g></svg></div>
       <ol class="kh-rank"></ol>
       <div class="kh-bl">
@@ -161,6 +162,11 @@ export class Hud {
         <div class="kh-score"><b>0</b><span>Score</span></div>
       </div>
       <div class="kh-pos"><b data-t="8">8</b><sup data-t="th">th</sup></div>
+      ${course.endless ? `<div class="kh-hearts">${Array.from({ length: 4 }, () => `<i class="on">${heart}</i>`).join("")}</div>
+      <div class="kh-run">
+        <div class="kh-dist"><b>0</b><small>m</small></div>
+        <div class="kh-mult"><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="19"/><circle class="arc" cx="22" cy="22" r="19" pathLength="100"/></svg><b>×1</b></div>
+      </div>` : ""}
       <div class="kh-pops"></div>
       <div class="kh-count"></div>
       <div class="kh-banner"></div>
@@ -169,9 +175,9 @@ export class Hud {
       <div class="kh-warn">${G.warn}Incoming</div>
       <div class="kh-title">
         <div class="kh-title-card">
-          <small>${course.online ? `Online · Room ${course.online.code}` : course.night ? "Dlicom Night Series" : "Dlicom Grand Prix"}</small>
+          <small>${course.endless ? "Dlicom Infinite" : course.online ? `Online · Room ${course.online.code}` : course.night ? "Dlicom Night Series" : "Dlicom Grand Prix"}</small>
           <strong>${course.name}</strong>
-          <span>${course.online ? `${course.laps} laps · ${course.online.people} players${course.online.people < 8 ? ` + ${8 - course.online.people} Custodians` : ""}` : `${course.laps} laps · 8 racers · beat the Custodians`}</span>
+          <span>${course.endless ? "4 hearts · no finish line · how far can you go?" : course.online ? `${course.laps} laps · ${course.online.people} players${course.online.people < 8 ? ` + ${8 - course.online.people} Custodians` : ""}` : `${course.laps} laps · 8 racers · beat the Custodians`}</span>
         </div>
         <em>${matchMedia("(pointer: coarse)").matches ? "Tap to skip" : "Press any arrow to skip"}</em>
       </div>
@@ -263,6 +269,48 @@ export class Hud {
   lap(n: number, of: number) {
     this.set("lap", n, () => {
       this.q(".kh-lap").innerHTML = `LAP <b>${n}</b><i>/${of}</i>`;
+      bump(this.q(".kh-lap"));
+    });
+  }
+
+  /** Infinite: hearts left (a lost one shatters, a found one pops back in). */
+  hearts(n: number) {
+    const prev = this.last.hearts as number | undefined;
+    this.set("hearts", n, () => {
+      const icons = this.el.querySelectorAll<HTMLElement>(".kh-hearts i");
+      icons.forEach((el, i) => {
+        const on = i < n;
+        if (el.classList.contains("on") && !on) {
+          el.animate([{ transform: "scale(1.5) rotate(-12deg)", opacity: 1 }, { transform: "scale(.8) rotate(8deg)", opacity: 0.35 }], { duration: 520, easing: "cubic-bezier(.2,.8,.3,1)" });
+        } else if (!el.classList.contains("on") && on && prev !== undefined) {
+          el.animate([{ transform: "scale(0)" }, { transform: "scale(1.45)", offset: 0.6 }, { transform: "scale(1)" }], { duration: 480, easing: "cubic-bezier(.2,.8,.3,1)" });
+        }
+        el.classList.toggle("on", on);
+      });
+      this.el.querySelector(".kh-hearts")?.classList.toggle("last", n === 1);
+    });
+  }
+
+  /** Infinite: distance run, the multiplier and progress to the next one (0..1). */
+  run(metres: number, mult: number, progress: number) {
+    const txt = metres < 1000 ? String(Math.floor(metres)) : (metres / 1000).toFixed(2);
+    this.set("dist", txt, () => {
+      this.q(".kh-dist b").textContent = txt;
+      this.q(".kh-dist small").textContent = metres < 1000 ? "m" : "km";
+    });
+    this.set("mult", mult, () => {
+      const el = this.q(".kh-mult");
+      el.querySelector("b")!.textContent = `×${mult}`;
+      el.dataset.m = String(mult);
+      bump(el, 1.35);
+    });
+    const p = mult >= 5 ? 100 : Math.round(progress * 50) * 2;
+    this.set("multP", p, () => { this.q(".kh-mult .arc").style.strokeDashoffset = String(100 - p); });
+  }
+
+  stage(n: number) {
+    this.set("lap", n, () => {
+      this.q(".kh-lap").innerHTML = `STAGE <b>${n}</b>`;
       bump(this.q(".kh-lap"));
     });
   }

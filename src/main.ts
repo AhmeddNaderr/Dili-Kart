@@ -13,8 +13,8 @@ import * as api from "./app/api";
 import { RoomClient, checkRoom, createRoom } from "./net/room";
 import { CODE_LEN, ROOM_MAX, normaliseCode, type NetPlayer } from "../shared/net";
 import {
-  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, SKIN_IDS, SKIN_INFO, TIERS, TRACK_IDS, TRACK_INFO, isTrackId, nextTier, normaliseHandle,
-  type BoardEntry, type CharId, type RaceReply, type SkinId, type TrackId,
+  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, COURSE_INFO, PASSWORD_MIN, SKIN_IDS, SKIN_INFO, TIERS, TRACK_IDS, TRACK_INFO, isTrackId, nextTier, normaliseHandle,
+  type BoardBy, type BoardEntry, type CharId, type RaceReply, type SkinId, type TrackId,
 } from "../shared/rules";
 
 /**
@@ -444,7 +444,10 @@ function hub() {
             </span>
           </button>
           <span class="go-label"><kbd>Enter</kbd> to race</span>
-          <button type="button" class="mp-btn" id="mp"><i>${PEOPLE}</i><span><b>Race friends</b><small>Online · room code</small></span></button>
+          <div class="go-modes">
+            <button type="button" class="mp-btn" id="mp"><i>${PEOPLE}</i><span><b>Race friends</b><small>Room code</small></span></button>
+            <button type="button" class="mp-btn inf" id="inf"><i>${INFINITY}</i><span><b>Infinite</b><small>${p.endless ? `Best ${fmt(p.endless)}` : "4 hearts · endless"}</small></span></button>
+          </div>
         </div>
       </div>
       <div class="con-foot">
@@ -469,6 +472,13 @@ function hub() {
     setTimeout(race, calm ? 0 : 420);
   };
   raceBtn.addEventListener("click", go);
+  view.querySelector("#inf")!.addEventListener("click", () => {
+    if (leaving) return;
+    leaving = true;
+    sfx.start();
+    view.classList.add("launch-out");
+    setTimeout(() => race(undefined, true), calm ? 0 : 420);
+  });
   for (const id of ["#board", "#board2"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); void board("best"); });
   view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => b.addEventListener("click", () => {
     const t = b.dataset.track as TrackId;
@@ -720,7 +730,7 @@ function confetti(from: HTMLElement) {
 /* Race                                                                */
 /* ================================================================== */
 
-function race(net?: NetRace) {
+function race(net?: NetRace, endless = false) {
   const p = api.player();
   if (!p) return auth();
   if (mp && !net) mpLeave();
@@ -742,11 +752,11 @@ function race(net?: NetRace) {
   racer = game;
   if (mp) mp.at = "race";
   game.mount(stageEl, {
-    onEnd: (r) => void results(stageEl, r),
+    onEnd: (r) => void (r.endless ? endlessResults(stageEl, r) : results(stageEl, r)),
     // Online there's no restarting on your own; the pause menu's button just closes it.
-    onRestart: () => { sfx.ui(); if (net) dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })); else race(); },
+    onRestart: () => { sfx.ui(); if (net) dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })); else race(undefined, endless); },
     onQuit: () => { sfx.ui(); if (net) mpLeave(); hub(); },
-  }, p.char, { skin: p.skin, track: net ? net.track : trackPick, net });
+  }, p.char, { skin: p.skin, track: net ? net.track : trackPick, net, endless });
 }
 
 const RI = {
@@ -761,6 +771,145 @@ const RI = {
   share: `<svg viewBox="0 0 24 24"><path d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   replay: `<svg viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v4h4" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
+
+const INFINITY = `<svg viewBox="0 0 24 24"><path d="M6.5 8.5c-2 0-3.5 1.6-3.5 3.5s1.5 3.5 3.5 3.5c3.5 0 7.5-7 11-7 2 0 3.5 1.6 3.5 3.5s-1.5 3.5-3.5 3.5c-3.5 0-7.5-7-11-7z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const HEART = `<svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 4.4 2.6.8-1.4 2.3-2.6 4.4-2.6 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z" fill="currentColor"/></svg>`;
+const fmtDist = (m: number) => (m < 1000 ? `${fmt(Math.round(m))} m` : `${(m / 1000).toFixed(2)} km`);
+
+/** Infinite: the run's card, over the replay of the crash. */
+async function endlessResults(stageEl: HTMLElement, r: RaceResult) {
+  const p = api.player()!;
+  const e = r.endless!;
+  const prevBest = p.endless ?? 0;
+  const tiles: [string, string, number, string, string][] = [
+    [INFINITY, "Distance", r.tally.distance, fmtDist(e.distance), "#9db4ff"],
+    [RI.hit, "Dodges", r.tally.dodges, `${e.nearMisses} close calls · ${e.gates} gates`, "#7fe0ff"],
+    [RI.coin, "Coins", r.tally.coins, `${r.coins} grabbed`, "#ffc21a"],
+    [RI.turbo, "Mini-turbos", r.tally.turbos, `${r.turbos} fired`, "#2ee6ff"],
+    [RI.star, "Stunts", r.tally.stunts, `${r.tricks} tricks · ${e.heartsFound} hearts found`, "#b58cff"],
+    [RI.flag, "Stages", r.tally.laps + r.tally.passes + r.tally.takedowns, `reached stage ${e.stage}`, "#ff9bd6"],
+  ];
+  const over = h(`<div class="rr endless">
+    <div class="rr-card">
+      <header class="rr-head">
+        <div class="rr-medal inf"><i>${INFINITY}</i><b>${e.stage}</b><sup>STAGE</sup></div>
+        <div class="rr-cap">
+          <small>Dlicom Skyway · Infinite</small>
+          <b>${fmtDist(e.distance)}</b>
+          <div class="rr-chips">
+            <span>${RI.clock}${fmtTime(r.time)}</span>
+            <span class="out">${HEART}${e.cause ? `Out of hearts · ${esc(e.cause.replace(/!$/, "").toLowerCase())}` : "Out of hearts"}</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="rr-grid">
+        ${tiles.map(([icon, label, v, note, c], i) => `<div class="rr-tile ${v ? "" : "zero"}" style="--c:${c};--d:${0.15 + i * 0.07}s">
+          <i class="ico">${icon}</i>
+          <span class="lab">${label}<small>${note}</small></span>
+          <b data-n="${v}">0</b>
+        </div>`).join("")}
+      </div>
+
+      <div class="rr-bonus" style="--d:${0.6}s">
+        <span class="pill gold">Best combo <b>${e.bestCombo}</b></span>
+        <span class="pill">Top multiplier <b>×${e.bestMult}</b></span>
+      </div>
+
+      <div class="rr-total" style="--d:0.75s">
+        <span>Run score</span>
+        <b data-n="${r.score}" data-total="1">0</b>
+        <i class="rr-ribbon" ${r.score > prevBest ? "" : "hidden"}>New best</i>
+      </div>
+      <div class="rr-rewards" id="earn">
+        <div class="rw sk"></div><div class="rw sk"></div><div class="rw sk"></div>
+      </div>
+      <div class="rr-unlocks" id="unlocks"></div>
+
+      <div class="rr-acts">
+        <button class="rr-go" id="again" aria-label="Run again">
+          <span class="rr-go-face">
+            <span class="rr-go-shine"></span>
+            <span class="rr-go-ico">${RI.replay}</span>
+            <span class="rr-go-txt"><b>Run again</b><small>${prevBest || r.score ? `Best ${fmt(Math.max(prevBest, r.score))}` : "4 hearts · beat your distance"}</small></span>
+            <span class="rr-go-chev"><i></i><i></i><i></i></span>
+          </span>
+          <kbd class="rr-go-key">Enter ↵</kbd>
+        </button>
+        <div class="rr-row2">
+          <button class="rr-sec" id="home"><i>${RI.home}</i><span>Hub</span></button>
+          <button class="rr-sec" id="rank"><i>${ICON.trophy}</i><span>Leaderboard</span></button>
+          <button class="rr-sec" id="share"><i>${RI.share}</i><span>Share</span></button>
+        </div>
+      </div>
+    </div>
+  </div>`);
+  stageEl.appendChild(over);
+
+  over.querySelectorAll<HTMLElement>("[data-n]").forEach((b, i) => {
+    const target = Number(b.dataset.n);
+    const total = b.dataset.total === "1";
+    setTimeout(() => {
+      const t0 = performance.now();
+      const dur = total ? 1200 : 500;
+      const tick = (now: number) => {
+        const k = Math.min(1, (now - t0) / dur);
+        b.textContent = (total ? "" : "+") + fmt(Math.round(target * (1 - Math.pow(1 - k, 3))));
+        if (k < 1) requestAnimationFrame(tick);
+        else if (target > 0) {
+          sfx.good(Math.min(9, i));
+          if (total) b.closest(".rr-total")!.classList.add("done");
+        }
+      };
+      requestAnimationFrame(tick);
+    }, calm ? 0 : (total ? 950 : 220 + i * 90));
+  });
+
+  const again = () => { sfx.ui(); race(undefined, true); };
+  const onKey = (ev: KeyboardEvent) => { if (ev.key === "Enter") again(); };
+  addEventListener("keydown", onKey);
+  cleanup = () => removeEventListener("keydown", onKey);
+  over.querySelector("#again")!.addEventListener("click", again);
+  over.querySelector("#home")!.addEventListener("click", () => { sfx.ui(); hub(); });
+  over.querySelector("#rank")!.addEventListener("click", () => { sfx.ui(); void board("endless"); });
+  const shareBtn = over.querySelector<HTMLButtonElement>("#share")!;
+  shareBtn.addEventListener("click", async () => {
+    const line = `I ran ${fmtDist(e.distance)} on the Dlicom Skyway in DILI CART Infinite (stage ${e.stage}, ${fmt(r.score)} points). Beat me: ${location.origin}`;
+    const label = shareBtn.querySelector("span")!;
+    try {
+      if (navigator.share) await navigator.share({ text: line });
+      else { await navigator.clipboard.writeText(line); label.textContent = "Copied!"; }
+    } catch { /* cancelled */ }
+    setTimeout(() => (label.textContent = "Share"), 1600);
+  });
+
+  // Save the run and show what it earned.
+  const earn = over.querySelector<HTMLElement>("#earn")!;
+  let reply: Awaited<ReturnType<typeof api.submitEndless>>;
+  try {
+    reply = await api.submitEndless({ score: r.score, distance: e.distance, time: r.time, coins: r.coins, stage: e.stage });
+  } catch (err) {
+    earn.innerHTML = `<div class="rw err"><b>Couldn't save this run</b><small>${esc(err instanceof Error ? err.message : "unknown error")}</small></div>`;
+    return;
+  }
+  if (!over.isConnected) return;
+  if (reply.isBest) over.querySelector<HTMLElement>(".rr-ribbon")!.hidden = false;
+  const rankTxt = p.guest ? "Guest" : reply.offline ? "Offline" : reply.rank ? `#${fmt(reply.rank)}` : "—";
+  const rankSub = p.guest ? "sign up to get ranked" : reply.offline ? "syncs when you're back online" : "worldwide · Infinite";
+  earn.innerHTML = `
+    <div class="rw pts"><small>Points earned</small><b>+${fmt(reply.earned)}</b><em class="dim">40% of the run score</em></div>
+    <div class="rw rank"><small>Infinite rank</small><b>${rankTxt}</b><em class="dim">${rankSub}</em></div>
+    <div class="rw coins"><small>${ICON.coin}Wallet</small><b>${fmt(reply.player.coins ?? 0)}</b><em class="dim">best run ${fmtDist(reply.player.endlessDist ?? 0)}</em></div>`;
+  const unlocks = over.querySelector<HTMLElement>("#unlocks")!;
+  const before = reply.player.points - reply.earned;
+  for (const id of CHAR_IDS) {
+    if (before < CHAR_UNLOCK[id] && reply.player.points >= CHAR_UNLOCK[id]) {
+      unlocks.insertAdjacentHTML("beforeend", `<div class="rr-unlock" style="--c:${CHAR_INFO[id].color}">
+        <span class="pic">${face(id)}</span><span><small>New driver unlocked</small><b>${CHAR_INFO[id].name}</b></span><em>${CHAR_INFO[id].rarity}</em></div>`);
+      sfx.perfect(9);
+    }
+  }
+}
 
 /** End-of-race card, over the still-running finish camera. */
 async function results(stageEl: HTMLElement, r: RaceResult) {
@@ -784,7 +933,7 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
       <header class="rr-head">
         <div class="rr-medal"><b>${r.position}</b><sup>${ORD(r.position).replace(/\d+/, "")}</sup></div>
         <div class="rr-cap">
-          <small>${TRACK_INFO[r.track].name} · ${r.laps} laps</small>
+          <small>${COURSE_INFO[r.track].name} · ${r.laps} laps</small>
           <b>${title}</b>
           <div class="rr-chips">
             <span>${RI.clock}${fmtTime(r.time)}</span>
@@ -823,7 +972,7 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
           <span class="rr-go-face">
             <span class="rr-go-shine"></span>
             <span class="rr-go-ico">${RI.replay}</span>
-            <span class="rr-go-txt"><b id="againTxt">${mpRes ? "Rematch" : "Race again"}</b><small id="againSub">${mpRes ? `Room ${mpRes.room.code} · everyone races again` : `${TRACK_INFO[r.track].name} · ${r.laps} laps`}</small></span>
+            <span class="rr-go-txt"><b id="againTxt">${mpRes ? "Rematch" : "Race again"}</b><small id="againSub">${mpRes ? `Room ${mpRes.room.code} · everyone races again` : `${COURSE_INFO[r.track].name} · ${r.laps} laps`}</small></span>
             <span class="rr-go-chev"><i></i><i></i><i></i></span>
           </span>
           <kbd class="rr-go-key">Enter ↵</kbd>
@@ -897,7 +1046,7 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
   }
   const shareBtn = over.querySelector<HTMLButtonElement>("#share")!;
   shareBtn.addEventListener("click", async () => {
-    const line = `I finished ${ORD(r.position)} on ${TRACK_INFO[r.track].name} in DILI CART with ${fmt(r.score)} points. Beat me: ${location.origin}`;
+    const line = `I finished ${ORD(r.position)} on ${COURSE_INFO[r.track].name} in DILI CART with ${fmt(r.score)} points. Beat me: ${location.origin}`;
     const label = shareBtn.querySelector("span")!;
     try {
       if (navigator.share) await navigator.share({ text: line });
@@ -1187,7 +1336,7 @@ function lobby() {
     wait.textContent = inRace
       ? (r.phase === "race" && s.at === "lobby" ? "A race is on — you're in the next one." : "Race starting…")
       : host ? (r.players.length > 1 ? "Everyone's here? Hit start." : "Share the code — or start now against the Custodians.") : `Waiting for ${hostP ? hostP.name : "the host"} to start…`;
-    view.querySelector("#sub")!.textContent = `${r.players.length} in the room · ${TRACK_INFO[r.track].name}`;
+    view.querySelector("#sub")!.textContent = `${r.players.length} in the room · ${COURSE_INFO[r.track].name}`;
     const net = view.querySelector<HTMLElement>("#net")!;
     net.textContent = room.status === "reconnecting" ? "Connection dropped — reconnecting…" : room.status === "online" && room.rtt ? `Connected · ${room.rtt} ms` : "";
     net.classList.toggle("bad", room.status !== "online");
@@ -1269,7 +1418,7 @@ function mpStandings(el: HTMLElement) {
 /* Leaderboard                                                         */
 /* ================================================================== */
 
-async function board(by: "best" | "points") {
+async function board(by: BoardBy) {
   const p = api.player();
   const view = h(`<div class="screen board">
     <header class="bar">
@@ -1282,6 +1431,7 @@ async function board(by: "best" | "points") {
       <div class="seg tabs">
         <button data-by="best" class="${by === "best" ? "on" : ""}">Best race</button>
         <button data-by="points" class="${by === "points" ? "on" : ""}">Total points</button>
+        <button data-by="endless" class="${by === "endless" ? "on" : ""}">Infinite</button>
       </div>
       <div class="panel lb" id="lb"><p class="muted">Loading…</p></div>
       ${p?.guest ? `<p class="guestnote">Guests aren't on the global board. <button class="link" id="claim">Create an account</button> to get ranked.</p>` : ""}
@@ -1289,7 +1439,7 @@ async function board(by: "best" | "points") {
   </div>`);
   view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); hub(); });
   view.querySelector("#claim")?.addEventListener("click", () => { sfx.ui(); auth("signup"); });
-  view.querySelectorAll<HTMLElement>("[data-by]").forEach((b) => b.addEventListener("click", () => { sfx.ui(); void board(b.dataset.by as "best" | "points"); }));
+  view.querySelectorAll<HTMLElement>("[data-by]").forEach((b) => b.addEventListener("click", () => { sfx.ui(); void board(b.dataset.by as BoardBy); }));
   wireCommon(view);
   show(view, true);
 
@@ -1298,14 +1448,16 @@ async function board(by: "best" | "points") {
     const { entries, me } = await api.leaderboard(by);
     if (!lb.isConnected) return;
     if (!entries.length) {
-      lb.innerHTML = `<p class="muted">Nobody has finished a race yet. Go and take first place.</p>`;
+      lb.innerHTML = by === "endless"
+        ? `<p class="muted">No Infinite runs yet. Four hearts, no finish line: set the first record.</p>`
+        : `<p class="muted">Nobody has finished a race yet. Go and take first place.</p>`;
       return;
     }
     const row = (e: BoardEntry, i: number) => `<div class="lb-row ${p && !p.guest && e.handle === p.handle ? "me" : ""} ${i < 3 ? "top t" + i : ""}">
       <i class="rank">${i + 1}</i>
       <span class="lb-av" style="--h:${[...e.handle].reduce((a, c) => a + c.charCodeAt(0), 0) % 360}">${esc(e.handle.slice(0, 1).toUpperCase())}</span>
-      <span class="who">@${esc(e.handle)}<small>${e.tier} · ${e.races} race${e.races === 1 ? "" : "s"} · ${e.wins} win${e.wins === 1 ? "" : "s"}</small></span>
-      <b>${fmt(by === "best" ? e.best : e.points)}</b>
+      <span class="who">@${esc(e.handle)}<small>${by === "endless" ? `${e.tier} · ${fmtDist(e.endlessDist ?? 0)} run` : `${e.tier} · ${e.races} race${e.races === 1 ? "" : "s"} · ${e.wins} win${e.wins === 1 ? "" : "s"}`}</small></span>
+      <b>${fmt(by === "best" ? e.best : by === "endless" ? e.endless ?? 0 : e.points)}</b>
     </div>`;
     lb.innerHTML = entries.map(row).join("")
       + (me && me.rank > entries.length ? `<div class="lb-row me"><i class="rank">${me.rank}</i><span class="who">You</span><b>${fmt(me.value)}</b></div>` : "");
@@ -1322,6 +1474,11 @@ void (async () => {
   progress(0.12, "Checking your garage");
   const p = await api.restore();
   const dev = import.meta.env.DEV ? location.hash : "";
+  if (dev === "#infinite") {
+    dropLoader();
+    if (!p) api.playAsGuest();
+    return race(undefined, true);
+  }
   if (dev === "#race" || dev === "#town") {
     dropLoader();
     if (!p) api.playAsGuest();

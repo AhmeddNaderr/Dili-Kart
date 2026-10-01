@@ -3,15 +3,16 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { DRIVE_LIMIT, EDGE, TRACKS, Track, laneX, newFrame, type Frame } from "./track";
+import { DRIVE_LIMIT, EDGE, ROAD_HALF, TRACKS, Track, laneX, newFrame, type Frame } from "./track";
 import { buildTown } from "./town";
+import { buildSkyway } from "./skyway";
 import { buildWorld, crowdTime, gridSlot, type Quality, type World } from "./world";
 import * as M from "./models";
 import * as T from "./textures";
 import { Confetti, Particles, ReplayTape, SkidMarks } from "./fx";
 import { RaceAudio } from "./sound";
 import { Hud, ITEM_NAME, type ItemKind } from "./hud";
-import { TRACK_INFO, type CharId, type SkinId, type TrackId } from "../../shared/rules";
+import { COURSE_INFO, ENDLESS_HEARTS, type CharId, type CourseId, type SkinId, type TrackId } from "../../shared/rules";
 import { MASCOT } from "./mascot";
 import { tickNature } from "./nature";
 import { ContactAO, gradePass, sanitizePass } from "./grade";
@@ -34,7 +35,7 @@ const BOOST_TOP = 34;
 const CENTRIFUGAL = 0.3;
 const RIVALS = 7;
 
-export type TallyKey = "coins" | "turbos" | "stunts" | "passes" | "takedowns" | "laps";
+export type TallyKey = "coins" | "turbos" | "stunts" | "passes" | "takedowns" | "laps" | "distance" | "dodges";
 
 export interface RaceResult {
   tally: Record<TallyKey, number>;
@@ -49,7 +50,22 @@ export interface RaceResult {
   finishBonus: number;
   timeBonus: number;
   laps: number;
-  track: TrackId;
+  track: CourseId;
+  /** Infinite mode: how the run went. */
+  endless?: EndlessStats;
+}
+
+export interface EndlessStats {
+  /** Metres covered. */
+  distance: number;
+  stage: number;
+  bestCombo: number;
+  /** Highest score multiplier reached. */
+  bestMult: number;
+  nearMisses: number;
+  gates: number;
+  heartsFound: number;
+  cause: string;
 }
 
 export interface RaceHooks {
@@ -89,6 +105,8 @@ export interface MountOptions {
   skin?: SkinId | null;
   /** Which track to race on. */
   track?: TrackId;
+  /** Infinite mode on the Dlicom Skyway: four hearts, endless stages. */
+  endless?: boolean;
 }
 
 type ShotKind = "heli" | "chase" | "front" | "trackside" | "jump" | "low";
@@ -97,6 +115,11 @@ type ShotKind = "heli" | "chase" | "front" | "trackside" | "jump" | "low";
 const SILENT = new Proxy({}, { get: () => () => undefined }) as unknown as RaceAudio;
 
 type Phase = "load" | "intro" | "countdown" | "race" | "finish";
+
+/** Combo needed for each score multiplier, ×1 to ×5. */
+const MULT_AT = [0, 4, 10, 18, 28];
+/** Infinite: nothing spawns this close to the jump's lip or after its landing. */
+const GAP_CLEAR = [45, 25];
 
 interface Racer {
   i: number;
@@ -178,17 +201,31 @@ interface NetKart {
   shield: THREE.Mesh | null;
 }
 
-interface Coin { kind: T.CoinKind; u: number; lat: number; h: number; alive: boolean; respawn: number; pop: number; phase: number; }
+interface Coin {
+  kind: T.CoinKind; u: number; lat: number; h: number; alive: boolean; respawn: number; pop: number; phase: number;
+  /** Infinite: laid down by a wave, gone for good once taken or passed. */
+  dyn?: boolean; dist?: number;
+}
+/** Infinite: a spare heart floating over the road. */
+interface HeartPick { obj: THREE.Group; u: number; lat: number; dist: number; alive: boolean; }
 interface Box { u: number; lat: number; obj: THREE.Group; alive: boolean; respawn: number; phase: number; }
 interface Pad { u: number; lat: number; tex: THREE.Texture; }
 interface Hazard {
-  kind: "bollard" | "cone" | "drone" | "goo";
+  kind: "bollard" | "cone" | "drone" | "goo" | "laser" | "block";
   u: number; lat: number; r: number; obj: THREE.Object3D;
   life: number; phase: number; knocked: number; kv: THREE.Vector3; base: number; span: number;
   /** Warning ring painted on the road under a drone. */
   ring: THREE.Mesh | null;
   /** Multiplayer: goo shared between games. */
   hid?: string;
+  /** Infinite: a pooled obstacle placed by a wave, at this race distance. */
+  pooled?: boolean;
+  dist?: number;
+  /** Already got past it (or into it): no near-miss bonus twice. */
+  passed?: boolean;
+  /** Laser gates: beam live right now; sweep speed for drones and shifters. */
+  on?: boolean;
+  rate?: number;
 }
 interface Orb { u: number; lat: number; speed: number; life: number; obj: THREE.Object3D; target: Racer; oid: string; }
 /** The player's Seeker Orb: flies up the track and homes in on the racer ahead. */
@@ -291,7 +328,7 @@ export class DiliCart {
   private coinStreak = 0;
   private coinStreakT = 0;
   private score = 0;
-  private tally: Record<TallyKey, number> = { coins: 0, turbos: 0, stunts: 0, passes: 0, takedowns: 0, laps: 0 };
+  private tally: Record<TallyKey, number> = { coins: 0, turbos: 0, stunts: 0, passes: 0, takedowns: 0, laps: 0, distance: 0, dodges: 0 };
   private takedowns = 0;
   private turbos = 0;
   private tricks = 0;
@@ -305,6 +342,30 @@ export class DiliCart {
   private attackCool = 6;
   private result: RaceResult | null = null;
   private skipIntro = false;
+
+  // Infinite mode
+  private endless = false;
+  private rivals = RIVALS;
+  private hearts = ENDLESS_HEARTS;
+  private stage = 1;
+  /** Everyone's top speed, ×1 at stage one and rising each stage. */
+  private speedK = 1;
+  /** Clean moves chain into a combo that sets the score multiplier; a hit resets it. */
+  private combo = 0;
+  private comboIdle = 0;
+  private bestCombo = 0;
+  private bestMult = 1;
+  private nearMisses = 0;
+  private gates = 0;
+  private heartsFound = 0;
+  private wreck = "";
+  /** Distance already paid out in points, and where the next wave goes (race distance). */
+  private paidDist = 0;
+  private nextWave = 0;
+  private waveN = 0;
+  private pool: Record<"bollard" | "cone" | "drone" | "laser" | "block", Hazard[]> = { bollard: [], cone: [], drone: [], laser: [], block: [] };
+  private dynCoins: Coin[] = [];
+  private heartPicks: HeartPick[] = [];
 
   // Camera
   private camPos = V();
@@ -334,7 +395,7 @@ export class DiliCart {
 
   private char: CharId = "dili";
   private skin: SkinId | null = null;
-  private trackId: TrackId = "circuit";
+  private trackId: CourseId = "circuit";
   private laps = LAPS;
   private attract = false;
   private trailer = false;
@@ -362,10 +423,16 @@ export class DiliCart {
     this.hooks = hooks;
     this.char = char;
     this.skin = opts.skin ?? null;
-    this.trackId = opts.track ?? "circuit";
+    this.endless = opts.endless === true && !opts.net;
+    this.trackId = this.endless ? "sky" : opts.track ?? "circuit";
     if (this.trackId !== "circuit") this.track = new Track(TRACKS[this.trackId]);
-    this.laps = TRACK_INFO[this.trackId].laps;
+    this.laps = COURSE_INFO[this.trackId].laps;
+    if (this.endless) {
+      this.rivals = 5;
+      this.lastPos = this.rivals + 1;
+    }
     this.audio.night = this.trackId === "town";
+    this.audio.sky = this.endless;
     this.attract = opts.attract === true;
     this.trailer = opts.trailer === true;
     if (opts.net) {
@@ -381,7 +448,7 @@ export class DiliCart {
       restart: () => this.hooks.onRestart(),
       quit: () => this.hooks.onQuit(),
     }, {
-      name: TRACK_INFO[this.trackId].name, laps: this.laps, night: this.trackId === "town",
+      name: COURSE_INFO[this.trackId].name, laps: this.laps, night: this.trackId === "town", endless: this.endless,
       online: opts.net ? { code: opts.net.room.code, people: Math.min(8, opts.net.grid.length) } : undefined,
     });
 
@@ -440,7 +507,9 @@ export class DiliCart {
     const portraitImg = img.complete && img.naturalWidth ? img : null;
     this.world = this.trackId === "town"
       ? buildTown(this.scene, this.renderer, this.track, portraitImg, this.quality)
-      : buildWorld(this.scene, this.renderer, this.track, portraitImg, this.quality);
+      : this.trackId === "sky"
+        ? buildSkyway(this.scene, this.renderer, this.track, this.quality)
+        : buildWorld(this.scene, this.renderer, this.track, portraitImg, this.quality);
     this.scene.add(this.sparks.points, this.puffs.points, this.confetti.mesh);
     const town = this.trackId === "town";
     // On the wet street a slide wipes the water off, leaving a dull grey
@@ -486,7 +555,7 @@ export class DiliCart {
     this.captureReflections();
     if (this.attract) this.startAttract();
     else this.startIntro();
-    this.renderer.compile(this.scene, this.camera);
+    this.warmUp();
 
     this.hud.loaded();
     if (this.room) this.joinNet();
@@ -626,10 +695,10 @@ export class DiliCart {
     }
     // The player starts at the back of the grid, like the reference — the
     // whole race is a climb through the field.
-    make(0, M.lookFor(this.char, this.skin), RIVALS);
+    make(0, M.lookFor(this.char, this.skin), this.rivals);
     // Front of the grid is quickest. All of them are a touch slower than a
     // player holding the gas, so passes come steadily rather than in a burst.
-    for (let k = 0; k < RIVALS; k++) {
+    for (let k = 0; k < this.rivals; k++) {
       const r = make(k + 1, M.RIVAL_LOOKS[k], k);
       bot(r, k);
     }
@@ -698,7 +767,25 @@ export class DiliCart {
     };
 
     const c = tr.ctrlU;
-    if (this.trackId === "town") {
+    if (this.trackId === "sky") {
+      // The Skyway's fixed furniture: a few coin lines, item boxes and pads.
+      // Infinite mode's waves lay down everything else as you go.
+      for (let k = 0; k < 6; k++) {
+        coin("dli", tr.startU + 40 + k * 5, laneX(1));
+        coin("dli", tr.startU + 40 + k * 5, laneX(2));
+      }
+      boxRow(tr.startU + 120);
+      for (const i of [5, 13, 18, 22]) boxRow(c[i]);
+      for (let k = 0; k < 6; k++) coin(k === 3 ? "eth" : "dli", c[4] + k * ((c[6] - c[4]) / 6), 4.6);
+      for (let k = 0; k < 8; k++) coin(k === 4 ? "eth" : "dli", c[15] + k * ((c[17] - c[15]) / 8), Math.sin(k * 0.9) * 5);
+      coin("btc", c[19] + 4, -7.6);
+      pad(c[9] + 2, laneX(1));
+      pad(c[9] + 2, laneX(2));
+      pad(c[12] + 24, laneX(1));
+      pad(c[20] + 6, laneX(2));
+      glideCoins();
+      if (this.endless) this.buildPools(stripes, ringGeo, ringMat);
+    } else if (this.trackId === "town") {
       // Boulevard: two rails of coins, then a row of boxes.
       for (let k = 0; k < 5; k++) {
         coin("dli", tr.startU + 36 + k * 5, laneX(0));
@@ -787,6 +874,55 @@ export class DiliCart {
       this.scene.add(im);
       this.coinMesh.set(kind, im);
     }
+  }
+
+  /**
+   * Infinite mode keeps every obstacle, coin and heart it will ever need in
+   * pools, built (and their shaders compiled) at load, so nothing is created
+   * mid-run. Unused pieces wait far below the clouds.
+   */
+  private buildPools(stripes: THREE.Texture, ringGeo: THREE.BufferGeometry, ringMat: THREE.Material) {
+    const park = (o: THREE.Object3D) => { o.position.set(0, -600, 0); this.scene.add(o); return o; };
+    const make = (kind: keyof DiliCart["pool"], obj: THREE.Object3D, r: number) => {
+      obj.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = kind !== "laser"; });
+      park(obj);
+      const h: Hazard = { kind, u: 0, lat: 0, r, obj, life: Infinity, phase: 0, knocked: 0, kv: V(), base: 0, span: 0, ring: null, pooled: true, dist: 0 };
+      if (kind === "drone") { h.ring = new THREE.Mesh(ringGeo, ringMat); park(h.ring); }
+      this.pool[kind].push(h);
+    };
+    for (let k = 0; k < 16; k++) make("bollard", M.bollard(stripes), 0.9);
+    for (let k = 0; k < 14; k++) make("cone", M.cone(), 0.7);
+    for (let k = 0; k < 4; k++) make("drone", M.drone(), 0.95);
+    for (let k = 0; k < 3; k++) make("laser", M.laserGate(DRIVE_LIMIT + 0.6), DRIVE_LIMIT + 1);
+    for (let k = 0; k < 4; k++) make("block", M.shifter(8.2), 4.1);
+    for (let k = 0; k < 2; k++) this.heartPicks.push({ obj: park(M.heartPickup()) as THREE.Group, u: 0, lat: 0, dist: 0, alive: false });
+    for (let k = 0; k < 48; k++) {
+      const c: Coin = { kind: "dli", u: 0, lat: 0, h: 1.15, alive: false, respawn: Infinity, pop: 0, phase: Math.random() * 6, dyn: true, dist: 0 };
+      this.coins.push(c);
+      this.dynCoins.push(c);
+    }
+  }
+
+  /**
+   * Compile every shader the race can need before the first frame. Things
+   * that only appear mid-race (the Custodians' goo and freeze orbs, your
+   * seeker, the shield, hidden effects) are shown for the compile and put
+   * back, so nothing stalls the game the first time it shows up.
+   */
+  private warmUp() {
+    const temps = [M.goo(), M.orb(), M.seeker()];
+    for (const t of temps) { t.position.set(0, -600, 0); this.scene.add(t); }
+    const hidden: THREE.Object3D[] = [];
+    this.scene.traverse((o) => { if (!o.visible) { hidden.push(o); o.visible = true; } });
+    // Compile for where the scene really draws: the post-processing target
+    // (no tone mapping, linear colour). Compiling for the screen built
+    // different shaders, so each object compiled again on first sight.
+    const prev = this.renderer.getRenderTarget();
+    this.renderer.setRenderTarget(this.composer.readBuffer);
+    this.renderer.compile(this.scene, this.camera);
+    this.renderer.setRenderTarget(prev);
+    for (const o of hidden) o.visible = false;
+    for (const t of temps) this.scene.remove(t);
   }
 
   /* ================================================================ */
@@ -913,6 +1049,7 @@ export class DiliCart {
       this.updateOrbs(dt);
       this.updateSeekers(dt);
       this.standings();
+      if (this.endless) this.updateEndless(dt);
     }
     if (this.room) this.netTick(dt);
     this.updateHazards(dt);
@@ -1173,6 +1310,11 @@ export class DiliCart {
     this.phaseT = 0;
     this.raceT = 0;
     this.lapStart = 0;
+    if (this.endless) {
+      // A clear run-up before the first wave.
+      this.nextWave = 150;
+      this.paidDist = Math.max(0, this.racers[0].dist);
+    }
     this.audio.setMusic(1);
     setTimeout(() => this.hud.countdown(null), 800);
     this.hud.hint(true);
@@ -1221,6 +1363,22 @@ export class DiliCart {
   }
 
   private endRace() {
+    if (this.endless) {
+      const p = this.racers[0];
+      const r: RaceResult = {
+        tally: { ...this.tally }, score: this.score, position: 1, coins: this.coinCount, time: this.raceT,
+        bestLap: this.bestLap, takedowns: this.takedowns, turbos: this.turbos, tricks: this.tricks,
+        finishBonus: 0, timeBonus: 0, laps: this.stage, track: this.trackId,
+        endless: {
+          distance: Math.max(0, Math.round(p.dist + 5 + this.rivals * 4.2)), stage: this.stage, bestCombo: this.bestCombo,
+          bestMult: this.bestMult, nearMisses: this.nearMisses, gates: this.gates, heartsFound: this.heartsFound, cause: this.wreck,
+        },
+      };
+      this.result = r;
+      this.hud.racing(false);
+      this.hooks.onEnd(r);
+      return;
+    }
     let pos = this.lastPos;
     // Online, finishing times on the room clock decide places: a photo
     // finish reads the same in every game.
@@ -1354,6 +1512,10 @@ export class DiliCart {
     if (p.dist >= this.laps * this.track.length && !p.finished) {
       this.closeLap();
       this.finishRace();
+    } else if (lapNow > this.lap && p.dist > 0 && this.endless) {
+      this.closeLap();
+      this.lap = lapNow;
+      this.stageUp(lapNow);
     } else if (lapNow > this.lap && p.dist > 0) {
       this.closeLap();
       this.lap = lapNow;
@@ -1385,6 +1547,7 @@ export class DiliCart {
       const pts = [0, 15, 30, 60][this.driftTier];
       this.hud.pop(`${names[this.driftTier]} +${pts}`, cls[this.driftTier]);
       this.addScore(pts, "turbos");
+      this.chain(this.driftTier >= 2 ? 1 : 0.5);
       this.turbos++;
       this.audio.boost();
       this.shake = Math.max(this.shake, 0.25 + this.driftTier * 0.1);
@@ -1448,6 +1611,20 @@ export class DiliCart {
         this.hud.flash("#6dff9e");
         break;
       case "zap": {
+        if (this.endless) {
+          // Infinite: the pulse also clears the road ahead.
+          let cleared = 0;
+          for (const h of [...this.hazards]) {
+            if (!h.pooled) continue;
+            const ahead = h.dist! - p.dist;
+            if (ahead > -2 && ahead < 95) {
+              this.burst(h.obj.position, "#8fe3ff", 18, 7);
+              this.retire(h);
+              cleared++;
+            }
+          }
+          if (cleared) { this.addScore(20 * cleared, "dodges"); this.hud.pop(`ROAD CLEARED ×${cleared}`, "blue big"); }
+        }
         const n = this.applyZap(p, p.dist);
         this.emit({ e: "zap", dist: p.dist });
         this.audio.zap();
@@ -1462,7 +1639,9 @@ export class DiliCart {
   private grantItem() {
     if (this.item || this.rolling) return;
     const pos = this.lastPos;
-    const table: [ItemKind, number][] = pos === 1
+    const table: [ItemKind, number][] = this.endless
+      ? [["shield", 3.2], ["turbo", 3], ["ghost", 2.2], ["zap", 2], ["magnet", 2], ["seeker", 1]]
+      : pos === 1
       ? [["shield", 4], ["magnet", 3.5], ["goo", 3], ["turbo", 2]]
       : pos <= 3
         ? [["turbo", 3], ["seeker", 2.5], ["shield", 2], ["magnet", 2], ["goo", 2], ["zap", 1.2], ["ghost", 1.2]]
@@ -1492,6 +1671,14 @@ export class DiliCart {
       this.burst(p.model.root.position, "#5ec8ff", 30, 8);
       return;
     }
+    if (this.endless) {
+      this.hearts = Math.max(0, this.hearts - 1);
+      this.combo = 0;
+      // A moment of mercy: no second hit while you recover.
+      this.hitCool = 2.2;
+      this.audio.heartLost();
+      if (this.hearts <= 0) { this.gameOver(what); return; }
+    }
     p.spin = 0.8;
     p.speed *= 0.5;
     p.boostT = 0;
@@ -1509,8 +1696,301 @@ export class DiliCart {
   }
 
   private addScore(n: number, cat: TallyKey) {
+    // Infinite: everything scores at the combo multiplier.
+    if (this.endless) n = Math.round(n * this.mult());
     this.score += n;
     this.tally[cat] += n;
+  }
+
+  /* ================================================================ */
+  /* Infinite mode                                                    */
+  /* ================================================================ */
+
+  /** The score multiplier the current combo earns, ×1 to ×5. */
+  private mult() {
+    let m = 1;
+    for (let k = 1; k < MULT_AT.length; k++) if (this.combo >= MULT_AT[k]) m = k + 1;
+    return m;
+  }
+
+  /** A clean move: the combo grows (and the multiplier with it). */
+  private chain(n = 1) {
+    if (!this.endless) return;
+    const before = this.mult();
+    this.combo += n;
+    this.comboIdle = 0;
+    this.bestCombo = Math.max(this.bestCombo, Math.floor(this.combo));
+    const after = this.mult();
+    if (after > before) {
+      this.bestMult = Math.max(this.bestMult, after);
+      this.hud.pop(`×${after} MULTIPLIER!`, "gold big");
+      this.audio.multUp(after);
+    }
+  }
+
+  /** Where race distance `d` is on the loop. */
+  private uAt(d: number) {
+    return this.track.wrap(this.track.startU + d);
+  }
+
+  /** Is race distance `d` clear of the jump (nothing spawns on the ramp or in the gap)? */
+  private offJump(d: number) {
+    const tr = this.track;
+    const u = this.uAt(d);
+    return !(tr.delta(tr.lipU - GAP_CLEAR[0], u) > 0 && tr.delta(tr.landU + GAP_CLEAR[1], u) < 0);
+  }
+
+  private take(kind: keyof DiliCart["pool"], d: number, lat: number): Hazard | null {
+    const h = this.pool[kind].pop();
+    if (!h) return null;
+    h.dist = d;
+    h.u = this.uAt(d);
+    h.lat = h.base = lat;
+    h.knocked = 0;
+    h.passed = false;
+    h.on = false;
+    h.span = 0;
+    h.rate = 1;
+    h.phase = Math.random() * 6;
+    h.obj.rotation.set(0, 0, 0);
+    h.obj.scale.setScalar(1);
+    this.hazards.push(h);
+    return h;
+  }
+
+  private retire(h: Hazard) {
+    const i = this.hazards.indexOf(h);
+    if (i >= 0) this.hazards.splice(i, 1);
+    h.obj.position.set(0, -600, 0);
+    if (h.ring) h.ring.position.set(0, -600, 0);
+    this.pool[h.kind as keyof DiliCart["pool"]].push(h);
+  }
+
+  private dynCoin(d: number, lat: number, h = 1.15) {
+    const c = this.dynCoins.find((x) => !x.alive && x.pop <= 0);
+    if (!c) return;
+    c.dist = d;
+    c.u = this.uAt(d);
+    c.lat = lat;
+    c.h = h;
+    c.alive = true;
+    c.respawn = Infinity;
+    c.pop = -0.35;
+  }
+
+  /**
+   * Lay down the next stretch of road: one obstacle pattern (harder ones
+   * unlock with the stages), a coin line to reward the clean line through
+   * it, and now and then a spare heart. Every pattern leaves a way through.
+   */
+  private spawnWave() {
+    let d = this.nextWave;
+    // Skip the jump: nothing on the ramp, in the air or on the landing.
+    while (!this.offJump(d) || !this.offJump(d + 30)) d += 10;
+    const st = this.stage;
+    const lanes = [0, 1, 2, 3];
+    const free = Math.floor(Math.random() * 4);
+    const pick = (opts: [string, number][]) => {
+      let r = Math.random() * opts.reduce((a, [, w]) => a + w, 0);
+      for (const [k, w] of opts) if ((r -= w) <= 0) return k;
+      return opts[0][0];
+    };
+    const kind = this.waveN < 2 ? (this.waveN === 0 ? "slalom" : "wall") : pick([
+      ["wall", 3], ["slalom", st < 3 ? 2 : 1], ["drone", 2], ["laser", st >= 2 ? 2 : 0], ["shifter", st >= 2 ? 2.2 : 0.6],
+      ["double", st >= 3 ? 2 : 0], ["gauntlet", st >= 4 ? 1.6 : 0],
+    ]);
+    let len = 24;
+    switch (kind) {
+      case "wall": {
+        // Bollards across three lanes; the open one has the coins.
+        for (const l of lanes) if (l !== free) this.take("bollard", d, laneX(l) + (Math.random() - 0.5) * 0.4);
+        for (let k = 0; k < 5; k++) this.dynCoin(d - 12 + k * 4, laneX(free));
+        break;
+      }
+      case "double": {
+        // Two walls, the gaps on opposite sides: weave between them.
+        const a = free, b = (free + 2 + Math.floor(Math.random() * 2)) % 4;
+        for (const l of lanes) if (l !== a) this.take("bollard", d, laneX(l));
+        for (const l of lanes) if (l !== b) this.take("bollard", d + 22, laneX(l));
+        for (let k = 0; k < 6; k++) this.dynCoin(d + 3 + k * 3.2, laneX(a) + (laneX(b) - laneX(a)) * (k / 5));
+        len = 40;
+        break;
+      }
+      case "slalom": {
+        // Cones (they only slow you) zigzagging, with coins on the racing line.
+        for (let k = 0; k < 5; k++) {
+          const lat = (k % 2 ? 1 : -1) * (2.4 + Math.random() * 1.2);
+          this.take("cone", d + k * 7, lat);
+          this.dynCoin(d + k * 7, -lat * 0.9);
+        }
+        len = 36;
+        break;
+      }
+      case "drone": {
+        const h = this.take("drone", d, 0);
+        if (h) { h.span = 6.5; h.rate = 0.9 + st * 0.12; }
+        if (st >= 4) {
+          const h2 = this.take("drone", d + 18, 0);
+          if (h2 && h) { h2.span = 6.5; h2.rate = h.rate!; h2.phase = h.phase + Math.PI; }
+          len = 34;
+        }
+        for (let k = 0; k < 4; k++) this.dynCoin(d - 6 + k * 4, laneX(free), 2.6);
+        break;
+      }
+      case "laser": {
+        // A gate that pulses: time it, or blast through with a shield or ghost.
+        const h = this.take("laser", d, 0);
+        if (h) { h.rate = Math.min(1.5, 0.85 + st * 0.08); h.phase = Math.random() * 3; }
+        for (let k = 0; k < 4; k++) this.dynCoin(d + 4 + k * 4, laneX(free));
+        break;
+      }
+      case "shifter": {
+        const h = this.take("block", d, 0);
+        if (h) { h.span = ROAD_HALF - 4.1; h.rate = 0.7 + st * 0.08; }
+        len = 26;
+        break;
+      }
+      case "gauntlet": {
+        // A shifter, then a wall right behind it.
+        const h = this.take("block", d, 0);
+        if (h) { h.span = ROAD_HALF - 4.1; h.rate = 0.8 + st * 0.08; }
+        for (const l of lanes) if (l !== free) this.take("bollard", d + 26, laneX(l));
+        for (let k = 0; k < 4; k++) this.dynCoin(d + 30 + k * 4, laneX(free));
+        len = 44;
+        break;
+      }
+    }
+    // A spare heart, now and then, when you're short of one.
+    if (this.hearts < ENDLESS_HEARTS && Math.random() < 0.09 + (ENDLESS_HEARTS - this.hearts) * 0.03) {
+      const hp = this.heartPicks.find((x) => !x.alive);
+      if (hp) {
+        hp.alive = true;
+        hp.dist = d + len + 8;
+        hp.u = this.uAt(hp.dist);
+        hp.lat = laneX(Math.floor(Math.random() * 4));
+      }
+    }
+    this.waveN++;
+    // Waves come closer together each stage.
+    const gap = Math.max(34, 92 - st * 8) + Math.random() * 22;
+    this.nextWave = d + len + gap;
+  }
+
+  /** Infinite mode, every frame of the run. */
+  private updateEndless(dt: number) {
+    const p = this.racers[0];
+    const tr = this.track;
+    if (this.phase === "race") {
+      while (this.nextWave < p.dist + 190) this.spawnWave();
+      // Points for distance, at the multiplier.
+      while (p.dist - this.paidDist >= 10) {
+        this.paidDist += 10;
+        this.addScore(10, "distance");
+      }
+      // The combo cools off if you stop earning it.
+      this.comboIdle += dt;
+      if (this.comboIdle > 7 && this.combo > 0) {
+        this.combo = Math.max(0, this.combo - dt * 0.8);
+      }
+    }
+    // Obstacles you've got past: a near miss pays, then they go back in the pool.
+    for (let i = this.hazards.length - 1; i >= 0; i--) {
+      const h = this.hazards[i];
+      if (!h.pooled) continue;
+      const behind = p.dist - h.dist!;
+      if (!h.passed && behind > 1.2 && this.phase === "race") {
+        h.passed = true;
+        if (h.kind === "laser") {
+          this.gates++;
+          this.addScore(40, "dodges");
+          this.hud.pop("GATE! +" + 40 * this.mult(), "green");
+          this.chain(1);
+        } else if (h.kind !== "cone" && h.knocked <= 0 && !p.air) {
+          const clear = Math.abs(p.lat - h.lat) - h.r - 0.95;
+          if (clear < 1.5) {
+            this.nearMisses++;
+            this.addScore(25, "dodges");
+            this.hud.pop(`CLOSE CALL! +${25 * this.mult()}`, "blue");
+            this.audio.whoosh();
+            this.chain(1);
+          }
+        }
+      }
+      if (behind > 30) this.retire(h);
+    }
+    for (const c of this.dynCoins) if (c.alive && p.dist - c.dist! > 20) { c.alive = false; c.pop = 0; }
+    // Spare hearts.
+    const pu = tr.wrap(tr.startU + p.dist);
+    for (const hp of this.heartPicks) {
+      if (!hp.alive) { if (hp.obj.position.y > -500) hp.obj.position.set(0, -600, 0); continue; }
+      if (p.dist - hp.dist > 20) { hp.alive = false; continue; }
+      tr.frame(hp.u, this.f);
+      this.orient(hp.obj, this.f, hp.lat, 1.5 + Math.sin(this.time * 3) * 0.2);
+      (hp.obj.userData.heart as THREE.Mesh).rotation.y = this.time * 2.4;
+      if (Math.abs(tr.delta(pu, hp.u)) < 1.9 && Math.abs(hp.lat - p.lat) < 1.9 && this.phase === "race") {
+        hp.alive = false;
+        this.burst(hp.obj.position, "#ff5d8a", 30, 7);
+        if (this.hearts < ENDLESS_HEARTS) {
+          this.hearts++;
+          this.heartsFound++;
+          this.hud.pop("+1 HEART", "pink big");
+        } else {
+          this.addScore(200, "stunts");
+          this.hud.pop(`FULL HEALTH +${200 * this.mult()}`, "pink");
+        }
+        this.audio.heartGain();
+        this.hud.flash("#ff5d8a");
+      }
+    }
+    // Custodians are traffic here: one that drops far behind comes back in
+    // up the road, one that runs away is brought back behind you.
+    for (let k = 1; k < this.racers.length; k++) {
+      const r = this.racers[k];
+      const gap = r.dist - p.dist;
+      if (gap > -110 && gap < 320) continue;
+      let d = gap <= -110 ? p.dist + 150 + k * 25 + Math.random() * 40 : p.dist - 80 - k * 10;
+      while (!this.offJump(d)) d += 15;
+      r.dist = d;
+      r.lat = laneX(Math.floor(Math.random() * 4));
+      r.latV = 0;
+      r.speed = Math.max(14, p.speed * 0.8);
+      r.spin = 0; r.air = false; r.boostT = 0; r.frozen = 0;
+      r.prevU = this.uAt(d);
+    }
+    // Invulnerable after a hit: the kart blinks.
+    if (this.hitCool > 0 && this.ghostT <= 0) p.model.body.visible = Math.sin(this.time * 34) > -0.3;
+    else if (this.ghostT <= 0) p.model.body.visible = true;
+  }
+
+  /** A new lap of the Skyway is a new stage: faster karts, busier road. */
+  private stageUp(n: number) {
+    this.stage = n;
+    this.speedK = 1 + Math.min(0.32, (n - 1) * 0.045);
+    const bonus = 150 * n;
+    this.addScore(bonus, "laps");
+    this.hud.banner(`STAGE ${n}`, "gold", 2000);
+    this.hud.pop(`STAGE BONUS +${bonus * this.mult()}`, "gold");
+    this.audio.lap();
+    this.audio.hurry(1 + Math.min(0.2, (n - 1) * 0.03));
+    this.confetti.burst(this.v1.copy(this.racers[0].model.root.position).add(new THREE.Vector3(0, 6, 0)), 70, 7, 8);
+  }
+
+  /** Out of hearts: the run is over. */
+  private gameOver(what: string) {
+    const p = this.racers[0];
+    this.wreck = what;
+    p.finished = true;
+    this.phase = "finish";
+    this.phaseT = 0;
+    this.driftDir = 0; this.driftTier = 0; this.driftT = 0;
+    p.spin = 1.6;
+    p.model.body.visible = true;
+    this.hud.banner("WRECKED!", "red", 2600);
+    this.hud.hint(false);
+    this.audio.gameOver();
+    this.audio.setMusic(0.3);
+    this.shake = 1.2;
+    this.burst(p.model.root.position, "#ff3d5a", 50, 10);
   }
 
   /* ================================================================ */
@@ -1526,9 +2006,9 @@ export class DiliCart {
     // Speed.
     const offroad = !r.air && Math.abs(r.lat) > EDGE + 0.4;
     // Coins carried add up to 3.5% top speed, for everyone.
-    let top = TOP * r.skill * (gas ? 1 : CRUISE) * cap * (1 + Math.min(10, r.purse) * 0.0035);
+    let top = TOP * this.speedK * r.skill * (gas ? 1 : CRUISE) * cap * (1 + Math.min(10, r.purse) * 0.0035);
     if (offroad) top *= 0.62;
-    if (r.boostT > 0) top = BOOST_TOP * (r.player ? 1 : 0.94);
+    if (r.boostT > 0) top = BOOST_TOP * this.speedK * (r.player ? 1 : 0.94);
     if (r.frozen > 0) top *= 0.2;
     if (r.spin > 0) top = 3;
     if (this.driftDir !== 0 && r.player) top *= 0.985;
@@ -1640,7 +2120,8 @@ export class DiliCart {
           r.boostT = Math.max(r.boostT, 1.1);
           this.tricks++;
           this.addScore(50, "stunts");
-          this.hud.pop("TRICK! +50", "green big");
+          this.chain(1);
+          this.hud.pop(this.endless ? `TRICK! +${50 * this.mult()}` : "TRICK! +50", "green big");
           this.audio.boost();
           this.trick = false;
         }
@@ -1684,6 +2165,7 @@ export class DiliCart {
     }
     // Dodge hazards on the line.
     for (const h of this.hazards) {
+      if (h.kind === "laser") continue;
       const d = tr.delta(u, h.u);
       if (d > 0 && d < 22 && Math.abs(h.lat - target) < h.r + 1.6) target = h.lat + (target > h.lat ? 1 : -1) * (h.r + 2.4);
     }
@@ -1727,13 +2209,15 @@ export class DiliCart {
     // Attacks share one cooldown across the whole pack, so they never pile up.
     r.itemT -= dt;
     if (r.itemT <= 0 && this.attackCool <= 0 && this.phase === "race" && this.raceT > 7 && !r.finished) {
-      r.itemT = 11 + Math.random() * 7;
+      r.itemT = (11 + Math.random() * 7) / (this.endless ? 1 + (this.stage - 1) * 0.12 : 1);
       if (gapToPlayer < -12 && gapToPlayer > -40 && this.hazards.filter((h) => h.kind === "goo").length < 2) {
         this.dropGoo(r);
         this.attackCool = 4;
       } else if (gapToPlayer > 14 && gapToPlayer < 70 && this.orbs.length < 1) {
         this.fireOrb(r);
-        this.attackCool = 15 + Math.random() * 6;
+        // Infinite: an orb costs a heart, so they come rarely at first and
+        // more often as the stages go by.
+        this.attackCool = this.endless ? Math.max(13, 30 - this.stage * 2.5) + Math.random() * 6 : 15 + Math.random() * 6;
       }
     }
 
@@ -1760,7 +2244,7 @@ export class DiliCart {
       if (Math.abs(tr.delta(u, c.u)) < 1.9 && Math.abs(c.lat - r.lat) < 1.7) {
         c.alive = false;
         c.pop = 0.35;
-        c.respawn = 7;
+        c.respawn = c.dyn ? Infinity : 7;
         r.purse++;
         this.emit({ e: "coin", i: ci });
         const w = tr.point(c.u, c.lat, c.h, this.v1);
@@ -1936,6 +2420,7 @@ export class DiliCart {
             } else this.emit({ e: "strike", who: them.id });
             this.takedowns++;
             this.addScore(100, "takedowns");
+            this.chain(2);
             this.hud.pop("TAKEDOWN! +100", "pink big");
             this.audio.bonk();
             this.burst(them.model.root.position, "#ffe14d", 24, 7);
@@ -2006,7 +2491,7 @@ export class DiliCart {
       if (Math.abs(du) < 1.9 && Math.abs(dl) < 1.7 && Math.abs(c.h - 1.15 - above) < 2.2) {
         c.alive = false;
         c.pop = 0.35;
-        c.respawn = 12;
+        c.respawn = c.dyn ? Infinity : 12;
         this.emit({ e: "coin", i: ci });
         const val = c.kind === "btc" ? 60 : c.kind === "eth" ? 30 : 10;
         this.addScore(val, "coins");
@@ -2057,7 +2542,22 @@ export class DiliCart {
     for (const h of this.hazards) {
       if (h.knocked > 0 || this.ghostT > 0) continue;
       const du = tr.delta(pu, h.u);
+      if (h.kind === "laser") {
+        // The beam runs the full width: only its timing (or a jump) saves you.
+        if (!h.on || Math.abs(du) > 1.3 || p.air) continue;
+        h.passed = true;
+        this.hitPlayer(p, "LASERED!");
+        continue;
+      }
+      if (h.kind === "block") {
+        if (Math.abs(du) > 1.5 || Math.abs(h.lat - p.lat) > h.r + 0.9 || p.air) continue;
+        h.passed = true;
+        p.lat += Math.sign(p.lat - h.lat || 1) * 1.4;
+        this.hitPlayer(p, "SMASHED!");
+        continue;
+      }
       if (Math.abs(du) > h.r + 1.3 || Math.abs(h.lat - p.lat) > h.r + 0.9) continue;
+      h.passed = true;
       if (p.air && h.kind !== "drone") continue;
       if (h.kind === "cone") {
         h.knocked = 4;
@@ -2098,7 +2598,7 @@ export class DiliCart {
       if (!this.sims(r)) continue;
       const ru = tr.wrap(tr.startU + r.dist);
       for (const h of this.hazards) {
-        if (h.knocked > 0 || r.air) continue;
+        if (h.knocked > 0 || r.air || h.kind === "laser" || h.kind === "block") continue;
         if (Math.abs(tr.delta(ru, h.u)) > h.r + 1.2 || Math.abs(h.lat - r.lat) > h.r + 0.8) continue;
         if (h.kind === "cone") { h.knocked = 4; h.kv.set((Math.random() - 0.5) * 6, 7, r.speed * 0.6); }
         else if (h.kind === "goo" && r.spin <= 0) {
@@ -2122,7 +2622,7 @@ export class DiliCart {
       if (h.kind === "drone") {
         for (const r of h.obj.userData.rotors as THREE.Object3D[]) r.rotation.y += dt * 38;
         (h.obj.userData.tip as THREE.Object3D).visible = Math.sin(this.time * 6 + h.phase) > 0;
-        h.phase += dt * 0.9;
+        h.phase += dt * 0.9 * (h.rate ?? 1);
         h.lat = Math.sin(h.phase) * h.span;
         tr.frame(h.u, this.f);
         this.orient(h.obj, this.f, h.lat, 1.9 + Math.sin(this.time * 3 + h.phase) * 0.25);
@@ -2133,6 +2633,28 @@ export class DiliCart {
           this.orient(h.ring, this.f, h.lat, 0.05);
           h.ring.scale.setScalar(1 + Math.sin(this.time * 6 + h.phase) * 0.12);
         }
+        continue;
+      }
+      if (h.kind === "laser") {
+        // On for a beat, off for longer; it flickers just before it fires.
+        const period = 2.8 / (h.rate ?? 1), onFor = period * 0.36;
+        const c = ((this.time + h.phase) % period + period) % period;
+        h.on = c < onFor;
+        const warn = !h.on && c > period - 0.5;
+        const beam = h.obj.userData.beam as THREE.Object3D;
+        beam.visible = h.on || (warn && Math.sin(this.time * 60) > 0);
+        beam.scale.y = h.on ? 1 : 0.4;
+        const k = h.on ? 3 : warn ? 1.6 : 0.35;
+        for (const m of h.obj.userData.cores as THREE.MeshBasicMaterial[]) m.color.setRGB(k, k * 0.12, k * 0.2);
+        tr.frame(h.u, this.f);
+        this.orient(h.obj, this.f, 0, 0);
+        continue;
+      }
+      if (h.kind === "block") {
+        h.phase += dt * (h.rate ?? 1);
+        h.lat = h.base + Math.sin(h.phase) * h.span;
+        tr.frame(h.u, this.f);
+        this.orient(h.obj, this.f, h.lat, 0.15 + Math.sin(this.time * 4 + h.phase) * 0.08);
         continue;
       }
       if (h.kind === "goo") {
@@ -3210,6 +3732,36 @@ export class DiliCart {
         want = Math.abs(s) > 0.3 ? Math.sign(s) : 0;
       }
       if (this.driftDir === 0 && Math.abs(p.lat) > EDGE - 1.4 && want === Math.sign(p.lat)) want = 0;
+      // Infinite (tests): pick the clearest lane through the obstacles ahead,
+      // and lift off for a live laser gate.
+      if (this.endless && this.phase === "race") {
+        let best = p.lat, bestCost = Infinity;
+        for (const lat of [laneX(0), laneX(1), laneX(2), laneX(3)]) {
+          let cost = Math.abs(lat - p.lat) * 0.12;
+          for (const h of this.hazards) {
+            if (!h.pooled || h.kind === "laser" || h.kind === "cone") continue;
+            const ahead = h.dist! - p.dist;
+            if (ahead < -1.5 || ahead > 50) continue;
+            const reach = h.kind === "drone" || h.kind === "block" ? h.span : 0;
+            if (Math.abs(h.lat - lat) < h.r + 1.7 || (reach && Math.abs(h.base - lat) < h.r + reach + 1)) cost += 10 + (50 - ahead) * 0.2;
+          }
+          if (cost < bestCost) { bestCost = cost; best = lat; }
+        }
+        const need = tr.curvature(u) * p.speed * p.speed * CENTRIFUGAL;
+        const rate = Math.min(p.speed, 16) * 0.62 + 1.2;
+        const st = need / rate + (best - p.lat) * 0.4 - p.latV * 0.1;
+        if (this.driftDir === 0) want = Math.abs(st) > 0.2 ? Math.sign(st) : 0;
+        // Sidestep a freeze orb closing in from behind.
+        for (const o of this.orbs) {
+          const d = tr.delta(o.u, u);
+          if (d > 0 && d < 10 && Math.abs(o.lat - p.lat) < 2.5) want = o.lat > p.lat ? -1 : 1;
+        }
+        for (const h of this.hazards) {
+          if (h.kind !== "laser") continue;
+          const ahead = h.dist! - p.dist;
+          if (ahead > 0 && ahead < 14 && (h.on || ahead / Math.max(1, p.speed) > 0.2)) this.input.gas = !h.on && ahead > 8;
+        }
+      }
     }
     this.input.left = want < 0;
     this.input.right = want > 0;
@@ -3273,10 +3825,18 @@ export class DiliCart {
     const hud = this.hud;
     hud.score(this.score);
     hud.coins(this.coinCount);
-    hud.position(this.lastPos);
-    // The standings list: a few times a second is plenty.
-    if ((this.rankT -= 1) <= 0) { this.rankT = 12; hud.rank(this.liveOrder()); }
-    hud.lap(Math.min(this.laps, this.lap), this.laps);
+    if (this.endless) {
+      hud.hearts(this.hearts);
+      const m = this.mult();
+      const lo = MULT_AT[m - 1], hi = MULT_AT[m] ?? lo + 1;
+      hud.run(Math.max(0, p.dist + 5 + this.rivals * 4.2), m, (this.combo - lo) / (hi - lo));
+      hud.stage(this.stage);
+    } else {
+      hud.position(this.lastPos);
+      // The standings list: a few times a second is plenty.
+      if ((this.rankT -= 1) <= 0) { this.rankT = 12; hud.rank(this.liveOrder()); }
+      hud.lap(Math.min(this.laps, this.lap), this.laps);
+    }
     hud.clock(this.raceT);
     for (const r of this.racers) {
       const w = r.model.root.position;

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { TrackId } from "../../shared/rules";
+import type { CourseId } from "../../shared/rules";
 
 /**
  * The circuit's spine. Everything in the race lives in *track space*: a
@@ -26,7 +26,7 @@ export const DRIVE_LIMIT = WALL - 1.3;
 export const laneX = (n: number) => -ROAD_HALF + LANE_W * (n + 0.5);
 
 export interface TrackDef {
-  id: TrackId;
+  id: CourseId;
   /** Hand-placed control points as [x, z, height], in driving order. */
   ctrl: [number, number, number][];
   /** Index of the control point at the jump's launch lip. */
@@ -35,7 +35,7 @@ export interface TrackDef {
   par: number;
 }
 
-export const TRACKS: Record<TrackId, TrackDef> = {
+export const TRACKS: Record<CourseId, TrackDef> = {
   /**
    * The stadium: main straight north, a climbing hairpin, the back straight
    * with the jump crest at index 8, a sweeping right, an S through the
@@ -68,6 +68,25 @@ export const TRACKS: Record<TrackId, TrackDef> = {
     ],
     jumpAt: 9,
     par: 175,
+  },
+  /**
+   * The Dlicom Skyway (Infinite mode): a long highway loop held up in the
+   * sky. A launch straight, a climbing sweeper, the summit and a leap across
+   * a gap in the clouds (index 10), a fast downhill S, a long banked arc
+   * round the far side, and a rolling run home. Every lap is a new stage.
+   */
+  sky: {
+    id: "sky",
+    ctrl: [
+      [0, 0, 10], [0, -95, 10], [0, -190, 12], [10, -270, 15], [45, -330, 19],
+      [105, -360, 22], [175, -350, 23], [228, -308, 22], [252, -245, 21],
+      [258, -175, 23], [262, -112, 27], [266, -46, 15], [292, 18, 12],
+      [342, 62, 13], [372, 128, 15], [362, 198, 17], [318, 246, 19],
+      [250, 262, 19], [182, 240, 16], [118, 262, 14], [52, 268, 12],
+      [-8, 236, 10], [-36, 172, 10], [-30, 100, 10], [-12, 44, 10],
+    ],
+    jumpAt: 10,
+    par: 0,
   },
 };
 
