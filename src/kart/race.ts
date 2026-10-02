@@ -891,11 +891,11 @@ export class DiliCart {
       if (kind === "drone") { h.ring = new THREE.Mesh(ringGeo, ringMat); park(h.ring); }
       this.pool[kind].push(h);
     };
-    for (let k = 0; k < 34; k++) make("bollard", M.bollard(stripes), 0.9);
+    for (let k = 0; k < 56; k++) make("bollard", M.bollard(stripes), 0.9);
     for (let k = 0; k < 16; k++) make("cone", M.cone(), 0.7);
-    for (let k = 0; k < 6; k++) make("drone", M.drone(), 0.95);
-    for (let k = 0; k < 4; k++) make("laser", M.laserGate(DRIVE_LIMIT + 0.6), DRIVE_LIMIT + 1);
-    for (let k = 0; k < 6; k++) make("block", M.shifter(8.2), 4.1);
+    for (let k = 0; k < 8; k++) make("drone", M.drone(), 0.95);
+    for (let k = 0; k < 6; k++) make("laser", M.laserGate(DRIVE_LIMIT + 0.6), DRIVE_LIMIT + 1);
+    for (let k = 0; k < 10; k++) make("block", M.shifter(8.2), 4.1);
     for (let k = 0; k < 2; k++) this.heartPicks.push({ obj: park(M.heartPickup()) as THREE.Group, u: 0, lat: 0, dist: 0, alive: false });
     for (let k = 0; k < 48; k++) {
       const c: Coin = { kind: "dli", u: 0, lat: 0, h: 1.15, alive: false, respawn: Infinity, pop: 0, phase: Math.random() * 6, dyn: true, dist: 0 };
