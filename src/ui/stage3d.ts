@@ -44,8 +44,16 @@ function takeRenderer(): THREE.WebGLRenderer {
 function giveRenderer(r: THREE.WebGLRenderer) {
   r.setAnimationLoop(null);
   r.renderLists.dispose();
-  if (pool.length < 2) pool.push(r);
+  // Phones keep one spare (GPU memory is tight); a lost context is never reused.
+  const keep = document.documentElement.classList.contains("lite") ? 1 : 2;
+  if (pool.length < keep && !r.getContext().isContextLost()) pool.push(r);
   else { r.dispose(); r.forceContextLoss(); }
+}
+
+/** Free the spare menu renderers (before a race, when phones need the memory). */
+export function trimStagePool() {
+  if (!document.documentElement.classList.contains("lite")) return;
+  for (const r of pool.splice(0)) { r.dispose(); r.forceContextLoss(); }
 }
 
 export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): MenuStage {

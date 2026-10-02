@@ -76,6 +76,11 @@ export interface RaceHooks {
   onCut?(): void;
   /** The world is built and the first frame is about to draw. */
   onReady?(): void;
+  /**
+   * The GPU dropped this race's graphics (memory pressure, a driver reset)
+   * and they didn't come back: rebuild the race on a fresh context.
+   */
+  onRecover?(): void;
 }
 
 /** A multiplayer race: the room, and who's on the grid (in grid order). */
@@ -107,6 +112,17 @@ export interface MountOptions {
   track?: TrackId;
   /** Infinite mode on the Dlicom Skyway: four hearts, endless stages. */
   endless?: boolean;
+  /** Pick up a race that lost its graphics exactly where it was (see snapshot()). */
+  resume?: RaceSnapshot;
+}
+
+/** Everything needed to carry a race over to a fresh graphics context. */
+export interface RaceSnapshot {
+  karts: { dist: number; lat: number; speed: number; purse: number }[];
+  raceT: number; time: number; lap: number; lapStart: number; bestLap: number;
+  score: number; tally: Record<TallyKey, number>; coins: number; takedowns: number; turbos: number; tricks: number;
+  item: ItemKind | null;
+  endless: { hearts: number; stage: number; combo: number; bestCombo: number; bestMult: number; nearMisses: number; gates: number; heartsFound: number; paidDist: number; nextWave: number; waveN: number } | null;
 }
 
 type ShotKind = "heli" | "chase" | "front" | "trackside" | "jump" | "low";
@@ -343,6 +359,8 @@ export class DiliCart {
   private result: RaceResult | null = null;
   private skipIntro = false;
 
+  private resumeFrom: RaceSnapshot | null = null;
+
   // Infinite mode
   private endless = false;
   private rivals = RIVALS;
@@ -424,6 +442,7 @@ export class DiliCart {
     this.char = char;
     this.skin = opts.skin ?? null;
     this.endless = opts.endless === true && !opts.net;
+    this.resumeFrom = opts.resume ?? null;
     this.trackId = this.endless ? "sky" : opts.track ?? "circuit";
     if (this.trackId !== "circuit") this.track = new Track(TRACKS[this.trackId]);
     this.laps = COURSE_INFO[this.trackId].laps;
@@ -469,8 +488,25 @@ export class DiliCart {
     const cv = this.renderer.domElement;
     // If the GPU drops the context (driver reset, memory pressure), don't sit
     // on a black canvas: let it come back, then restart the race cleanly.
-    cv.addEventListener("webglcontextlost", (e) => { e.preventDefault(); cancelAnimationFrame(this.raf); }, false);
-    cv.addEventListener("webglcontextrestored", () => { if (this.alive && !this.attract && !this.trailer) this.hooks.onRestart(); }, false);
+    // Never leave a black screen: if the context doesn't come back on its
+    // own within a moment, rebuild the race on a new one.
+    let lostTimer = 0;
+    const recover = () => {
+      clearTimeout(lostTimer);
+      if (!this.alive || this.trailer) return;
+      if (this.hooks.onRecover) this.hooks.onRecover();
+      else if (!this.attract) this.hooks.onRestart();
+    };
+    cv.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      cancelAnimationFrame(this.raf);
+      clearTimeout(this.raf);
+      if (!this.alive) return;
+      this.hud?.waiting("Graphics reset — getting you back in…");
+      clearTimeout(lostTimer);
+      lostTimer = window.setTimeout(recover, 1500);
+    }, false);
+    cv.addEventListener("webglcontextrestored", recover, false);
     Object.assign(cv.style, { width: "100%", height: "100%", display: "block", position: "absolute", inset: "0" });
     el.prepend(cv);
 
@@ -555,6 +591,7 @@ export class DiliCart {
     this.placeAll(0);
     this.captureReflections();
     if (this.attract) this.startAttract();
+    else if (this.resumeFrom) this.resume(this.resumeFrom);
     else this.startIntro();
     this.warmUp();
 
@@ -902,6 +939,52 @@ export class DiliCart {
       this.coins.push(c);
       this.dynCoins.push(c);
     }
+  }
+
+  /** The race as it stands, to rebuild it after a lost graphics context. */
+  snapshot(): RaceSnapshot | null {
+    if (this.phase !== "race" || this.attract || this.trailer) return null;
+    return {
+      karts: this.racers.map((r) => ({ dist: r.dist, lat: r.lat, speed: r.speed, purse: r.purse })),
+      raceT: this.raceT, time: this.time, lap: this.lap, lapStart: this.lapStart, bestLap: this.bestLap,
+      score: this.score, tally: { ...this.tally }, coins: this.coinCount, takedowns: this.takedowns, turbos: this.turbos, tricks: this.tricks,
+      item: this.rolling ? null : this.item,
+      endless: this.endless ? {
+        hearts: this.hearts, stage: this.stage, combo: this.combo, bestCombo: this.bestCombo, bestMult: this.bestMult,
+        nearMisses: this.nearMisses, gates: this.gates, heartsFound: this.heartsFound, paidDist: this.paidDist, nextWave: this.nextWave, waveN: this.waveN,
+      } : null,
+    };
+  }
+
+  /** Straight back into the race from a snapshot: no intro, no countdown. */
+  private resume(sn: RaceSnapshot) {
+    sn.karts.forEach((k, i) => {
+      const r = this.racers[i];
+      if (!r) return;
+      // Online, other players' karts come from the network anyway.
+      if (r.net && !this.sims(r)) return;
+      r.dist = k.dist; r.lat = k.lat; r.speed = k.speed; r.purse = k.purse;
+      r.prevU = this.track.wrap(this.track.startU + r.dist);
+    });
+    Object.assign(this, {
+      raceT: sn.raceT, time: sn.time, lap: sn.lap, lapStart: sn.lapStart, bestLap: sn.bestLap,
+      score: sn.score, tally: { ...sn.tally }, coinCount: sn.coins, takedowns: sn.takedowns, turbos: sn.turbos, tricks: sn.tricks,
+    });
+    if (sn.endless && this.endless) {
+      Object.assign(this, sn.endless);
+      this.speedK = 1 + Math.min(0.5, (this.stage - 1) * 0.065);
+      this.audio.hurry(1 + Math.min(0.2, (this.stage - 1) * 0.03));
+    }
+    this.phase = "race";
+    this.phaseT = 10;
+    this.camReady = false;
+    this.hitCool = 2;
+    this.hud.title(false);
+    this.hud.racing(true);
+    this.audio.start();
+    this.audio.setMusic(1);
+    if (sn.item) { this.item = sn.item; this.hud.item(sn.item); }
+    this.placeAll(0);
   }
 
   /**
@@ -3376,8 +3459,8 @@ export class DiliCart {
   private buildTv() {
     const screens = this.world.liveScreens;
     if (!screens?.length || this.attract || this.quality === "low") return;
-    const rt = new THREE.WebGLRenderTarget(512, 288, { type: THREE.HalfFloatType, samples: 2 });
-    const cam = new THREE.PerspectiveCamera(30, 16 / 9, 0.5, 650);
+    const rt = new THREE.WebGLRenderTarget(384, 216, { type: THREE.HalfFloatType });
+    const cam = new THREE.PerspectiveCamera(30, 16 / 9, 0.5, 420);
     for (const s of screens) {
       const m = s.material as THREE.MeshBasicMaterial;
       m.map = rt.texture;
@@ -3389,9 +3472,11 @@ export class DiliCart {
 
   private renderTv(dt: number) {
     const tv = this.tv;
-    if (!tv || this.lowered) return;
+    if (!tv || this.lowered || this.tvOff) return;
     tv.t += dt;
-    if (++tv.n % 3) return;
+    // A second view of the whole scene: drawn every fifth frame only, so no
+    // single frame gets much heavier than the rest.
+    if (++tv.n % 5) return;
     const tr = this.track;
     const p = this.racers[0];
     const kart = p.model.root.position;
@@ -3903,6 +3988,7 @@ export class DiliCart {
    * as a last resort a cheaper bloom. Once lowered it stays lowered.
    */
   private perfStep = 0;
+  private tvOff = false;
   private grade: ReturnType<typeof gradePass> | null = null;
   private speedBlur = 0;
   private watchPerf(raw: number) {
@@ -3913,6 +3999,8 @@ export class DiliCart {
     // The median ignores one-off hitches (a tab switch, a GC pause).
     const avg = sorted[sorted.length >> 1];
     this.frameMs.length = 0;
+    // The live TV feed is the first luxury to go, as soon as frames slip.
+    if (avg > 18 && this.tv && !this.tvOff) { this.tvOff = true; return; }
     if (avg <= 23) return;
     if (this.ao?.enabled) { this.ao.enabled = false; return; }
     const steps = [1.25, 1, 0.85, 0.75];
@@ -3966,6 +4054,10 @@ export class DiliCart {
     this.ao?.dispose();
     this.composer?.dispose();
     this.renderer?.dispose();
+    // Hand the GPU context back now. Left to the garbage collector, contexts
+    // piled up over a few races until the browser killed the live one (the
+    // black screen).
+    this.renderer?.forceContextLoss();
     this.renderer?.domElement.remove();
   }
 }

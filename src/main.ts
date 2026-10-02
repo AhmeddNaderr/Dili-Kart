@@ -1,10 +1,10 @@
 import "./style.css";
 import "./ui/console.css";
-import { DiliCart, type RaceResult, type NetRace as RaceNet } from "./kart/race";
+import { DiliCart, type RaceResult, type RaceSnapshot, type NetRace as RaceNet } from "./kart/race";
 import { buildIntro, greetedThisSession } from "./ui/intro";
 import { filmSeen, playFilm, prepareFilm } from "./ui/film";
 import { dropLoader, finishLoader, progress } from "./ui/loader";
-import { mountStage, type MenuStage } from "./ui/stage3d";
+import { mountStage, trimStagePool, type MenuStage } from "./ui/stage3d";
 import { ICON, portrait, skinPortrait } from "./ui/icons";
 import { lookFor } from "./kart/models";
 import { MASCOT } from "./kart/mascot";
@@ -74,6 +74,13 @@ function backdrop(on: boolean) {
     live.mount(liveEl, {
       onEnd() {}, onRestart() {}, onQuit() {},
       onReady: () => liveEl.classList.add("on"),
+      // Lost its graphics: fall back to the still picture of the track.
+      onRecover: () => {
+        live?.destroy();
+        live = null;
+        liveEl.style.backgroundImage = `url(bg-${liveTrack}.jpg)`;
+        liveEl.classList.add("still", "on");
+      },
     }, "dili", { attract: true, track: liveTrack });
     if (import.meta.env.DEV) (window as unknown as { __live: DiliCart }).__live = live;
   } else if (!on && live) {
@@ -730,7 +737,7 @@ function confetti(from: HTMLElement) {
 /* Race                                                                */
 /* ================================================================== */
 
-function race(net?: NetRace, endless = false) {
+function race(net?: NetRace, endless = false, resume?: RaceSnapshot) {
   const p = api.player();
   if (!p) return auth();
   if (mp && !net) mpLeave();
@@ -748,6 +755,8 @@ function race(net?: NetRace, endless = false) {
   wireCommon(view);
   view.querySelector("#pause")!.addEventListener("click", () => dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })));
 
+  // Phones: hand back the spare menu renderers' GPU memory before the race loads.
+  trimStagePool();
   const game = new DiliCart();
   racer = game;
   if (mp) mp.at = "race";
@@ -756,7 +765,9 @@ function race(net?: NetRace, endless = false) {
     // Online there's no restarting on your own; the pause menu's button just closes it.
     onRestart: () => { sfx.ui(); if (net) dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })); else race(undefined, endless); },
     onQuit: () => { sfx.ui(); if (net) mpLeave(); hub(); },
-  }, p.char, { skin: p.skin, track: net ? net.track : trackPick, net, endless });
+    // The graphics were lost: rebuild the same race (online, rejoin the room's race).
+    onRecover: () => race(net, endless, game.snapshot() ?? undefined),
+  }, p.char, { skin: p.skin, track: net ? net.track : trackPick, net, endless, resume });
 }
 
 const RI = {
