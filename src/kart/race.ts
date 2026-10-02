@@ -457,7 +457,8 @@ export class DiliCart {
     this.renderer.debug.checkShaderErrors = import.meta.env.DEV;
     // The attract backdrop sits behind the menus, so it can afford fewer pixels.
     // Retina-sharp on capable machines; the frame-rate watchdog steps it down if needed.
-    const maxRatio = this.trailer ? 1 : this.attract ? (this.quality === "low" ? 0.75 : 1) : this.quality === "low" ? 1.25 : 2;
+    // Infinite keeps its frame rate first: retina screens draw at 1.5×.
+    const maxRatio = this.trailer ? 1 : this.attract ? (this.quality === "low" ? 0.75 : 1) : this.quality === "low" ? 1.25 : this.endless ? 1.5 : 2;
     if (this.trailer) this.quality = "high";
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, maxRatio));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -536,7 +537,7 @@ export class DiliCart {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     // AO pays off in the sunlit stadium; at night the city is lit by neon
     // and the frame budget goes further without it.
-    if (this.quality === "high" && !this.attract && !this.trailer && this.trackId !== "town") {
+    if (this.quality === "high" && !this.attract && !this.trailer && this.trackId === "circuit") {
       this.ao = new ContactAO(this.scene, this.camera, 256, 256);
       this.composer.addPass(this.ao);
       // Softer sun shadows to go with it.
@@ -890,11 +891,11 @@ export class DiliCart {
       if (kind === "drone") { h.ring = new THREE.Mesh(ringGeo, ringMat); park(h.ring); }
       this.pool[kind].push(h);
     };
-    for (let k = 0; k < 16; k++) make("bollard", M.bollard(stripes), 0.9);
-    for (let k = 0; k < 14; k++) make("cone", M.cone(), 0.7);
-    for (let k = 0; k < 4; k++) make("drone", M.drone(), 0.95);
-    for (let k = 0; k < 3; k++) make("laser", M.laserGate(DRIVE_LIMIT + 0.6), DRIVE_LIMIT + 1);
-    for (let k = 0; k < 4; k++) make("block", M.shifter(8.2), 4.1);
+    for (let k = 0; k < 34; k++) make("bollard", M.bollard(stripes), 0.9);
+    for (let k = 0; k < 16; k++) make("cone", M.cone(), 0.7);
+    for (let k = 0; k < 6; k++) make("drone", M.drone(), 0.95);
+    for (let k = 0; k < 4; k++) make("laser", M.laserGate(DRIVE_LIMIT + 0.6), DRIVE_LIMIT + 1);
+    for (let k = 0; k < 6; k++) make("block", M.shifter(8.2), 4.1);
     for (let k = 0; k < 2; k++) this.heartPicks.push({ obj: park(M.heartPickup()) as THREE.Group, u: 0, lat: 0, dist: 0, alive: false });
     for (let k = 0; k < 48; k++) {
       const c: Coin = { kind: "dli", u: 0, lat: 0, h: 1.15, alive: false, respawn: Infinity, pop: 0, phase: Math.random() * 6, dyn: true, dist: 0 };
@@ -1675,7 +1676,7 @@ export class DiliCart {
       this.hearts = Math.max(0, this.hearts - 1);
       this.combo = 0;
       // A moment of mercy: no second hit while you recover.
-      this.hitCool = 2.2;
+      this.hitCool = Math.max(1.3, 2.3 - this.stage * 0.12);
       this.audio.heartLost();
       if (this.hearts <= 0) { this.gameOver(what); return; }
     }
@@ -1786,7 +1787,7 @@ export class DiliCart {
   private spawnWave() {
     let d = this.nextWave;
     // Skip the jump: nothing on the ramp, in the air or on the landing.
-    while (!this.offJump(d) || !this.offJump(d + 30)) d += 10;
+    while (!this.offJump(d) || !this.offJump(d + 40)) d += 10;
     const st = this.stage;
     const lanes = [0, 1, 2, 3];
     const free = Math.floor(Math.random() * 4);
@@ -1795,25 +1796,41 @@ export class DiliCart {
       for (const [k, w] of opts) if ((r -= w) <= 0) return k;
       return opts[0][0];
     };
+    // From stage 4 the shoulders are walled off too: the open lane is the only way.
+    const wall = (at: number, open: number) => {
+      for (const l of lanes) if (l !== open) this.take("bollard", at, laneX(l) + (Math.random() - 0.5) * 0.4);
+      if (st >= 4) for (const s of [-1, 1]) { this.take("bollard", at, s * 11.4); this.take("bollard", at, s * 14.2); }
+    };
+    const drone = (at: number, phase?: number) => {
+      const h = this.take("drone", at, 0);
+      if (h) { h.span = Math.min(8.5, 6 + st * 0.35); h.rate = 0.9 + st * 0.14; if (phase !== undefined) h.phase = phase; }
+      return h;
+    };
+    const shifter = (at: number, phase?: number) => {
+      const h = this.take("block", at, 0);
+      if (h) { h.span = ROAD_HALF - 4.1; h.rate = 0.7 + st * 0.1; if (phase !== undefined) h.phase = phase; }
+      return h;
+    };
     const kind = this.waveN < 2 ? (this.waveN === 0 ? "slalom" : "wall") : pick([
-      ["wall", 3], ["slalom", st < 3 ? 2 : 1], ["drone", 2], ["laser", st >= 2 ? 2 : 0], ["shifter", st >= 2 ? 2.2 : 0.6],
-      ["double", st >= 3 ? 2 : 0], ["gauntlet", st >= 4 ? 1.6 : 0],
+      ["wall", 3], ["slalom", st < 3 ? 2 : 0.6], ["drone", 2], ["laser", st >= 2 ? 2 : 0], ["shifter", st >= 2 ? 2.2 : 0.6],
+      ["double", st >= 3 ? 2.2 : 0], ["gauntlet", st >= 4 ? 2 : 0], ["twins", st >= 5 ? 1.6 : 0], ["storm", st >= 6 ? 1.4 : 0],
     ]);
     let len = 24;
     switch (kind) {
       case "wall": {
         // Bollards across three lanes; the open one has the coins.
-        for (const l of lanes) if (l !== free) this.take("bollard", d, laneX(l) + (Math.random() - 0.5) * 0.4);
+        wall(d, free);
         for (let k = 0; k < 5; k++) this.dynCoin(d - 12 + k * 4, laneX(free));
         break;
       }
       case "double": {
         // Two walls, the gaps on opposite sides: weave between them.
         const a = free, b = (free + 2 + Math.floor(Math.random() * 2)) % 4;
-        for (const l of lanes) if (l !== a) this.take("bollard", d, laneX(l));
-        for (const l of lanes) if (l !== b) this.take("bollard", d + 22, laneX(l));
-        for (let k = 0; k < 6; k++) this.dynCoin(d + 3 + k * 3.2, laneX(a) + (laneX(b) - laneX(a)) * (k / 5));
-        len = 40;
+        const gap = Math.max(15, 24 - st);
+        wall(d, a);
+        wall(d + gap, b);
+        for (let k = 0; k < 6; k++) this.dynCoin(d + 3 + k * (gap / 7), laneX(a) + (laneX(b) - laneX(a)) * (k / 5));
+        len = gap + 18;
         break;
       }
       case "slalom": {
@@ -1823,45 +1840,60 @@ export class DiliCart {
           this.take("cone", d + k * 7, lat);
           this.dynCoin(d + k * 7, -lat * 0.9);
         }
+        if (st >= 3) drone(d + 18);
         len = 36;
         break;
       }
       case "drone": {
-        const h = this.take("drone", d, 0);
-        if (h) { h.span = 6.5; h.rate = 0.9 + st * 0.12; }
-        if (st >= 4) {
-          const h2 = this.take("drone", d + 18, 0);
-          if (h2 && h) { h2.span = 6.5; h2.rate = h.rate!; h2.phase = h.phase + Math.PI; }
-          len = 34;
-        }
+        const h = drone(d);
+        if (st >= 3 && h) drone(d + 18, h.phase + Math.PI);
         for (let k = 0; k < 4; k++) this.dynCoin(d - 6 + k * 4, laneX(free), 2.6);
+        len = st >= 3 ? 34 : 24;
         break;
       }
       case "laser": {
         // A gate that pulses: time it, or blast through with a shield or ghost.
         const h = this.take("laser", d, 0);
-        if (h) { h.rate = Math.min(1.5, 0.85 + st * 0.08); h.phase = Math.random() * 3; }
+        if (h) { h.rate = Math.min(1.7, 0.85 + st * 0.09); h.phase = Math.random() * 3; }
         for (let k = 0; k < 4; k++) this.dynCoin(d + 4 + k * 4, laneX(free));
+        // Later on, a wall waits on the far side of the gate.
+        if (st >= 4) { wall(d + 26, free); len = 40; }
         break;
       }
       case "shifter": {
-        const h = this.take("block", d, 0);
-        if (h) { h.span = ROAD_HALF - 4.1; h.rate = 0.7 + st * 0.08; }
+        shifter(d);
+        if (st >= 3) this.take("cone", d + 14, laneX(free));
         len = 26;
         break;
       }
       case "gauntlet": {
         // A shifter, then a wall right behind it.
-        const h = this.take("block", d, 0);
-        if (h) { h.span = ROAD_HALF - 4.1; h.rate = 0.8 + st * 0.08; }
-        for (const l of lanes) if (l !== free) this.take("bollard", d + 26, laneX(l));
+        shifter(d);
+        wall(d + 26, free);
         for (let k = 0; k < 4; k++) this.dynCoin(d + 30 + k * 4, laneX(free));
         len = 44;
         break;
       }
+      case "twins": {
+        // Two shifters sweeping out of step: wait for the gap to open.
+        const h = shifter(d);
+        if (h) shifter(d + 16, h.phase + Math.PI);
+        len = 34;
+        break;
+      }
+      case "storm": {
+        // Drones over a wall, then a laser gate.
+        wall(d, free);
+        drone(d + 10);
+        const h = this.take("laser", d + 34, 0);
+        if (h) { h.rate = Math.min(1.7, 0.85 + st * 0.09); h.phase = Math.random() * 3; }
+        len = 48;
+        break;
+      }
     }
-    // A spare heart, now and then, when you're short of one.
-    if (this.hearts < ENDLESS_HEARTS && Math.random() < 0.09 + (ENDLESS_HEARTS - this.hearts) * 0.03) {
+    // A spare heart, now and then, when you're short of one — rarer each stage.
+    const chance = Math.max(0.025, 0.1 - st * 0.012) + (ENDLESS_HEARTS - this.hearts) * 0.025;
+    if (this.hearts < ENDLESS_HEARTS && Math.random() < chance) {
       const hp = this.heartPicks.find((x) => !x.alive);
       if (hp) {
         hp.alive = true;
@@ -1871,8 +1903,8 @@ export class DiliCart {
       }
     }
     this.waveN++;
-    // Waves come closer together each stage.
-    const gap = Math.max(34, 92 - st * 8) + Math.random() * 22;
+    // Waves come closer together every stage.
+    const gap = Math.max(22, 88 - st * 9) + Math.random() * Math.max(6, 24 - st * 2);
     this.nextWave = d + len + gap;
   }
 
@@ -1965,11 +1997,11 @@ export class DiliCart {
   /** A new lap of the Skyway is a new stage: faster karts, busier road. */
   private stageUp(n: number) {
     this.stage = n;
-    this.speedK = 1 + Math.min(0.32, (n - 1) * 0.045);
+    this.speedK = 1 + Math.min(0.5, (n - 1) * 0.065);
     const bonus = 150 * n;
     this.addScore(bonus, "laps");
     this.hud.banner(`STAGE ${n}`, "gold", 2000);
-    this.hud.pop(`STAGE BONUS +${bonus * this.mult()}`, "gold");
+    this.hud.pop(`SPEED +${Math.round((this.speedK - 1) * 100)}% · BONUS +${bonus * this.mult()}`, "gold");
     this.audio.lap();
     this.audio.hurry(1 + Math.min(0.2, (n - 1) * 0.03));
     this.confetti.burst(this.v1.copy(this.racers[0].model.root.position).add(new THREE.Vector3(0, 6, 0)), 70, 7, 8);
@@ -2637,7 +2669,7 @@ export class DiliCart {
       }
       if (h.kind === "laser") {
         // On for a beat, off for longer; it flickers just before it fires.
-        const period = 2.8 / (h.rate ?? 1), onFor = period * 0.36;
+        const period = 2.8 / (h.rate ?? 1), onFor = period * (0.36 + Math.min(0.14, (this.stage - 1) * 0.02));
         const c = ((this.time + h.phase) % period + period) % period;
         h.on = c < onFor;
         const warn = !h.on && c > period - 0.5;
@@ -3622,7 +3654,8 @@ export class DiliCart {
       // Road rumble: a smooth, fast tremble that grows with speed and on the grass.
       if (!p.air && this.phase === "race") {
         const off = Math.abs(p.lat) > EDGE + 0.4 ? 3 : 1;
-        const amp = (Math.max(0, p.speed - 14) * 0.0016 + (boosting ? 0.012 : 0)) * off;
+        // Capped: at Infinite's top speeds an ever-growing tremble read as judder.
+        const amp = Math.min(0.022, Math.max(0, p.speed - 14) * 0.0016 + (boosting ? 0.012 : 0)) * off;
         const t = this.time;
         cam.position.x += (Math.sin(t * 41.3) + Math.sin(t * 23.7 + 1.3)) * amp;
         cam.position.y += (Math.sin(t * 37.9 + 0.7) + Math.sin(t * 19.1 + 2.1)) * amp * 0.8;
@@ -3875,7 +3908,7 @@ export class DiliCart {
   private watchPerf(raw: number) {
     if (this.lowered || this.phase === "load" || this.paused) return;
     this.frameMs.push(raw * 1000);
-    if (this.frameMs.length < 120) return;
+    if (this.frameMs.length < (this.endless ? 75 : 120)) return;
     const sorted = [...this.frameMs].sort((a, b) => a - b);
     // The median ignores one-off hitches (a tab switch, a GC pause).
     const avg = sorted[sorted.length >> 1];

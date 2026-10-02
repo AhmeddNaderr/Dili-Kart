@@ -39,7 +39,7 @@ export function buildSkyway(scene: THREE.Scene, renderer: THREE.WebGLRenderer, t
   scene.add(new THREE.HemisphereLight("#93a6ff", "#ff9a78", 0.8));
   const sun = new THREE.DirectionalLight("#ffc286", 2.3);
   sun.castShadow = true;
-  sun.shadow.mapSize.setScalar(lite ? 1024 : 4096);
+  sun.shadow.mapSize.setScalar(lite ? 1024 : 2048);
   const sc = sun.shadow.camera;
   sc.left = -38; sc.right = 38; sc.top = 38; sc.bottom = -38; sc.near = 1; sc.far = 220;
   sun.shadow.bias = -0.0004;
@@ -300,9 +300,10 @@ function cloudSea(center: THREE.Vector3, lite: boolean) {
   const uCam = { value: new THREE.Vector3() };
   const mat = new THREE.ShaderMaterial({
     fog: false,
-    defines: { OCT: lite ? 3 : 5, HQ: lite ? 0 : 1 },
+    defines: { HQ: lite ? 0 : 1 },
     uniforms: {
       uTime, uCam,
+      uNoise: { value: noiseTile() },
       uSun: { value: SUN_DIR },
       uLit: { value: new THREE.Color("#ffe1c2") },
       uMid: { value: new THREE.Color("#e7a3c4") },
@@ -312,28 +313,22 @@ function cloudSea(center: THREE.Vector3, lite: boolean) {
     },
     vertexShader: `varying vec3 vW;
       void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    // The cloud tops come from a baked noise tile (two drifting layers at
+    // different scales so it never visibly repeats): a few texture reads per
+    // pixel instead of computing noise, which kept frames steady on laptops.
     fragmentShader: `
       uniform float uTime; uniform vec3 uCam, uSun, uLit, uMid, uShade, uHorA, uHorB;
+      uniform sampler2D uNoise;
       varying vec3 vW;
-      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-      float noise(vec2 p){
-        vec2 i = floor(p), f = fract(p);
-        vec2 u = f * f * (3.0 - 2.0 * f);
-        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
-      }
-      float fbm(vec2 p){
-        float v = 0.0, a = 0.5;
-        for (int i = 0; i < OCT; i++) { v += a * noise(p); p = p * 2.03 + vec2(17.0, 9.0); a *= 0.5; }
-        return v;
+      float clouds(vec2 p){
+        return texture2D(uNoise, p).r * 0.68 + texture2D(uNoise, p * 2.7 + vec2(0.37, 0.61) - uTime * 0.0011).r * 0.32;
       }
       void main(){
-        vec2 p = vW.xz * 0.0055 + vec2(uTime * 0.006, uTime * 0.004);
-        float h = fbm(p);
-        // Puffy tops: push the mid-range up so the clouds look heaped.
-        h = smoothstep(0.22, 0.8, h);
+        vec2 p = vW.xz * 0.0007 + vec2(uTime * 0.00075, uTime * 0.0005);
+        float h = smoothstep(0.22, 0.8, clouds(p));
         #if HQ
-          float hs = smoothstep(0.22, 0.8, fbm(p + normalize(uSun.xz) * 0.06));
-          float lit = clamp(0.55 + (h - hs) * 5.0, 0.0, 1.0);
+          float hs = smoothstep(0.22, 0.8, texture2D(uNoise, p + normalize(uSun.xz) * 0.008).r * 0.68 + 0.16);
+          float lit = clamp(0.55 + (h - hs) * 4.0, 0.0, 1.0);
         #else
           float lit = h;
         #endif
@@ -355,6 +350,43 @@ function cloudSea(center: THREE.Vector3, lite: boolean) {
   mesh.renderOrder = -5;
   mesh.onBeforeRender = (_r, _s, cam) => { uCam.value.copy(cam.position); };
   return { mesh, uTime };
+}
+
+/** A seamless 256² tile of five-octave value noise, baked once at load. */
+function noiseTile() {
+  const S = 256;
+  const data = new Uint8Array(S * S * 4);
+  const lattice = (n: number, seed: number) => {
+    const v = new Float32Array(n * n);
+    for (let i = 0; i < v.length; i++) v[i] = rnd(i, seed);
+    return v;
+  };
+  const oct = [8, 16, 32, 64, 128].map((n, k) => ({ n, v: lattice(n, k + 3), a: 0.5 ** (k + 1) }));
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      let h = 0;
+      for (const o of oct) {
+        const fx = (x / S) * o.n, fy = (y / S) * o.n;
+        const ix = Math.floor(fx), iy = Math.floor(fy);
+        const tx = fx - ix, ty = fy - iy;
+        const ux = tx * tx * (3 - 2 * tx), uy = ty * ty * (3 - 2 * ty);
+        const x1 = (ix + 1) % o.n, y1 = (iy + 1) % o.n;
+        const a = o.v[iy * o.n + ix], b = o.v[iy * o.n + x1], c = o.v[y1 * o.n + ix], d = o.v[y1 * o.n + x1];
+        h += o.a * ((a + (b - a) * ux) + ((c + (d - c) * ux) - (a + (b - a) * ux)) * uy);
+      }
+      const k = (y * S + x) * 4;
+      data[k] = data[k + 1] = data[k + 2] = Math.min(255, Math.round(h * 255 / 0.97));
+      data[k + 3] = 255;
+    }
+  }
+  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 4;
+  t.needsUpdate = true;
+  return t;
 }
 
 /**
