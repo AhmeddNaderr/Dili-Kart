@@ -17,7 +17,7 @@ import { N, SR, createKit, master as finish } from "./synth";
  */
 
 const FPS = 60;
-const DUR = 5.4;
+const DUR = 5.8;
 const BPM = 128;
 const BEAT = 60 / BPM;
 const status = document.getElementById("status")!;
@@ -129,6 +129,8 @@ const SHOTS: Shot[] = [
     enter() {
       fastForward(() => rig.hazards().some((h) => h.dist !== undefined && h.kind !== "cone" && h.dist - meDist() > 40 && h.dist - meDist() < 52), 60);
       game.placeKart(0, { speed: 30, boost: 0.8 });
+      // Clear the shot: the other karts drop well back.
+      for (let k = 1; k < rig.karts.length; k++) game.placeKart(k, { dist: meDist() - 70 - k * 8, speed: 20 });
       smooth.ready = false;
     },
     cam(c, lt, dt) {
@@ -140,7 +142,7 @@ const SHOTS: Shot[] = [
       return 62;
     },
     over(g, lt) {
-      g.hearts(4, 180, 660, 58, lt - 0.05, 0.85);
+      g.hearts(4, 175, 640, 84, lt - 0.05, 0.85);
       g.kinetic("SURVIVE", 130, 840, 140, lt - 0.1, { stagger: 0.02, out: 0.8 });
       g.kinetic("INFINITE", 130, 990, 150, lt - 0.2, { fill: "gold", stagger: 0.02, out: 0.82 });
     },
@@ -160,7 +162,7 @@ const SHOTS: Shot[] = [
     },
     dim: (lt) => lerp(0.35, 0.6, clamp01(lt / 0.5)),
     over(g, lt) {
-      g.endCard(lt * 1.3, {
+      g.endCard(lt * 1.5, {
         first: "DILI KART ", second: "2.0", size: 220,
         tag: "RACE FRIENDS · SURVIVE INFINITE", credit: "Built for the Dlicom community",
       });
@@ -220,9 +222,9 @@ async function soundtrack(): Promise<AudioBuffer> {
   // Logo slam and the last chord ringing out.
   impact(3.9, 1.2);
   stab(3.9, ["A3", "C4", "E4", "B4"], 1.2);
-  pad(3.9, ["A3", "C4", "E4", "B4"], 1.6, 1.2);
+  pad(3.9, ["A3", "C4", "E4", "B4"], 1.9, 1.2);
   bass(3.9, N("A1"), 1.5);
-  for (let t = 3.9; t < 5.1; t += BEAT / 2) arp(t, N(["A4", "E5", "C5", "B4"][Math.round((t - 3.9) / (BEAT / 2)) % 4]), 0.5 * (1 - (t - 3.9) / 1.6));
+  for (let t = 3.9; t < 5.5; t += BEAT / 2) arp(t, N(["A4", "E5", "C5", "B4"][Math.round((t - 3.9) / (BEAT / 2)) % 4]), 0.5 * (1 - (t - 3.9) / 1.6));
   master.gain.setValueAtTime(0.9, DUR - 0.7);
   master.gain.linearRampToValueAtTime(0, DUR);
   return finish(await ctx.startRendering());
