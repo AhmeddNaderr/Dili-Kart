@@ -55,6 +55,6 @@ export default defineConfig({
   build: { target: "es2020", assetsInlineLimit: 8192, chunkSizeWarningLimit: 1200 },
   server: {
     // The API runs under Wrangler during development (see tools/dev.mjs).
-    proxy: { "/api": "http://127.0.0.1:8788" },
+    proxy: { "/api": { target: "http://127.0.0.1:8788", ws: true } },
   },
 });

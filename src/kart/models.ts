@@ -2,8 +2,9 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as T from "./textures";
-import type { CharId } from "../../shared/rules";
-import { animateCape, blink, buildMascot, disposeMascots, type EvilLook, type MascotRig } from "./mascot";
+import type { CharId, SkinId } from "../../shared/rules";
+import { animateCape, blink, buildMascot, disposeMascots, type DriverId, type EvilLook, type MascotRig } from "./mascot";
+import type { SkinDriver } from "./chibi";
 import { rimLight } from "./rim";
 
 /**
@@ -98,7 +99,26 @@ export interface KartLook {
   accent: string;    // stripe, valve covers, harness
   glow: string;      // exhaust and lamps
   number: string;    // race number on the side pods
-  driver: CharId | "custodian";
+  driver: DriverId | "custodian";
+  /** A printed paint job instead of plain paint (shop skins). */
+  livery?: T.Livery;
+  /** Letter on the nose badge. */
+  letter?: string;
+}
+
+/** Karts for the shop skins: Quang and Retree bring their own; liveries repaint the squad kart. */
+export const SKIN_LOOKS: Record<SkinDriver, KartLook> = {
+  quang: { body: "#ffffff", trim: "#1fb2ef", accent: "#0b7fc4", glow: "#7fe6ff", number: "8", driver: "quang", livery: "waves", letter: "Q" },
+  cipher: { body: "#ffffff", trim: "#2f4dff", accent: "#1a2cc2", glow: "#4d7bff", number: "01", driver: "cipher", livery: "matrix", letter: "C" },
+};
+
+/** The kart a player drives: their squad driver's, dressed in any equipped skin. */
+export function lookFor(char: CharId, skin: SkinId | null | undefined): KartLook {
+  if (skin === "quang" || skin === "cipher") return SKIN_LOOKS[skin];
+  const base = DRIVER_LOOKS[char];
+  if (skin === "gold") return { ...base, body: "#ffffff", trim: "#15161f", accent: "#2a2b36", glow: "#ffd24d", livery: "gold" };
+  if (skin === "carbon") return { ...base, body: "#ffffff", trim: "#1c2030", accent: "#8fe3ff", glow: "#8fe3ff", livery: "carbon" };
+  return base;
 }
 
 /** The player's kart, in each squad member's colours. */
@@ -129,6 +149,8 @@ export interface KartPose {
   pitch?: number;       // nose up (+) / down (−) in the air, radians
   wave: number;         // 0 driving, 1 one-arm wave, 2 both arms up
   time: number;
+  /** Extra head turn for directed shots: yaw (+ left) and nod (+ down), radians. */
+  look?: { yaw: number; nod: number };
 }
 
 /** Glossy clear-coated car paint. */
@@ -137,6 +159,20 @@ export function paint(color: string): THREE.MeshPhysicalMaterial {
   let m = matCache.get(k) as THREE.MeshPhysicalMaterial | undefined;
   if (!m) {
     m = rimLight(new THREE.MeshPhysicalMaterial({ color, roughness: 0.3, metalness: 0.12, clearcoat: 1, clearcoatRoughness: 0.06 }), 0.38);
+    matCache.set(k, m);
+  }
+  return m;
+}
+
+/** Printed paint under the same deep clearcoat as the plain paint. */
+function liveryPaint(kind: T.Livery): THREE.MeshPhysicalMaterial {
+  const k = `livery${kind}`;
+  let m = matCache.get(k) as THREE.MeshPhysicalMaterial | undefined;
+  if (!m) {
+    const metal = kind === "gold" ? 0.55 : kind === "carbon" ? 0.3 : 0.1;
+    m = rimLight(new THREE.MeshPhysicalMaterial({
+      map: T.liveryTex(kind), roughness: kind === "gold" ? 0.22 : 0.3, metalness: metal, clearcoat: 1, clearcoatRoughness: 0.05,
+    }), 0.38);
     matCache.set(k, m);
   }
   return m;
@@ -225,7 +261,8 @@ export class KartModel {
   private chassis = new THREE.Group();
   /** Fine parts, hidden when the kart is far from the camera. */
   private detail = new THREE.Group();
-  private driver = new THREE.Group();
+  /** The seated driver; the intro film hides it and drops it into the seat. */
+  readonly driver = new THREE.Group();
   private steerGroups: THREE.Object3D[] = [];
   private flames: THREE.Mesh[] = [];
   private exhaustGlow: THREE.Mesh[] = [];
@@ -250,21 +287,32 @@ export class KartModel {
   private flag: THREE.Mesh | null = null;
   private flagBase: Float32Array | null = null;
 
-  constructor(readonly look: KartLook, shadowTex: THREE.Texture) {
+  /**
+   * `lite` (phones): glossy clear-coat parts become plain gloss plastic too,
+   * so even more of the kart collapses into a handful of draw calls.
+   */
+  constructor(readonly look: KartLook, shadowTex: THREE.Texture, opts: { lite?: boolean } = {}) {
     this.root.add(this.body);
     this.body.add(this.chassis, this.driver);
     this.chassis.add(this.detail);
     this.buildKart();
-    if (look.driver === "custodian") this.buildMascotDriver("dili", { team: look.trim, glow: look.glow });
+    if (look.driver === "custodian") this.buildMascotDriver("dili", { team: look.trim, glow: look.glow, style: Number(look.number) });
     else this.buildMascotDriver(look.driver);
     this.buildGlider();
 
-    // Collapse every static part into one mesh per material.
-    for (const x of [...this.exhaustGlow, ...this.flames]) this.keepApart.add(x);
-    mergeChildren(this.chassis, this.keepApart);
+    // Collapse every static part into as few meshes as possible: plain
+    // coloured parts carry their colour in the vertices and share one of a
+    // few materials, then every group merges its children per material.
+    // (A kart was ~86 draw calls; now it's around 20.)
+    for (const x of [...this.exhaustGlow, ...this.flames, ...this.tips]) this.keepApart.add(x);
+    bakeColors(this.root, this.keepApart, opts.lite === true);
     mergeChildren(this.detail, this.keepApart, false);
-    mergeChildren(this.head, this.keepApart);
-    mergeChildren(this.driver, this.keepApart);
+    const groups: THREE.Object3D[] = [];
+    this.root.traverse((o) => {
+      if (o === this.detail || (o as THREE.Mesh).isMesh || this.keepApart.has(o)) return;
+      if (o.children.filter((c) => (c as THREE.Mesh).isMesh).length > 1) groups.push(o);
+    });
+    for (const g of groups) mergeChildren(g, this.keepApart);
 
     this.shadow = new THREE.Mesh(
       cached("shadowPlane", () => new THREE.PlaneGeometry(2.7, 3.6).rotateX(-Math.PI / 2)),
@@ -291,6 +339,51 @@ export class KartModel {
     }
   }
 
+  /**
+   * Night racing: soft headlight beams, a pool of light on the road ahead,
+   * and brighter tail lights. Neon Town turns these on.
+   */
+  lightsOn() {
+    const beamMat = texMat(`beam${this.look.glow}`, () => {
+      const c = document.createElement("canvas");
+      c.width = 4; c.height = 128;
+      const g = c.getContext("2d")!;
+      const gr = g.createLinearGradient(0, 0, 0, 128);
+      gr.addColorStop(0, "rgba(255,255,255,0.9)");
+      gr.addColorStop(0.35, "rgba(255,255,255,0.3)");
+      gr.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = gr;
+      g.fillRect(0, 0, 4, 128);
+      const t = new THREE.CanvasTexture(c);
+      return new THREE.MeshBasicMaterial({
+        map: t, color: new THREE.Color(this.look.driver === "custodian" ? this.look.glow : "#dff1ff").multiplyScalar(0.55),
+        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+      });
+    });
+    // Cone with its apex at the lamp, opening forward and a little down.
+    const coneGeo = cached("beamCone", () => new THREE.ConeGeometry(1.1, 6, 20, 1, true).translate(0, -3, 0).rotateX(-Math.PI / 2 + 0.1));
+    for (const s of [1, -1]) {
+      const b = new THREE.Mesh(coneGeo, beamMat);
+      b.position.set(0.3 * s, 0.53, 1.35);
+      b.renderOrder = 2;
+      b.frustumCulled = false;
+      this.body.add(b);
+    }
+    const pool = new THREE.Mesh(cached("beamPool", () => new THREE.PlaneGeometry(4.2, 7).rotateX(-Math.PI / 2)), texMat(`pool${this.look.glow}`, () => new THREE.MeshBasicMaterial({
+      map: T.blobTex("rgba(255,255,255,.75)", "rgba(255,255,255,0)"),
+      color: new THREE.Color(this.look.driver === "custodian" ? this.look.glow : "#e8f4ff").multiplyScalar(0.5),
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, toneMapped: false,
+    })));
+    pool.position.set(0, 0.07, 5.2);
+    pool.renderOrder = 1;
+    this.shadowRoot.add(pool);
+  }
+
+  /** Stop casting into the sun's shadow map (phones: only the player's kart does; the blob shadow stays). */
+  noShadows() {
+    this.root.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = false; });
+  }
+
   /** Show or hide the fine detail (suspension, springs, harness...). */
   setDetail(on: boolean) {
     this.detail.visible = on;
@@ -300,7 +393,7 @@ export class KartModel {
     const L = this.look;
     const c = this.chassis;
     const d = this.detail;
-    const body = paint(L.body);
+    const body = L.livery ? liveryPaint(L.livery) : paint(L.body);
     const trim = paint(L.trim);
     const accent = paint(L.accent);
     const carbon = texMat("carbon", () => new THREE.MeshPhysicalMaterial({ map: T.carbonTex(), roughness: 0.35, metalness: 0.3, clearcoat: 0.8, clearcoatRoughness: 0.1 }));
@@ -342,8 +435,8 @@ export class KartModel {
       add(c, sphere(0.07, 14, 10), lamp, 0.3 * s, 0.53, 1.3, false);
     }
     const emblem = add(c, cached("emblemPlane", () => new THREE.CircleGeometry(0.16, 28)),
-      texMat(`emb${L.trim}${L.driver}`, () => new THREE.MeshStandardMaterial({
-        map: L.driver === "custodian" ? T.lockEmblemTex(L.trim) : T.emblemTex(L.trim, "#ffffff", "#ffffff"),
+      texMat(`emb${L.trim}${L.driver}${L.letter ?? ""}`, () => new THREE.MeshStandardMaterial({
+        map: L.driver === "custodian" ? T.lockEmblemTex(L.trim) : T.emblemTex(L.trim, "#ffffff", "#ffffff", L.letter),
         roughness: 0.35, polygonOffset: true, polygonOffsetFactor: -2,
       })), 0, 0.745, 1.02, false);
     emblem.rotation.x = -Math.PI / 2 + 0.52;
@@ -366,6 +459,13 @@ export class KartModel {
       texMat(`dash${L.glow}`, () => new THREE.MeshBasicMaterial({ map: T.dashTex(L.glow), toneMapped: false })), 0, 0.9, 0.62, false);
     dash.rotation.x = -0.5;
     dash.rotation.y = Math.PI;
+
+    // A small tinted windscreen wrapping round in front of the wheel.
+    const screenMat = texMat(`ws${L.glow}`, () => new THREE.MeshPhysicalMaterial({
+      color: L.glow, transparent: true, opacity: 0.28, roughness: 0.05, clearcoat: 1, side: THREE.DoubleSide, depthWrite: false,
+    }));
+    const ws = add(c, cached("windscreen", () => new THREE.CylinderGeometry(0.44, 0.47, 0.24, 28, 1, true, -0.95, 1.9)), screenMat, 0, 0.93, 0.2, false);
+    ws.rotation.x = -0.32;
 
     // Engine: block, valve covers, intake trumpets, curved exhausts.
     add(c, rbox(0.82, 0.38, 0.56, 0.1), metal, 0, 0.72, -0.94);
@@ -406,16 +506,50 @@ export class KartModel {
       add(c, rbox(0.06, 0.34, 0.1, 0.02), dark, 0.36 * s, 1.0, -1.22);
     }
 
-    // Suspension: front wishbones, rear coil-overs.
+    // Suspension. Front: upper and lower A-arms (two tubes each, converging
+    // on the upright), a pushrod and a steering tie-rod. Rear: coil-overs.
+    const tube = (parent: THREE.Object3D, a: THREE.Vector3, b: THREE.Vector3, r: number, mat: THREE.Material) => {
+      const m = new THREE.Mesh(cached(`tube${r}`, () => new THREE.CylinderGeometry(r, r, 1, 8)), mat);
+      m.position.copy(a).add(b).multiplyScalar(0.5);
+      m.scale.y = a.distanceTo(b);
+      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+      parent.add(m);
+      return m;
+    };
+    const V3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
     for (const s of [1, -1]) {
-      for (const [y, z] of [[0.3, 0.9], [0.42, 1.0]]) {
-        const rod = add(d, cyl(0.022, 0.022, 0.36, 6), chromeM, 0.62 * s, y, z, false);
-        rod.rotation.z = Math.PI / 2;
+      for (const [y, spread] of [[0.3, 0.2], [0.46, 0.16]] as const) {
+        const hubP = V3(0.66 * s, y, 0.98);
+        tube(d, V3(0.4 * s, y, 0.98 - spread), hubP, 0.02, chromeM);
+        tube(d, V3(0.4 * s, y, 0.98 + spread), hubP, 0.02, chromeM);
       }
+      add(d, rbox(0.06, 0.24, 0.1, 0.02), metal, 0.68 * s, 0.38, 0.98, false);          // upright
+      tube(d, V3(0.66 * s, 0.31, 0.98), V3(0.34 * s, 0.62, 0.9), 0.016, accent);        // pushrod
+      tube(d, V3(0.14 * s, 0.36, 1.14), V3(0.66 * s, 0.36, 1.1), 0.014, dark);          // tie-rod
       add(d, springGeo(), accent, 0.62 * s, 0.4, -0.86, false);
       add(d, cyl(0.02, 0.02, 0.34, 6), chromeM, 0.62 * s, 0.56, -0.86, false);
+      // Side nerf bars between the wheels, like a real kart.
+      const nb = [V3(0.62 * s, 0.26, 0.62), V3(0.98 * s, 0.26, 0.42), V3(0.98 * s, 0.26, -0.3), V3(0.64 * s, 0.26, -0.5)];
+      for (let k = 0; k < nb.length - 1; k++) tube(c, nb[k], nb[k + 1], 0.035, dark);
+      for (const z of [0.3, -0.2]) tube(c, V3(0.62 * s, 0.26, z), V3(0.98 * s, 0.26, z + 0.05), 0.022, dark);
+      // Radiator intake on each pod: a dark mouth with bright slats.
+      const mouth = add(c, rbox(0.04, 0.2, 0.36, 0.03), carbon, 0.9 * s, 0.42, 0.34);
+      mouth.receiveShadow = true;
+      for (let k = 0; k < 4; k++) add(d, rbox(0.02, 0.018, 0.32, 0.005), chromeM, 0.925 * s, 0.35 + k * 0.045, 0.34, false);
+      // Coolant hoses from the radiators back to the engine.
+      const hose = new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+        V3(0.8 * s, 0.5, 0.2), V3(0.62 * s, 0.62, -0.2), V3(0.42 * s, 0.72, -0.62), V3(0.3 * s, 0.8, -0.78),
+      ]), 16, 0.025, 6, false);
+      add(d, hose, accent, 0, 0, 0, false);
     }
-
+    // Rear axle with the drive sprocket and chain, and a rear bumper bar.
+    tube(c, V3(-0.75, 0.45, -0.86), V3(0.75, 0.45, -0.86), 0.035, metal);
+    const sprocket = add(d, cached("sprocket", () => new THREE.CylinderGeometry(0.16, 0.16, 0.03, 20).rotateZ(Math.PI / 2)), chromeM, -0.42, 0.45, -0.86, false);
+    sprocket.receiveShadow = true;
+    const chain = add(d, cached("chain", () => new THREE.TorusGeometry(0.2, 0.014, 5, 24).rotateY(Math.PI / 2).scale(1, 0.8, 1.6).translate(0, 0.02, 0.18)), dark, -0.42, 0.45, -0.86, false);
+    chain.castShadow = false;
+    tube(c, V3(-0.95, 0.4, -1.52), V3(0.95, 0.4, -1.52), 0.04, dark);
+    for (const s of [1, -1]) tube(c, V3(0.95 * s, 0.4, -1.52), V3(0.7 * s, 0.34, -1.1), 0.03, dark);
     // Wheels: fat rear, smaller front. Rears are baked into the chassis; the
     // fronts sit in groups that steer. Spokes and tread spin by texture.
     const tyreTex = T.tyreTex();
@@ -423,7 +557,11 @@ export class KartModel {
     const tyreMat = new THREE.MeshStandardMaterial({ map: tyreTex, roughness: 0.78 });
     const rimT = T.rimTex(L.driver === "custodian" ? "#3a3f52" : "#e6eaf5", L.trim);
     this.rimTexture = rimT;
-    const rimMat = new THREE.MeshStandardMaterial({ map: rimT, roughness: 0.3, metalness: 0.45 });
+    const rimMat = new THREE.MeshStandardMaterial({ map: rimT, roughness: 0.3, metalness: 0.45, alphaTest: 0.5, side: THREE.DoubleSide });
+    const discMat = plastic("#8d93a6", 0.35, 0.85);
+    const stripeMat = plastic(L.driver === "custodian" ? L.glow : L.trim, 0.4);
+    const hubMat = plastic("#23263a", 0.5, 0.4);
+    const caliperMat = plastic(L.driver === "custodian" ? L.glow : L.trim, 0.3, 0.3);
     const mk = (x: number, z: number, r: number, w: number, front: boolean) => {
       const holder = front ? new THREE.Group() : c;
       const o = front ? new THREE.Vector3() : new THREE.Vector3(x, r, z);
@@ -433,7 +571,17 @@ export class KartModel {
         this.steerGroups.push(holder);
       }
       add(holder, tyreGeo(r, w), tyreMat, o.x, o.y, o.z).rotation.z = Math.PI / 2;
+      // A thin team-colour stripe round each sidewall.
       for (const sd of [1, -1]) {
+        const stripe = add(holder, cached(`sidestripe${r}`, () => new THREE.TorusGeometry(r * 0.8, 0.012, 6, 48).rotateY(Math.PI / 2)), stripeMat, o.x + sd * (w * 0.5 + 0.004), o.y, o.z, false);
+        stripe.castShadow = false;
+      }
+      // Inside the wheel: a dark well, a drilled disc and the caliper.
+      add(holder, cached(`well${r}`, () => new THREE.CylinderGeometry(r * 0.63, r * 0.63, w * 0.6, 24)), hubMat, o.x, o.y, o.z, false).rotation.z = Math.PI / 2;
+      for (const sd of [1, -1]) {
+        const disc = add(holder, cached(`disc${r}`, () => new THREE.CylinderGeometry(r * 0.5, r * 0.5, 0.03, 28)), discMat, o.x + sd * (w * 0.5 - 0.045), o.y, o.z, false);
+        disc.rotation.z = Math.PI / 2;
+        add(holder, rbox(0.06, r * 0.34, r * 0.22, 0.02), caliperMat, o.x + sd * (w * 0.5 - 0.075), o.y + r * 0.33, o.z - r * 0.2, false).rotation.x = 0.5;
         const f = add(holder, cached(`rimface${r}`, () => new THREE.CircleGeometry(r * 0.64, 24)), rimMat, o.x + sd * w * 0.5, o.y, o.z, false);
         f.rotation.y = (sd * Math.PI) / 2;
         const lip = add(holder, cached(`lip${r}`, () => new THREE.TorusGeometry(r * 0.64, 0.025, 8, 28)), chromeM, o.x + sd * w * 0.49, o.y, o.z, false);
@@ -552,7 +700,7 @@ export class KartModel {
   }
 
   /** A member of the Dlicom squad, sitting in the seat. */
-  private buildMascotDriver(char: CharId, evil?: EvilLook) {
+  private buildMascotDriver(char: DriverId, evil?: EvilLook) {
     const rig = buildMascot(char, true, evil);
     this.rig = rig;
     this.driver.add(rig.root);
@@ -560,6 +708,7 @@ export class KartModel {
     this.armL = rig.armL;
     this.armR = rig.armR;
     for (const k of rig.keep) this.keepApart.add(k);
+    for (const k of [...rig.eyes, rig.mouth, rig.torso, rig.cape]) if (k) this.keepApart.add(k);
     // Arms and head are posed every frame, so each merges on its own.
     for (const g of [rig.armL, rig.armR]) mergeChildren(g, new Set());
     mergeChildren(rig.root, this.keepApart);
@@ -621,7 +770,8 @@ export class KartModel {
 
     // Head leans into the turn and looks where it's going.
     this.head.rotation.z = -p.steer * 0.12;
-    this.head.rotation.y = -p.steer * 0.25;
+    this.head.rotation.y = -p.steer * 0.25 + (p.look?.yaw ?? 0);
+    this.head.rotation.x = p.look?.nod ?? 0;
 
     // Arms hang along -Y from the shoulder. X pitch swings them forward and
     // up; Z swings them in toward the wheel or out to the side. Driving:
@@ -652,6 +802,89 @@ export class KartModel {
   }
 }
 
+/** Shared vertex-coloured materials for baked parts, by surface. */
+const vcMats = new Map<string, THREE.MeshStandardMaterial>();
+function vcMat(rough: number, metal: number, side: THREE.Side, lite: boolean) {
+  // Snap to a few surfaces so parts can share: that's the point. Big
+  // screens keep gloss/matte and metal/plastic apart; phones use one.
+  const r = lite ? 0.4 : rough < 0.45 ? 0.3 : 0.7;
+  const m = lite ? 0.15 : metal > 0.5 ? 0.9 : 0.05;
+  const k = `${r},${m},${side}`;
+  let mat = vcMats.get(k);
+  if (!mat) {
+    mat = rimLight(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: r, metalness: m, side }));
+    vcMats.set(k, mat);
+  }
+  return mat;
+}
+
+/** A MeshStandardMaterial twin of a physical one (no clear-coat, sheen or iridescence). */
+const plainCache = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+function plainOf(mat: THREE.MeshPhysicalMaterial) {
+  let p = plainCache.get(mat);
+  if (!p) {
+    p = rimLight(new THREE.MeshStandardMaterial({
+      color: mat.color, map: mat.map, roughness: mat.roughness, metalness: mat.metalness,
+      emissive: mat.emissive, emissiveIntensity: mat.emissiveIntensity, emissiveMap: mat.emissiveMap,
+      transparent: mat.transparent, opacity: mat.opacity, alphaTest: mat.alphaTest, side: mat.side,
+      depthWrite: mat.depthWrite, flatShading: mat.flatShading,
+    }));
+    plainCache.set(mat, p);
+  }
+  return p;
+}
+
+function glowVc(side: THREE.Side) {
+  const k = `glow${side}`;
+  let mat = vcMats.get(k) as unknown as THREE.MeshBasicMaterial | undefined;
+  if (!mat) {
+    mat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, side });
+    vcMats.set(k, mat as unknown as THREE.MeshStandardMaterial);
+  }
+  return mat;
+}
+
+/**
+ * Plain untextured parts keep their colour in a vertex attribute and switch
+ * to a shared material, so parts of different colours can merge.
+ */
+function bakeColors(root: THREE.Object3D, skip: Set<THREE.Object3D>, lite: boolean) {
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || skip.has(m) || Array.isArray(m.material)) return;
+    const mat = m.material as THREE.MeshPhysicalMaterial;
+    if (!(mat instanceof THREE.MeshStandardMaterial)) return;
+    // Clear-coat paint and glass keep their special material on big screens.
+    if (mat.isMeshPhysicalMaterial && !lite) return;
+    if (mat.map || mat.emissiveMap || mat.normalMap || mat.roughnessMap || mat.metalnessMap || mat.alphaMap || mat.aoMap || mat.envMap) {
+      // Phones: textured clear-coat parts keep their texture on a plain material.
+      if (lite && mat.isMeshPhysicalMaterial) m.material = plainOf(mat);
+      return;
+    }
+    if (mat.transparent || mat.opacity < 1 || mat.alphaTest > 0 || mat.vertexColors) {
+      if (lite && mat.isMeshPhysicalMaterial) m.material = plainOf(mat);
+      return;
+    }
+    const glowing = mat.emissiveIntensity > 0 && mat.emissive.getHex() !== 0;
+    if (glowing && !lite) return;
+    const g = m.geometry.clone();
+    const n = g.attributes.position.count;
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { col[i * 3] = mat.color.r; col[i * 3 + 1] = mat.color.g; col[i * 3 + 2] = mat.color.b; }
+    g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    m.geometry = g;
+    if (glowing) {
+      // Phones: lights and LED strips share one unlit material, their glow
+      // (colour × intensity) baked in, still bright enough to bloom.
+      const e = mat.emissive.clone().multiplyScalar(mat.emissiveIntensity).add(mat.color.clone().multiplyScalar(0.25));
+      for (let i = 0; i < n; i++) { col[i * 3] = e.r; col[i * 3 + 1] = e.g; col[i * 3 + 2] = e.b; }
+      m.material = glowVc(mat.side);
+      return;
+    }
+    m.material = vcMat(mat.roughness, mat.metalness, mat.side, lite);
+  });
+}
+
 /** Merge a group's direct mesh children, one mesh per material. */
 function mergeChildren(group: THREE.Object3D, skip: Set<THREE.Object3D>, shadows = true) {
   const buckets = new Map<THREE.Material, { geos: THREE.BufferGeometry[]; shadow: boolean }>();
@@ -662,9 +895,11 @@ function mergeChildren(group: THREE.Object3D, skip: Set<THREE.Object3D>, shadows
     m.updateMatrix();
     let g = m.geometry.clone().applyMatrix4(m.matrix);
     for (const name of Object.keys(g.attributes)) {
-      if (!["position", "normal", "uv"].includes(name)) g.deleteAttribute(name);
+      if (!["position", "normal", "uv", "color"].includes(name)) g.deleteAttribute(name);
     }
     if (g.index) g = g.toNonIndexed();
+    // Everything in a bucket needs the same attributes to merge.
+    if (!g.attributes.uv) g.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
     const b = buckets.get(m.material) ?? { geos: [], shadow: false };
     b.geos.push(g);
     b.shadow ||= m.castShadow;
@@ -699,7 +934,7 @@ function tyreGeo(r: number, w: number) {
       pts.push(new THREE.Vector2(r - bev + Math.cos(a) * bev, hw - bev + Math.sin(a) * bev));
     }
     pts.push(new THREE.Vector2(inner, hw));
-    return new THREE.LatheGeometry(pts, 32);
+    return new THREE.LatheGeometry(pts, 48);
   });
 }
 
@@ -773,41 +1008,122 @@ function haloSprite(color: string, size: number, opacity = 0.9) {
 }
 
 /**
- * Item box: an iridescent glass cube with a glowing rainbow frame, a "?"
- * floating inside and a soft glow around it. The game cycles its colours.
+ * Item box: a thick iridescent glass cube with glossy bevelled edges, an
+ * embossed "?" on every face, a golden gem spinning inside, glints orbiting
+ * it and a pool of coloured light on the road below. The game cycles its
+ * colours and spins the parts against each other.
  */
-export function itemBox(glyph: THREE.Texture) {
+export function itemBox(face: THREE.Texture, spark: THREE.Texture) {
   const g = new THREE.Group();
-  const cube = new THREE.Mesh(rbox(1.5, 1.5, 1.5, 0.24), new THREE.MeshPhysicalMaterial({
-    color: "#9fd0ff", transparent: true, opacity: 0.62, roughness: 0.06, metalness: 0.05,
-    iridescence: 1, iridescenceIOR: 1.8, iridescenceThicknessRange: [200, 900],
-    clearcoat: 1, emissive: "#3f7dff", emissiveIntensity: 0.5, depthWrite: false,
+  const shellGeo = rbox(1.5, 1.5, 1.5, 0.3);
+  // The glass: a front shell, plus a dimmer back shell that gives it depth.
+  const cube = new THREE.Mesh(shellGeo, new THREE.MeshPhysicalMaterial({
+    color: "#9fd0ff", transparent: true, opacity: 0.5, roughness: 0.04, metalness: 0.1,
+    iridescence: 0.8, iridescenceIOR: 1.9, iridescenceThicknessRange: [180, 950],
+    clearcoat: 1, clearcoatRoughness: 0.02, emissive: "#3f7dff", emissiveIntensity: 0.55,
+    depthWrite: false, side: THREE.FrontSide,
   }));
-  cube.renderOrder = 3;
+  cube.renderOrder = 4;
   g.add(cube);
-  // Glowing edges and corner studs, riding on the cube as it tumbles.
-  const frameMat = new THREE.MeshStandardMaterial({ color: "#ffffff", emissive: "#7fb4ff", emissiveIntensity: 2.2, roughness: 0.3 });
-  const frame = new THREE.Mesh(cached("boxFrame", () => {
+  const inner = new THREE.Mesh(shellGeo, new THREE.MeshBasicMaterial({
+    color: "#6f9bff", transparent: true, opacity: 0.22, depthWrite: false, side: THREE.BackSide,
+    blending: THREE.AdditiveBlending, toneMapped: false,
+  }));
+  inner.renderOrder = 2;
+  cube.add(inner);
+  // "?" decals, one per face, just proud of the glass.
+  const decal = new THREE.Mesh(cached("boxDecal", () => new THREE.BoxGeometry(1.51, 1.51, 1.51)), texMat("boxFace", () => new THREE.MeshBasicMaterial({
+    map: face, transparent: true, depthWrite: false, toneMapped: false, side: THREE.FrontSide,
+  })));
+  decal.renderOrder = 5;
+  cube.add(decal);
+  // Glossy bevelled edges and corner studs, riding on the cube as it tumbles.
+  const frameMat = new THREE.MeshPhysicalMaterial({
+    color: "#c9d6ff", emissive: "#7fb4ff", emissiveIntensity: 1.9, roughness: 0.18, metalness: 0.2,
+    clearcoat: 1, clearcoatRoughness: 0.05,
+  });
+  const frame = new THREE.Mesh(cached("boxFrame2", () => {
     const parts: THREE.BufferGeometry[] = [];
-    const e = 0.7;
+    const e = 0.69;
     for (const [a, b] of [[e, e], [e, -e], [-e, e], [-e, -e]]) {
-      parts.push(new THREE.CapsuleGeometry(0.055, 1.28, 4, 8).translate(a, 0, b));
-      parts.push(new THREE.CapsuleGeometry(0.055, 1.28, 4, 8).rotateZ(Math.PI / 2).translate(0, a, b));
-      parts.push(new THREE.CapsuleGeometry(0.055, 1.28, 4, 8).rotateX(Math.PI / 2).translate(a, b, 0));
+      parts.push(new THREE.CapsuleGeometry(0.075, 1.24, 4, 10).translate(a, 0, b));
+      parts.push(new THREE.CapsuleGeometry(0.075, 1.24, 4, 10).rotateZ(Math.PI / 2).translate(0, a, b));
+      parts.push(new THREE.CapsuleGeometry(0.075, 1.24, 4, 10).rotateX(Math.PI / 2).translate(a, b, 0));
     }
-    for (const x of [e, -e]) for (const y of [e, -e]) for (const z of [e, -e]) parts.push(new THREE.SphereGeometry(0.1, 10, 8).translate(x, y, z));
+    for (const x of [e, -e]) for (const y of [e, -e]) for (const z of [e, -e]) parts.push(new THREE.SphereGeometry(0.14, 14, 10).translate(x, y, z));
     return mergeGeometries(parts)!;
   }), frameMat);
+  frame.renderOrder = 6;
   cube.add(frame);
-  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: glyph, depthWrite: false, toneMapped: false }));
-  spr.scale.setScalar(1.05);
-  spr.renderOrder = 4;
-  g.add(spr);
-  const halo = haloSprite("#8fc4ff", 3.4, 0.35);
-  halo.renderOrder = 2;
+  // A golden gem turning the other way inside.
+  const core = new THREE.Mesh(cached("boxGem", () => new THREE.OctahedronGeometry(0.34, 0).scale(1, 1.35, 1)), texMat("boxGem", () => new THREE.MeshPhysicalMaterial({
+    color: "#ffd84a", emissive: "#ff9d00", emissiveIntensity: 1.1, roughness: 0.12, metalness: 0.6,
+    clearcoat: 1, flatShading: true,
+  })));
+  core.renderOrder = 3;
+  g.add(core);
+  const halo = haloSprite("#9fc8ff", 3.8, 0.4);
+  halo.renderOrder = 1;
   g.add(halo);
+  // Glints orbiting the box.
+  const orbit = new THREE.Group();
+  const sparkMat = texMat("boxSpark", () => new THREE.SpriteMaterial({
+    map: spark, color: "#ffffff", transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }));
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI * 2;
+    const s = new THREE.Sprite(sparkMat as THREE.SpriteMaterial);
+    s.position.set(Math.cos(a) * 1.35, Math.sin(a * 2) * 0.55, Math.sin(a) * 1.35);
+    s.scale.setScalar(0.5);
+    s.userData.k = k;
+    orbit.add(s);
+  }
+  g.add(orbit);
+  // Coloured light pooled on the road under the box.
+  const poolBase = texMat("boxPool", () => new THREE.MeshBasicMaterial({
+    map: T.blobTex("rgba(255,255,255,1)", "rgba(255,255,255,0)"), color: "#7fb4ff", transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }));
+  // Own copy of the material (sharing the texture) so each box tints its own pool.
+  const pool = new THREE.Mesh(cached("boxPool", () => new THREE.PlaneGeometry(3.4, 3.4).rotateX(-Math.PI / 2)), poolBase.clone());
+  pool.position.y = -1.25;
+  g.add(pool);
   g.userData.cube = cube;
   g.userData.frame = frameMat;
+  g.userData.inner = inner.material;
+  g.userData.core = core;
+  g.userData.orbit = orbit;
+  g.userData.pool = pool;
+  return g;
+}
+
+/**
+ * Coin Magnet field: two counter-spinning rings of red and white light and
+ * a faint dome, around the player while the magnet is on.
+ */
+export function magnetAura() {
+  const g = new THREE.Group();
+  const ringMat = (color: string, o: number) => new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: o, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const a = new THREE.Mesh(cached("magRingA", () => new THREE.TorusGeometry(1.9, 0.045, 8, 64)), ringMat("#ff3d5a", 0.95));
+  const b = new THREE.Mesh(cached("magRingB", () => new THREE.TorusGeometry(2.15, 0.03, 8, 64)), ringMat("#ffffff", 0.7));
+  a.rotation.x = Math.PI / 2;
+  b.rotation.x = Math.PI / 2;
+  g.add(a, b);
+  // Dashed field lines: short arcs that sweep round.
+  const dash = new THREE.Group();
+  for (let k = 0; k < 6; k++) {
+    const m = new THREE.Mesh(cached("magDash", () => new THREE.TorusGeometry(2.45, 0.05, 6, 12, Math.PI / 7)), ringMat(k % 2 ? "#ff8a9a" : "#ffd84a", 0.9));
+    m.rotation.set(Math.PI / 2, 0, (k / 6) * Math.PI * 2);
+    dash.add(m);
+  }
+  g.add(dash);
+  g.add(haloSprite("#ff3d5a", 4.2, 0.28));
+  g.position.y = 0.7;
+  g.userData.a = a;
+  g.userData.b = b;
+  g.userData.dash = dash;
   return g;
 }
 
@@ -1219,3 +1535,139 @@ export function bunting(a: THREE.Vector3, b: THREE.Vector3, sag: number) {
 
 /** Rounded rectangle helper for other modules. */
 export { rbox, sphere, cyl, torus, add };
+
+/**
+ * The player's Seeker Orb: a golden core with the Dlicom D, a blue ring
+ * orbiting it, and a warm halo, so it reads as "ours" next to the
+ * Custodians' red freeze orbs.
+ */
+export function seeker() {
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(sphere(0.42, 24, 16), texMat("seekerCore", () => new THREE.MeshStandardMaterial({
+    color: "#000000", emissive: "#ffc21a", emissiveIntensity: 3, roughness: 0.3,
+  })));
+  g.add(core);
+  const em = new THREE.Mesh(cached("seekerEm", () => new THREE.CircleGeometry(0.3, 24)), texMat("seekerEmMat", () => new THREE.MeshBasicMaterial({
+    map: T.emblemTex("#ffc21a", "#ffffff", "#ffffff"), toneMapped: false,
+  })));
+  em.position.z = 0.43;
+  g.add(em);
+  const ringMat = glow("#6f93ff", 3);
+  add(g, torus(0.72, 0.045), ringMat, 0, 0, 0, false).rotation.set(1.2, 0, 0.4);
+  add(g, torus(0.62, 0.03), glow("#ffe680", 2.6), 0, 0, 0, false).rotation.set(-0.5, 0.8, 0);
+  g.add(haloSprite("#ffc21a", 3.4, 0.75));
+  return g;
+}
+
+/* ------------------------------------------------------------------ */
+/* Infinite mode                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Laser gate: two emitter pylons at the edges of the deck and a red beam
+ * across the whole road that pulses on and off. The game drives
+ * `userData.beam` (visible / brightness) and `userData.cores` (charge lights).
+ * Built for a road `half` metres either side of the centre.
+ */
+export function laserGate(half: number) {
+  const g = new THREE.Group();
+  const body = plastic("#262a42", 0.3, 0.75);
+  const trim = plastic("#ff3355", 0.3, 0.2);
+  const cores: THREE.MeshBasicMaterial[] = [];
+  for (const s of [-1, 1]) {
+    add(g, rbox(1.1, 0.3, 1.1, 0.12), body, half * s, 0.15, 0);
+    add(g, rbox(0.62, 2.5, 0.62, 0.2), body, half * s, 1.5, 0);
+    add(g, rbox(0.7, 0.18, 0.7, 0.08), trim, half * s, 2.75, 0, false);
+    const core = new THREE.MeshBasicMaterial({ color: new THREE.Color("#ff2a4a").multiplyScalar(2.6), toneMapped: false });
+    cores.push(core);
+    for (const y of [0.55, 1.05, 1.55]) {
+      const lens = new THREE.Mesh(cached("laserLens", () => new THREE.CylinderGeometry(0.17, 0.17, 0.12, 16).rotateZ(Math.PI / 2)), core);
+      lens.position.set((half - 0.33) * s, y, 0);
+      g.add(lens);
+    }
+  }
+  // The beams: hot cores with a wide soft glow around them.
+  const beam = new THREE.Group();
+  const coreMat = texMat("laserCore", () => new THREE.MeshBasicMaterial({ color: new THREE.Color("#ff5a74").multiplyScalar(4), toneMapped: false }));
+  const glowMat = texMat("laserGlow", () => new THREE.MeshBasicMaterial({
+    map: T.blobTex("rgba(255,255,255,1)", "rgba(255,255,255,0)"), color: new THREE.Color("#ff2244").multiplyScalar(1.6),
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+  }));
+  const len = half * 2 - 0.66;
+  for (const y of [0.55, 1.05, 1.55]) {
+    const c = new THREE.Mesh(cached(`laserBeam${len}`, () => new THREE.CylinderGeometry(0.045, 0.045, len, 6).rotateZ(Math.PI / 2)), coreMat);
+    c.position.y = y;
+    beam.add(c);
+  }
+  const sheet = new THREE.Mesh(cached(`laserSheet${len}`, () => new THREE.PlaneGeometry(len, 2.2)), glowMat);
+  sheet.position.y = 1.05;
+  beam.add(sheet);
+  g.add(beam);
+  g.userData.beam = beam;
+  g.userData.cores = cores;
+  return g;
+}
+
+/**
+ * Shifter: a hovering energy barrier two lanes wide that slides from side
+ * to side across the road. Red and black chevrons, a glowing frame, and a
+ * pool of light underneath.
+ */
+export function shifter(width: number) {
+  const g = new THREE.Group();
+  const frame = plastic("#1d2036", 0.3, 0.7);
+  const panelTex = T.stripeTex("#ff2d55", "#14101f", 7);
+  const panel = texMat("shifterPanel", () => new THREE.MeshStandardMaterial({
+    map: panelTex, emissive: "#ffffff", emissiveMap: panelTex, emissiveIntensity: 1.1, roughness: 0.4,
+  }));
+  const body = add(g, rbox(width, 1.4, 0.7, 0.2), frame, 0, 1.15, 0);
+  body.castShadow = true;
+  for (const z of [0.36, -0.36]) {
+    const face = new THREE.Mesh(cached(`shiftFace${width}`, () => new THREE.PlaneGeometry(width - 0.5, 1.0)), panel);
+    face.position.set(0, 1.15, z);
+    if (z < 0) face.rotation.y = Math.PI;
+    g.add(face);
+  }
+  const edge = glow("#ff4d6d", 2.6);
+  add(g, rbox(width + 0.1, 0.12, 0.8, 0.05), edge, 0, 1.9, 0, false);
+  add(g, rbox(width + 0.1, 0.12, 0.8, 0.05), edge, 0, 0.4, 0, false);
+  for (const s of [-1, 1]) {
+    add(g, rbox(0.3, 1.6, 0.9, 0.1), frame, (width / 2) * s, 1.15, 0);
+    const thr = add(g, cyl(0.28, 0.2, 0.2, 14), glow("#ff7a90", 2.2), (width / 2 - 0.8) * s, 0.36, 0, false);
+    thr.rotation.x = Math.PI;
+  }
+  const pool = new THREE.Mesh(cached(`shiftPool${width}`, () => new THREE.PlaneGeometry(width + 2, 3).rotateX(-Math.PI / 2)), texMat("shiftPool", () => new THREE.MeshBasicMaterial({
+    map: T.blobTex("rgba(255,255,255,.9)", "rgba(255,255,255,0)"), color: new THREE.Color("#ff2d55").multiplyScalar(1.2),
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  })));
+  pool.position.y = 0.04;
+  g.add(pool);
+  return g;
+}
+
+/** A spare heart: glossy red, bevelled, spinning in a pink glow. */
+export function heartPickup() {
+  const g = new THREE.Group();
+  const geo = cached("heartGeo", () => {
+    const s = new THREE.Shape();
+    s.moveTo(0, -0.55);
+    s.bezierCurveTo(-0.15, -0.38, -0.62, -0.12, -0.62, 0.18);
+    s.bezierCurveTo(-0.62, 0.48, -0.32, 0.62, -0.16, 0.55);
+    s.bezierCurveTo(-0.06, 0.5, 0, 0.42, 0, 0.36);
+    s.bezierCurveTo(0, 0.42, 0.06, 0.5, 0.16, 0.55);
+    s.bezierCurveTo(0.32, 0.62, 0.62, 0.48, 0.62, 0.18);
+    s.bezierCurveTo(0.62, -0.12, 0.15, -0.38, 0, -0.55);
+    const e = new THREE.ExtrudeGeometry(s, { depth: 0.22, bevelEnabled: true, bevelThickness: 0.12, bevelSize: 0.1, bevelSegments: 4, curveSegments: 18 });
+    e.center();
+    return e;
+  });
+  const mat = texMat("heartMat", () => new THREE.MeshPhysicalMaterial({
+    color: "#ff2d55", emissive: "#ff1f4b", emissiveIntensity: 0.55, roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.08,
+  }));
+  const heart = new THREE.Mesh(geo, mat);
+  heart.scale.setScalar(1.35);
+  g.add(heart);
+  g.add(haloSprite("#ff5d8a", 3.6, 0.7));
+  g.userData.heart = heart;
+  return g;
+}

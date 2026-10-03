@@ -10,7 +10,8 @@
     "db:local": "wrangler d1 migrations apply dili-cart --local",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && wrangler d1 migrations apply dili-cart --remote && wrangler pages deploy dist --project-name dili-cart --branch main --commit-dirty=true"
+    "deploy": "npm run build && wrangler deploy -c rooms/wrangler.toml && wrangler d1 migrations apply dili-cart --remote && wrangler pages deploy dist --project-name dili-cart --branch main --commit-dirty=true",
+    "set-password": "node tools/set-password.mjs"
   },
   "devDependencies": {
     "mp4-muxer": "^5.2.2",
@@ -19,6 +20,7 @@
     "wrangler": "^4.140.0"
   },
   "dependencies": {
+    "@pmndrs/assets": "^1.7.0",
     "@types/three": "^0.186.0",
     "three": "^0.186.1"
   }

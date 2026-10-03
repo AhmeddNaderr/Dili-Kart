@@ -215,3 +215,160 @@ export class Confetti {
     this.mesh.instanceMatrix.needsUpdate = true;
   }
 }
+
+/**
+ * Skid marks that stay on the track: a ring buffer of quads laid behind
+ * each drifting tyre, joined edge to edge so a slide reads as one rubber
+ * stripe. One draw call; the oldest marks fade out as the ring wraps.
+ */
+export class SkidMarks {
+  readonly mesh: THREE.Mesh;
+  private readonly max: number;
+  private head = 0;
+  private pos: Float32Array;
+  private seg: Float32Array;
+  private lo = Infinity;
+  private hi = -1;
+  private last = new Map<number, { p: THREE.Vector3; l: THREE.Vector3; r: THREE.Vector3 }>();
+  private mat: THREE.ShaderMaterial;
+
+  constructor(max = 1800, color = "#101014", opacity = 0.55) {
+    this.max = max;
+    this.pos = new Float32Array(max * 4 * 3);
+    this.seg = new Float32Array(max * 4);
+    const alpha = new Float32Array(max * 4);
+    const idx = new Uint32Array(max * 6);
+    for (let i = 0; i < max; i++) {
+      const v = i * 4;
+      idx.set([v, v + 2, v + 1, v + 1, v + 2, v + 3], i * 6);
+      this.seg.fill(i, v, v + 4);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setAttribute("aSeg", new THREE.BufferAttribute(this.seg, 1));
+    geo.setAttribute("aStr", new THREE.BufferAttribute(alpha, 1).setUsage(THREE.DynamicDrawUsage));
+    geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(max * 8), 2));
+    // uv.x across the tyre (0 left, 1 right), for the tread pattern.
+    const uv = geo.attributes.uv as THREE.BufferAttribute;
+    for (let i = 0; i < max; i++) for (let c = 0; c < 4; c++) uv.setXY(i * 4 + c, c & 1 ? 1 : 0, c >> 1);
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
+    this.mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+      uniforms: { uHead: { value: 0 }, uMax: { value: max }, uColor: { value: new THREE.Color(color) }, uOp: { value: opacity } },
+      vertexShader: `
+        attribute float aSeg; attribute float aStr;
+        uniform float uHead; uniform float uMax;
+        varying float vA; varying vec2 vUv;
+        void main(){
+          float age = mod(uHead - aSeg + uMax, uMax) / uMax;
+          vA = aStr * (1.0 - smoothstep(0.75, 1.0, age));
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 uColor; uniform float uOp;
+        varying float vA; varying vec2 vUv;
+        void main(){
+          // Tread: a few darker grooves across, fading at the tyre's shoulders.
+          float edge = smoothstep(0.0, 0.18, vUv.x) * smoothstep(1.0, 0.82, vUv.x);
+          float tread = 0.75 + 0.25 * step(0.5, fract(vUv.x * 4.0));
+          gl_FragColor = vec4(uColor, uOp * vA * edge * tread);
+        }`,
+    });
+    this.mesh = new THREE.Mesh(geo, this.mat);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 1;
+  }
+
+  /** Extend wheel `key`'s stripe to `p` (on the road), `side` across the tyre. */
+  mark(key: number, p: THREE.Vector3, side: THREE.Vector3, width: number, strength: number) {
+    const l = p.clone().addScaledVector(side, -width / 2);
+    const r = p.clone().addScaledVector(side, width / 2);
+    const prev = this.last.get(key);
+    if (!prev || prev.p.distanceToSquared(p) > 9) { this.last.set(key, { p: p.clone(), l, r }); return; }
+    if (prev.p.distanceToSquared(p) < 0.35 * 0.35) return;
+    const i = this.head;
+    this.head = (this.head + 1) % this.max;
+    const o = i * 12;
+    this.pos.set([prev.l.x, prev.l.y, prev.l.z, prev.r.x, prev.r.y, prev.r.z, l.x, l.y, l.z, r.x, r.y, r.z], o);
+    const str = (this.mesh.geometry.attributes.aStr as THREE.BufferAttribute).array as Float32Array;
+    str.set([strength, strength, strength, strength], i * 4);
+    this.lo = Math.min(this.lo, i);
+    this.hi = Math.max(this.hi, i);
+    prev.p.copy(p); prev.l.copy(l); prev.r.copy(r);
+  }
+
+  /** The tyre stopped sliding: the next mark starts a new stripe. */
+  lift(key: number) { this.last.delete(key); }
+
+  update() {
+    this.mat.uniforms.uHead.value = this.head;
+    if (this.hi < 0) return;
+    const g = this.mesh.geometry;
+    const pa = g.attributes.position as THREE.BufferAttribute;
+    const sa = g.attributes.aStr as THREE.BufferAttribute;
+    pa.clearUpdateRanges(); sa.clearUpdateRanges();
+    pa.addUpdateRange(this.lo * 12, (this.hi - this.lo + 1) * 12);
+    sa.addUpdateRange(this.lo * 4, (this.hi - this.lo + 1) * 4);
+    pa.needsUpdate = true; sa.needsUpdate = true;
+    this.lo = Infinity; this.hi = -1;
+  }
+
+  dispose() {
+    this.mesh.geometry.dispose();
+    this.mat.dispose();
+  }
+}
+
+/** One kart's frame of a replay: where it was and how it looked. */
+export const REPLAY_STRIDE = 7 + 7 + 10 + 1 + 1;
+
+/**
+ * A rolling recording of every kart's transform and pose, sampled at 30 Hz,
+ * so the finish can be shown again from trackside cameras.
+ */
+export class ReplayTape {
+  readonly rate = 30;
+  private readonly frames: number;
+  private data: Float32Array;
+  private count = 0;
+  private head = 0;
+  private acc = 0;
+  constructor(readonly karts: number, seconds = 14) {
+    this.frames = Math.round(seconds * this.rate);
+    this.data = new Float32Array(this.frames * karts * REPLAY_STRIDE);
+  }
+
+  /** Call every frame; `write(k, out)` fills kart k's slice. */
+  record(dt: number, write: (k: number, out: Float32Array, o: number) => void) {
+    this.acc += dt;
+    if (this.acc < 1 / this.rate && this.count > 0) return;
+    this.acc = Math.min(this.acc - 1 / this.rate, 1 / this.rate);
+    const base = this.head * this.karts * REPLAY_STRIDE;
+    for (let k = 0; k < this.karts; k++) write(k, this.data, base + k * REPLAY_STRIDE);
+    this.head = (this.head + 1) % this.frames;
+    this.count = Math.min(this.count + 1, this.frames);
+  }
+
+  /** Seconds of tape held. */
+  get length() { return this.count / this.rate; }
+
+  /**
+   * Read kart k at `t` seconds before the newest frame, interpolating
+   * between samples. Returns [slice array, offset a, offset b, blend].
+   */
+  at(k: number, back: number): [Float32Array, number, number, number] {
+    const f = Math.max(0, Math.min(this.count - 1.001, back * this.rate));
+    const i0 = Math.floor(f);
+    const fa = (this.head - 1 - i0 + this.frames * 2) % this.frames;
+    const fb = (fa - 1 + this.frames) % this.frames;
+    const stride = this.karts * REPLAY_STRIDE;
+    // fa is newer, fb older; blend goes from fa (0) toward fb (1).
+    return [this.data, fa * stride + k * REPLAY_STRIDE, fb * stride + k * REPLAY_STRIDE, f - i0];
+  }
+
+  clear() { this.count = 0; this.head = 0; this.acc = 0; }
+}

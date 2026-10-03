@@ -38,13 +38,16 @@ http://localhost:5173. Accounts you create locally stay on your machine.
    This builds the game, applies the database schema, and uploads everything.
    Your game is live at `https://dili-cart.pages.dev`.
 
-After that, `npm run deploy` is the only command you need for updates.
+After that, `npm run deploy` is the only command you need for updates. It
+applies any new database migrations first (for example `0003_skins.sql`, which
+adds the coin wallet and skins and credits everyone the coins from races they
+already ran), then uploads the site.
 
 ## What's stored
 
 | Table      | What                                                             |
 |------------|------------------------------------------------------------------|
-| `players`  | Handle, password hash (PBKDF2 + salt), points, best score, wins |
+| `players`  | Handle, password hash (PBKDF2 + salt), points, best score, wins, Dili-coin wallet, owned and equipped skins |
 | `sessions` | A hash of each login token — never the token itself             |
 | `races`    | One row per finished race                                         |
 | `attempts` | Rate-limit counters for sign-ups and log-ins                      |

@@ -1,5 +1,5 @@
-// Starts the local API (Cloudflare Pages Functions + D1 via Wrangler) and the
-// Vite dev server together. Ctrl+C stops both.
+// Starts the local API (Cloudflare Pages Functions + D1 via Wrangler), the
+// multiplayer rooms Worker and the Vite dev server together. Ctrl+C stops all.
 import { spawn, spawnSync } from "node:child_process";
 
 const npx = process.platform === "win32" ? "npx.cmd" : "npx";
@@ -8,6 +8,8 @@ const npx = process.platform === "win32" ? "npx.cmd" : "npx";
 spawnSync(npx, ["wrangler", "d1", "migrations", "apply", "dili-cart", "--local"], { stdio: "ignore" });
 
 const procs = [
+  // Multiplayer rooms (Durable Objects); Pages finds it through the local dev registry.
+  spawn(npx, ["wrangler", "dev", "-c", "rooms/wrangler.toml", "--port", "8790", "--ip", "127.0.0.1", "--inspector-port", "9231"], { stdio: ["ignore", "ignore", "inherit"] }),
   spawn(npx, ["wrangler", "pages", "dev", "public", "--port", "8788", "--ip", "127.0.0.1"], { stdio: ["ignore", "ignore", "inherit"] }),
   spawn(npx, ["vite"], { stdio: "inherit" }),
 ];

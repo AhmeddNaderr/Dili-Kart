@@ -7,17 +7,143 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no"
     />
     <meta name="theme-color" content="#04050b" />
-    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <script>
+      // Phones and small or low-core devices get the "lite" treatment (the
+      // same test the game uses for its lighter graphics): no live glass blur.
+      try {
+        if (matchMedia("(pointer: coarse)").matches || Math.min(screen.width, screen.height) < 700 || (navigator.hardwareConcurrency || 8) <= 4) document.documentElement.classList.add("lite");
+      } catch (e) {}
+    </script>
+    <link rel="icon" href="favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <meta property="og:title" content="Dili Cart · Dlicom Arcade" />
+    <meta property="og:image" content="logo-400.jpg" />
+    <meta name="twitter:card" content="summary" />
     <title>Dili Cart · Dlicom Arcade</title>
-    <meta name="description" content="Dili Cart — a 3D kart racer from the Dlicom universe. Drift, boost and glide past the Custodians in a three-lap Grand Prix." />
+    <meta name="description" content="Dili Cart — a 3D kart racer from the Dlicom universe. Drift, boost and glide past the Custodians in the Dlicom Grand Prix." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,800;1,900&family=Silkscreen:wght@400;700&display=swap"
       rel="stylesheet"
     />
+    <style>
+      /* The loading screen draws before any script arrives: Dili's kart
+         drives along the road toward the flag as the game loads (the page
+         sets --p from 0 to 1), then crosses the line and the screen wipes. */
+      html, body { margin: 0; height: 100%; background: #04050b; }
+      #loader {
+        --p: 0.04;
+        position: fixed; inset: 0; z-index: 200; overflow: hidden;
+        display: grid; place-items: center;
+        background:
+          radial-gradient(70% 55% at 20% 0%, rgba(255, 196, 40, 0.22), transparent 60%),
+          radial-gradient(70% 60% at 100% 100%, rgba(61, 99, 255, 0.35), transparent 60%),
+          #04050b;
+        color: #fff; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        transition: opacity 0.7s ease, transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      #loader.out { opacity: 0; transform: scale(1.05); pointer-events: none; }
+      #loader::before {
+        /* Light stripes, like the stadium boards. */
+        content: ""; position: absolute; inset: 0 0 45% 0; opacity: 0.35;
+        background: repeating-linear-gradient(90deg, transparent 0 26px, rgba(61, 99, 255, 0.55) 26px 28px, transparent 28px 40px);
+        -webkit-mask: linear-gradient(180deg, #000, transparent); mask: linear-gradient(180deg, #000, transparent);
+      }
+      .ld-inner { position: relative; width: min(760px, 88vw); }
+      .ld-logo { display: block; margin: 0 auto 18px; width: 84px; height: 84px; border-radius: 22px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 18px 40px -12px rgba(47, 91, 255, 0.8); animation: ld-pulse 2.4s ease-in-out infinite; }
+      @keyframes ld-pulse { 50% { transform: scale(1.04); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 22px 50px -10px rgba(47, 200, 255, 0.9); } }
+      .ld-title { text-align: center; font-weight: 900; font-style: italic; letter-spacing: -0.05em; font-size: clamp(42px, 8vw, 84px); line-height: 0.9; margin-bottom: 44px; }
+      .ld-title b { color: transparent; background: linear-gradient(180deg, #fff 0%, #c8d1f2 100%); -webkit-background-clip: text; background-clip: text; padding-right: 0.08em; }
+      .ld-title i { font-style: italic; color: transparent; background: linear-gradient(180deg, #fffbe6 0%, #ffe680 30%, #ffc21f 65%, #ff9500 100%); -webkit-background-clip: text; background-clip: text; padding-right: 0.08em; }
+      .ld-road { position: relative; height: 110px; }
+      .ld-track {
+        position: absolute; left: 0; right: 0; bottom: 12px; height: 14px; border-radius: 10px;
+        background: #11152a; box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.7), 0 1px 0 rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      .ld-track::before {
+        /* Lane dashes streaming past. */
+        content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px;
+        background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.35) 0 18px, transparent 18px 36px);
+        animation: ld-dash 0.45s linear infinite;
+      }
+      .ld-fill {
+        position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--p) * 100%);
+        background: linear-gradient(90deg, rgba(255, 196, 40, 0.15), #ffc21f 70%, #fff3b0);
+        box-shadow: 0 0 18px rgba(255, 196, 40, 0.8);
+        border-radius: inherit; transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      @keyframes ld-dash { to { background-position: -36px 0; } }
+      .ld-flag { position: absolute; right: -6px; bottom: 12px; width: 34px; height: 64px; }
+      .ld-flag svg { width: 100%; height: 100%; transform-origin: 10% 90%; animation: ld-wave 1.2s ease-in-out infinite; }
+      @keyframes ld-wave { 50% { transform: skewY(-5deg) rotate(-3deg); } }
+      .ld-kart {
+        position: absolute; bottom: 14px; left: calc(var(--p) * (100% - 140px)); width: 140px; height: 91px;
+        transition: left 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .ld-kart::after { content: ""; position: absolute; left: 12%; right: 6%; bottom: -3px; height: 8px; border-radius: 50%; background: radial-gradient(closest-side, rgba(0, 0, 0, 0.6), transparent); }
+      .ld-kart .body { animation: ld-bob 0.34s ease-in-out infinite alternate; transform-origin: 50% 100%; }
+      @keyframes ld-bob { to { transform: translateY(-2px) rotate(-1deg); } }
+      .ld-kart .wheel { transform-box: fill-box; transform-origin: center; animation: ld-spin 0.35s linear infinite; }
+      @keyframes ld-spin { to { transform: rotate(360deg); } }
+      .ld-kart .flame { transform-box: fill-box; transform-origin: 100% 50%; animation: ld-flame 0.12s ease-in-out infinite alternate; }
+      @keyframes ld-flame { to { transform: scaleX(1.35) scaleY(0.8); opacity: 0.8; } }
+      .ld-puff { position: absolute; bottom: 20px; width: 14px; height: 14px; border-radius: 50%; background: rgba(200, 210, 255, 0.35); left: calc(var(--p) * (100% - 140px) - 6px); animation: ld-puff 0.6s ease-out infinite; transition: left 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
+      .ld-puff.b { animation-delay: 0.2s; } .ld-puff.c { animation-delay: 0.4s; }
+      @keyframes ld-puff { from { transform: translate(0, 0) scale(0.4); opacity: 0.9; } to { transform: translate(-46px, -12px) scale(1.6); opacity: 0; } }
+      .ld-lines { position: absolute; bottom: 30px; height: 40px; width: 90px; left: calc(var(--p) * (100% - 140px) - 96px); transition: left 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
+      .ld-lines i { position: absolute; left: 0; right: 0; height: 2px; border-radius: 2px; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7)); animation: ld-line 0.5s linear infinite; }
+      .ld-lines i:nth-child(1) { top: 4px; } .ld-lines i:nth-child(2) { top: 18px; animation-delay: 0.17s; } .ld-lines i:nth-child(3) { top: 32px; animation-delay: 0.33s; }
+      @keyframes ld-line { from { transform: translateX(40px); opacity: 0; } 40% { opacity: 1; } to { transform: translateX(-40px); opacity: 0; } }
+      .ld-meta { display: flex; justify-content: space-between; margin-top: 16px; font: 700 12px/1 Silkscreen, ui-monospace, monospace; letter-spacing: 0.12em; color: rgba(235, 235, 245, 0.6); }
+      .ld-meta b { color: #ffd84a; }
+      /* Crossing the line: the kart zooms off the right edge. */
+      #loader.done .ld-kart { left: calc(100% + 40px); transition: left 0.6s cubic-bezier(0.5, 0, 0.9, 0.5); }
+      @media (prefers-reduced-motion: reduce) { #loader *, #loader *::before { animation: none !important; } }
+    </style>
   </head>
   <body>
+    <div id="loader" role="progressbar" aria-label="Loading Dili Cart">
+      <div class="ld-inner">
+        <img class="ld-logo" src="logo.jpg" alt="" width="84" height="84" />
+        <div class="ld-title"><b>DILI</b> <i>CART</i></div>
+        <div class="ld-road">
+          <div class="ld-track"><div class="ld-fill"></div></div>
+          <div class="ld-flag"><svg viewBox="0 0 34 64"><path d="M4 4v58" stroke="#dfe6ff" stroke-width="3" stroke-linecap="round"/><path d="M5 5h26v18H5z" fill="#fff"/><path d="M5 5h6.5v6H5zm13 0h6.5v6H18zM11.5 11H18v6h-6.5zm13 0H31v6h-6.5zM5 17h6.5v6H5zm13 0h6.5v6H18z" fill="#0b0c14"/></svg></div>
+          <div class="ld-lines"><i></i><i></i><i></i></div>
+          <i class="ld-puff"></i><i class="ld-puff b"></i><i class="ld-puff c"></i>
+          <div class="ld-kart" aria-hidden="true">
+            <svg viewBox="0 0 120 78">
+              <g class="body">
+                <path class="flame" d="M6 52c-6 0-6 6 0 6h12v-6z" fill="#ffb31c"/>
+                <path d="M16 50h10v8H16z" fill="#9aa4c2"/>
+                <!-- Rear wing and antenna flag -->
+                <path d="M20 26h16l2 12H22z" fill="#2744d8"/>
+                <path d="M18 24h22v4H18z" fill="#3d63ff"/>
+                <path d="M30 24V6" stroke="#1b1e29" stroke-width="1.6"/>
+                <path d="M30 6l14 4-14 5z" fill="#3d63ff"/>
+                <!-- Body -->
+                <path d="M22 44c0-8 8-10 20-10h26c10 0 22 2 32 10l10 6v8H22z" fill="#f4f7ff"/>
+                <path d="M40 44h60l10 6H34z" fill="#3d63ff"/>
+                <path d="M22 54h88v4H22z" fill="#2744d8"/>
+                <!-- Dili: bubble head in a glass dome -->
+                <circle cx="56" cy="24" r="15" fill="#b3d2ff" fill-opacity=".35" stroke="#dfe9ff" stroke-width="1.5"/>
+                <rect x="45" y="17" width="23" height="14" rx="7" fill="#2448f2"/>
+                <path d="M51 21l3 3-3 3-3-3zM62 21l3 3-3 3-3-3z" fill="#fff"/>
+                <path d="M52.5 22.5l1.5 1.5-1.5 1.5zM63.5 22.5l1.5 1.5-1.5 1.5z" fill="#15161f"/>
+                <path d="M47 38c2-6 6-8 10-8s8 2 10 8z" fill="#3d68ff"/>
+                <ellipse cx="51" cy="16" rx="4" ry="2" fill="#fff" opacity=".7" transform="rotate(-25 51 16)"/>
+              </g>
+              <!-- Wheels: fat rear, smaller front -->
+              <g class="wheel"><circle cx="34" cy="62" r="13" fill="#1b1e29"/><circle cx="34" cy="62" r="7" fill="#e6eaf5"/><path d="M34 55v14M27 62h14" stroke="#3d63ff" stroke-width="2.2"/></g>
+              <g class="wheel"><circle cx="96" cy="64" r="11" fill="#1b1e29"/><circle cx="96" cy="64" r="6" fill="#e6eaf5"/><path d="M96 58v12M90 64h12" stroke="#3d63ff" stroke-width="2"/></g>
+            </svg>
+          </div>
+        </div>
+        <div class="ld-meta"><span id="ld-msg">Warming up the engine</span><b id="ld-pct">4%</b></div>
+      </div>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

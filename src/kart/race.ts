@@ -3,18 +3,22 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { DRIVE_LIMIT, EDGE, Track, laneX, newFrame, type Frame } from "./track";
+import { DRIVE_LIMIT, EDGE, ROAD_HALF, TRACKS, Track, laneX, newFrame, type Frame } from "./track";
+import { buildTown } from "./town";
+import { buildSkyway } from "./skyway";
 import { buildWorld, crowdTime, gridSlot, type Quality, type World } from "./world";
 import * as M from "./models";
 import * as T from "./textures";
-import { Confetti, Particles } from "./fx";
+import { Confetti, Particles, ReplayTape, SkidMarks } from "./fx";
 import { RaceAudio } from "./sound";
 import { Hud, ITEM_NAME, type ItemKind } from "./hud";
-import type { CharId } from "../../shared/rules";
+import { COURSE_INFO, ENDLESS_HEARTS, type CharId, type CourseId, type SkinId, type TrackId } from "../../shared/rules";
 import { MASCOT } from "./mascot";
 import { tickNature } from "./nature";
-import { gradePass } from "./grade";
-import { portrait } from "../ui/icons";
+import { ContactAO, gradePass, sanitizePass } from "./grade";
+import { portrait, skinPortrait } from "../ui/icons";
+import { F, S, botId, type GameEvent, type NetPlayer } from "../../shared/net";
+import type { RoomClient } from "../net/room";
 
 /**
  * DILI CART — a three-lap Grand Prix against the Custodians.
@@ -29,10 +33,9 @@ const TOP = 24;               // m/s with the gas held
 const CRUISE = 0.66;          // fraction of TOP when you let go of the gas
 const BOOST_TOP = 34;
 const CENTRIFUGAL = 0.3;
-const PAR_TIME = 150;
 const RIVALS = 7;
 
-export type TallyKey = "coins" | "turbos" | "stunts" | "passes" | "takedowns" | "laps";
+export type TallyKey = "coins" | "turbos" | "stunts" | "passes" | "takedowns" | "laps" | "distance" | "dodges";
 
 export interface RaceResult {
   tally: Record<TallyKey, number>;
@@ -46,6 +49,23 @@ export interface RaceResult {
   tricks: number;
   finishBonus: number;
   timeBonus: number;
+  laps: number;
+  track: CourseId;
+  /** Infinite mode: how the run went. */
+  endless?: EndlessStats;
+}
+
+export interface EndlessStats {
+  /** Metres covered. */
+  distance: number;
+  stage: number;
+  bestCombo: number;
+  /** Highest score multiplier reached. */
+  bestMult: number;
+  nearMisses: number;
+  gates: number;
+  heartsFound: number;
+  cause: string;
 }
 
 export interface RaceHooks {
@@ -56,9 +76,25 @@ export interface RaceHooks {
   onCut?(): void;
   /** The world is built and the first frame is about to draw. */
   onReady?(): void;
+  /**
+   * The GPU dropped this race's graphics (memory pressure, a driver reset)
+   * and they didn't come back: rebuild the race on a fresh context.
+   */
+  onRecover?(): void;
+}
+
+/** A multiplayer race: the room, and who's on the grid (in grid order). */
+export interface NetRace {
+  room: RoomClient;
+  raceId: number;
+  grid: NetPlayer[];
+  /** When the lights go out, if the room already said (a rejoin mid-race). */
+  goAt?: () => number;
 }
 
 export interface MountOptions {
+  /** Race other players in a room (see src/net/room.ts). */
+  net?: NetRace;
   /**
    * A live backdrop for the menus: every kart on autopilot, a camera director
    * cutting between broadcast shots, no HUD, no sound, no input.
@@ -70,6 +106,23 @@ export interface MountOptions {
    * kart drive itself. Silent, no HUD.
    */
   trailer?: boolean;
+  /** The player's equipped shop skin. */
+  skin?: SkinId | null;
+  /** Which track to race on. */
+  track?: TrackId;
+  /** Infinite mode on the Dlicom Skyway: four hearts, endless stages. */
+  endless?: boolean;
+  /** Pick up a race that lost its graphics exactly where it was (see snapshot()). */
+  resume?: RaceSnapshot;
+}
+
+/** Everything needed to carry a race over to a fresh graphics context. */
+export interface RaceSnapshot {
+  karts: { dist: number; lat: number; speed: number; purse: number }[];
+  raceT: number; time: number; lap: number; lapStart: number; bestLap: number;
+  score: number; tally: Record<TallyKey, number>; coins: number; takedowns: number; turbos: number; tricks: number;
+  item: ItemKind | null;
+  endless: { hearts: number; stage: number; combo: number; bestCombo: number; bestMult: number; nearMisses: number; gates: number; heartsFound: number; paidDist: number; nextWave: number; waveN: number } | null;
 }
 
 type ShotKind = "heli" | "chase" | "front" | "trackside" | "jump" | "low";
@@ -78,6 +131,11 @@ type ShotKind = "heli" | "chase" | "front" | "trackside" | "jump" | "low";
 const SILENT = new Proxy({}, { get: () => () => undefined }) as unknown as RaceAudio;
 
 type Phase = "load" | "intro" | "countdown" | "race" | "finish";
+
+/** Combo needed for each score multiplier, ×1 to ×5. */
+const MULT_AT = [0, 4, 10, 18, 28];
+/** Infinite: nothing spawns this close to the jump's lip or after its landing. */
+const GAP_CLEAR = [45, 25];
 
 interface Racer {
   i: number;
@@ -110,26 +168,96 @@ interface Racer {
   frozen: number;
   prevU: number;
   color: string;
+  /** Coins carried: each one adds a little top speed (up to 10); a spin-out drops 3. */
+  purse: number;
+  /** How far a Custodian will swerve for a coin (0 never, 1 always). */
+  greed: number;
+  /** Seconds a Custodian has spent sliding through the current bend. */
+  cornerT: number;
+  /** Already lost coins for the current spin-out. */
+  hurt: boolean;
+  /** Stable id every game in a room agrees on: a player's id, or bot0, bot1… */
+  id: string;
+  /** A person (here or remote); false for Custodian bots and players who left. */
+  human: boolean;
+  name: string;
+  /** Visual slide angle as last drawn (what the others are sent). */
+  yaw: number;
+  /** Multiplayer: states from the network, for karts another game drives. */
+  net: NetKart | null;
 }
 
-interface Coin { kind: T.CoinKind; u: number; lat: number; h: number; alive: boolean; respawn: number; pop: number; phase: number; }
+/** A kart driven by another game, drawn a moment in the past, interpolated. */
+interface NetKart {
+  buf: number[][];
+  /** How late states arrive (mean and spread, ms), and the render delay from them. */
+  lateMean: number;
+  lateDev: number;
+  /** The last couple of seconds of lateness samples. */
+  lates: number[];
+  /** The delay the samples call for; `delay` eases toward it. */
+  want: number;
+  /** Typical time between the states it sends (a slow device sends less often). */
+  gap: number;
+  delay: number;
+  primed: boolean;
+  yaw: number;
+  boost: number;
+  glide: number;
+  pitch: number;
+  tier: number;
+  flags: number;
+  /** How far ahead of its drawn position the kart really is (m), for standings. */
+  lead: number;
+  /** Along-track prediction added to the interpolated position (m, smoothed). */
+  ahead: number;
+  /** Where it was drawn last frame. */
+  shown: number;
+  label: THREE.Sprite | null;
+  shield: THREE.Mesh | null;
+}
+
+interface Coin {
+  kind: T.CoinKind; u: number; lat: number; h: number; alive: boolean; respawn: number; pop: number; phase: number;
+  /** Infinite: laid down by a wave, gone for good once taken or passed. */
+  dyn?: boolean; dist?: number;
+}
+/** Infinite: a spare heart floating over the road. */
+interface HeartPick { obj: THREE.Group; u: number; lat: number; dist: number; alive: boolean; }
 interface Box { u: number; lat: number; obj: THREE.Group; alive: boolean; respawn: number; phase: number; }
 interface Pad { u: number; lat: number; tex: THREE.Texture; }
 interface Hazard {
-  kind: "bollard" | "cone" | "drone" | "goo";
+  kind: "bollard" | "cone" | "drone" | "goo" | "laser" | "block";
   u: number; lat: number; r: number; obj: THREE.Object3D;
   life: number; phase: number; knocked: number; kv: THREE.Vector3; base: number; span: number;
   /** Warning ring painted on the road under a drone. */
   ring: THREE.Mesh | null;
+  /** Multiplayer: goo shared between games. */
+  hid?: string;
+  /** Infinite: a pooled obstacle placed by a wave, at this race distance. */
+  pooled?: boolean;
+  dist?: number;
+  /** Already got past it (or into it): no near-miss bonus twice. */
+  passed?: boolean;
+  /** Laser gates: beam live right now; sweep speed for drones and shifters. */
+  on?: boolean;
+  rate?: number;
 }
-interface Orb { u: number; lat: number; speed: number; life: number; obj: THREE.Object3D; }
+interface Orb { u: number; lat: number; speed: number; life: number; obj: THREE.Object3D; target: Racer; oid: string; }
+/** The player's Seeker Orb: flies up the track and homes in on the racer ahead. */
+interface Seeker { u: number; lat: number; speed: number; life: number; obj: THREE.Object3D; target: Racer | null; sid: string; mine: boolean; }
 
 const V = () => new THREE.Vector3();
+/** Multiplayer: send kart states every this many ms. */
+const SEND_MS = 50;
+const NO_RENDER = import.meta.env.DEV && new URLSearchParams(location.search).has("norender");
 
 export class DiliCart {
   private renderer!: THREE.WebGLRenderer;
   private composer!: EffectComposer;
   private bloom!: UnrealBloomPass;
+  /** Ambient occlusion, on capable machines during a real race only. */
+  private ao: ContactAO | null = null;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(64, 1, 0.4, 4000);
   private track = new Track();
@@ -137,7 +265,38 @@ export class DiliCart {
   private hud!: Hud;
   private audio = new RaceAudio();
   private sparks = new Particles(1400, true);
-  private puffs = new Particles(500, false);
+  private puffs = new Particles(900, false);
+  private skids: SkidMarks | null = null;
+  /** The last few seconds of every kart, for the replay after the finish. */
+  private tape: ReplayTape | null = null;
+  private poses: M.KartPose[] = [];
+  private replay: { t: number; from: number; to: number; shot: number; shotT: number; pos: THREE.Vector3; side: number } | null = null;
+  /** Live broadcast feed on the circuit's jumbotrons. */
+  private tv: { rt: THREE.WebGLRenderTarget; cam: THREE.PerspectiveCamera; screens: THREE.Mesh[]; n: number; shot: number; t: number; pos: THREE.Vector3 } | null = null;
+  private boostKick = 0;
+  private wasBoost = false;
+
+  // Multiplayer
+  private room: RoomClient | null = null;
+  private netRace: NetRace | null = null;
+  /** Racers by id, and the shared order bot messages index into. */
+  private byId = new Map<string, Racer>();
+  private order: string[] = [];
+  /** Server time the lights go out (0 until the room says). */
+  private goAt = 0;
+  private sendT = 0;
+  private netOff: (() => void)[] = [];
+  private nextId = 0;
+  private menuOpen = false;
+  /** Online: finishing times (room clock) by racer id, bots included. */
+  private finTimes = new Map<string, number>();
+  /** When each racer was first seen finished (for the standings list). */
+  private finSeen = new Map<number, number>();
+  private rankT = 0;
+  /** Goo used mid-jump, dropped when the kart lands. */
+  private gooOnLand = false;
+  /** Dev: per-frame positions of every kart, for smoothness tests. */
+  private trace: { t: number; k: Record<string, number[]> }[] | null = null;
   private confetti = new Confetti();
   private mountEl!: HTMLElement;
   private hooks!: RaceHooks;
@@ -158,7 +317,11 @@ export class DiliCart {
   private pads: Pad[] = [];
   private hazards: Hazard[] = [];
   private orbs: Orb[] = [];
+  private seekers: Seeker[] = [];
+  /** Ghost Mode: the player phases through karts, hazards and orbs. */
+  private ghostT = 0;
   private shield!: THREE.Mesh;
+  private magnet!: THREE.Group;
 
   // Player state
   private input = { left: false, right: false, gas: false, down: false };
@@ -181,7 +344,7 @@ export class DiliCart {
   private coinStreak = 0;
   private coinStreakT = 0;
   private score = 0;
-  private tally: Record<TallyKey, number> = { coins: 0, turbos: 0, stunts: 0, passes: 0, takedowns: 0, laps: 0 };
+  private tally: Record<TallyKey, number> = { coins: 0, turbos: 0, stunts: 0, passes: 0, takedowns: 0, laps: 0, distance: 0, dodges: 0 };
   private takedowns = 0;
   private turbos = 0;
   private tricks = 0;
@@ -195,6 +358,32 @@ export class DiliCart {
   private attackCool = 6;
   private result: RaceResult | null = null;
   private skipIntro = false;
+
+  private resumeFrom: RaceSnapshot | null = null;
+
+  // Infinite mode
+  private endless = false;
+  private rivals = RIVALS;
+  private hearts = ENDLESS_HEARTS;
+  private stage = 1;
+  /** Everyone's top speed, ×1 at stage one and rising each stage. */
+  private speedK = 1;
+  /** Clean moves chain into a combo that sets the score multiplier; a hit resets it. */
+  private combo = 0;
+  private comboIdle = 0;
+  private bestCombo = 0;
+  private bestMult = 1;
+  private nearMisses = 0;
+  private gates = 0;
+  private heartsFound = 0;
+  private wreck = "";
+  /** Distance already paid out in points, and where the next wave goes (race distance). */
+  private paidDist = 0;
+  private nextWave = 0;
+  private waveN = 0;
+  private pool: Record<"bollard" | "cone" | "drone" | "laser" | "block", Hazard[]> = { bollard: [], cone: [], drone: [], laser: [], block: [] };
+  private dynCoins: Coin[] = [];
+  private heartPicks: HeartPick[] = [];
 
   // Camera
   private camPos = V();
@@ -223,10 +412,19 @@ export class DiliCart {
   /* ================================================================ */
 
   private char: CharId = "dili";
+  private skin: SkinId | null = null;
+  private trackId: CourseId = "circuit";
+  private laps = LAPS;
   private attract = false;
   private trailer = false;
   /** Trailer: films the frame instead of the game's own cameras; returns the fov. */
   director: ((cam: THREE.PerspectiveCamera, dt: number) => number) | null = null;
+  /** Dev: let the player's kart drive itself (for soak tests). */
+  autopilot = false;
+  /** Trailer autopilot: fire items as they come. The intro film turns this off. */
+  autoItems = true;
+  /** Intro film (dev only): adjust a kart's pose before it's applied. */
+  poseOverride: ((i: number, pose: M.KartPose) => M.KartPose) | null = null;
   private shot = { kind: "heli" as ShotKind, t: 0, dur: 0, who: 0, n: 0, pos: V(), look: V(), side: 1 };
   private frameSkip = false;
   private skipped = 0;
@@ -242,8 +440,24 @@ export class DiliCart {
     this.mountEl = el;
     this.hooks = hooks;
     this.char = char;
+    this.skin = opts.skin ?? null;
+    this.endless = opts.endless === true && !opts.net;
+    this.resumeFrom = opts.resume ?? null;
+    this.trackId = this.endless ? "sky" : opts.track ?? "circuit";
+    if (this.trackId !== "circuit") this.track = new Track(TRACKS[this.trackId]);
+    this.laps = COURSE_INFO[this.trackId].laps;
+    if (this.endless) {
+      this.rivals = 5;
+      this.lastPos = this.rivals + 1;
+    }
+    this.audio.night = this.trackId === "town";
+    this.audio.sky = this.endless;
     this.attract = opts.attract === true;
     this.trailer = opts.trailer === true;
+    if (opts.net) {
+      this.netRace = opts.net;
+      this.room = opts.net.room;
+    }
     if (this.attract || this.trailer) {
       this.audio = SILENT;
       el.classList.add("attract");
@@ -252,11 +466,18 @@ export class DiliCart {
       resume: () => this.setPaused(false),
       restart: () => this.hooks.onRestart(),
       quit: () => this.hooks.onQuit(),
+    }, {
+      name: COURSE_INFO[this.trackId].name, laps: this.laps, night: this.trackId === "town", endless: this.endless,
+      online: opts.net ? { code: opts.net.room.code, people: Math.min(8, opts.net.grid.length) } : undefined,
     });
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+    // Error checks make every shader compile block: that was the in-race hang.
+    this.renderer.debug.checkShaderErrors = import.meta.env.DEV;
     // The attract backdrop sits behind the menus, so it can afford fewer pixels.
-    const maxRatio = this.trailer ? 1 : this.attract ? (this.quality === "low" ? 0.75 : 1) : this.quality === "low" ? 1.25 : 1.5;
+    // Retina-sharp on capable machines; the frame-rate watchdog steps it down if needed.
+    // Infinite keeps its frame rate first: retina screens draw at 1.5×.
+    const maxRatio = this.trailer ? 1 : this.attract ? (this.quality === "low" ? 0.75 : 1) : this.quality === "low" ? 1.25 : this.endless ? 1.5 : 2;
     if (this.trailer) this.quality = "high";
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, maxRatio));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -265,6 +486,27 @@ export class DiliCart {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     const cv = this.renderer.domElement;
+    // If the GPU drops the context (driver reset, memory pressure), don't sit
+    // on a black canvas: let it come back, then restart the race cleanly.
+    // Never leave a black screen: if the context doesn't come back on its
+    // own within a moment, rebuild the race on a new one.
+    let lostTimer = 0;
+    const recover = () => {
+      clearTimeout(lostTimer);
+      if (!this.alive || this.trailer) return;
+      if (this.hooks.onRecover) this.hooks.onRecover();
+      else if (!this.attract) this.hooks.onRestart();
+    };
+    cv.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      cancelAnimationFrame(this.raf);
+      clearTimeout(this.raf);
+      if (!this.alive) return;
+      this.hud?.waiting("Graphics reset — getting you back in…");
+      clearTimeout(lostTimer);
+      lostTimer = window.setTimeout(recover, 1500);
+    }, false);
+    cv.addEventListener("webglcontextrestored", recover, false);
     Object.assign(cv.style, { width: "100%", height: "100%", display: "block", position: "absolute", inset: "0" });
     el.prepend(cv);
 
@@ -287,7 +529,8 @@ export class DiliCart {
     // SVG portrait the menus use.
     const c = MASCOT[this.char];
     const img = new Image();
-    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(portrait(c.head, c.dome, c.mouth).replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" '));
+    const svg = this.skin === "quang" || this.skin === "cipher" ? skinPortrait(this.skin) : portrait(c.head, c.dome, c.mouth);
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg.replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" '));
     await Promise.race([
       Promise.all([
         document.fonts?.load("900 64px 'Inter'").catch(() => undefined),
@@ -298,32 +541,62 @@ export class DiliCart {
     ]);
     if (!this.alive) return;
 
-    this.world = buildWorld(this.scene, this.renderer, this.track, img.complete && img.naturalWidth ? img : null, this.quality);
+    const portraitImg = img.complete && img.naturalWidth ? img : null;
+    this.world = this.trackId === "town"
+      ? buildTown(this.scene, this.renderer, this.track, portraitImg, this.quality)
+      : this.trackId === "sky"
+        ? buildSkyway(this.scene, this.renderer, this.track, this.quality)
+        : buildWorld(this.scene, this.renderer, this.track, portraitImg, this.quality);
     this.scene.add(this.sparks.points, this.puffs.points, this.confetti.mesh);
+    const town = this.trackId === "town";
+    // On the wet street a slide wipes the water off, leaving a dull grey
+    // stripe; on the dry circuit it lays down rubber.
+    this.skids = new SkidMarks(this.quality === "low" ? 900 : 2200, town ? "#56607a" : "#0d0d12", town ? 0.32 : 0.5);
+    this.scene.add(this.skids.mesh);
     this.buildRacers();
+    if (!this.attract) this.tape = new ReplayTape(this.racers.length);
+    this.buildTv();
     this.buildPickups();
     this.shield = M.shieldBubble();
     this.shield.visible = false;
     this.racers[0].model.body.add(this.shield);
+    this.magnet = M.magnetAura();
+    this.magnet.visible = false;
+    this.racers[0].model.body.add(this.magnet);
 
     this.hud.buildMap(this.track.outline(10), this.racers.length);
+    for (const r of this.racers) if (r.human && !r.player) this.hud.mapHuman(r.i);
+    this.hud.buildRank(this.racers.map((r) => ({ name: r.name || (r.id.startsWith("bot") ? `Custodian ${Number(r.id.slice(3)) + 1}` : ""), color: r.color, me: r.player, human: r.human })));
 
     const composerTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: this.quality === "low" ? 2 : 4 });
     this.composer = new EffectComposer(this.renderer, composerTarget);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+    // AO pays off in the sunlit stadium; at night the city is lit by neon
+    // and the frame budget goes further without it.
+    if (this.quality === "high" && !this.attract && !this.trailer && this.trackId === "circuit") {
+      this.ao = new ContactAO(this.scene, this.camera, 256, 256);
+      this.composer.addPass(this.ao);
+      // Softer sun shadows to go with it.
+      this.world.sun.shadow.radius = 2.5;
+    }
+    this.composer.addPass(sanitizePass());
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.45, 2.9);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
-    this.composer.addPass(gradePass());
+    this.grade = gradePass();
+    this.composer.addPass(this.grade);
     this.resize();
 
     // Warm the GPU: compile every shader before the first visible frame.
     this.placeAll(0);
+    this.captureReflections();
     if (this.attract) this.startAttract();
+    else if (this.resumeFrom) this.resume(this.resumeFrom);
     else this.startIntro();
-    this.renderer.compile(this.scene, this.camera);
+    this.warmUp();
 
     this.hud.loaded();
+    if (this.room) this.joinNet();
     if (this.trailer) {
       this.hooks.onReady?.();
       return;
@@ -335,6 +608,18 @@ export class DiliCart {
       // Test hooks: step the simulation by hand (the preview pane throttles rAF).
       const w = window as unknown as Record<string, unknown>;
       w.__race = this;
+      // Multiplayer probes: every kart as this game sees it, and a per-frame
+      // trace of the network karts (to measure smoothness).
+      w.__net = () => ({
+        phase: this.phase, goAt: this.goAt, now: this.room?.now() ?? 0, wall: Date.now(), clk: this.room ? (this.room.now() - this.goAt) / 1000 : 0, host: this.room?.isHost() ?? false, rtt: this.room?.rtt ?? 0,
+        pos: this.lastPos, finished: this.racers[0].finished, raceT: this.raceT,
+        karts: this.racers.map((r) => ({ id: r.id, human: r.human, sim: this.sims(r), dist: +r.dist.toFixed(2), lat: +r.lat.toFixed(2), speed: +r.speed.toFixed(1), delay: r.net ? Math.round(r.net.delay) : 0, buf: r.net?.buf.length ?? 0, late: r.net ? Math.round(r.net.lateMean) : 0, dev: r.net ? Math.round(r.net.lateDev) : 0, gap: r.net ? Math.round(r.net.gap) : 0 })),
+        fps: this.frameMs.length ? Math.round(1000 / (this.frameMs.reduce((a, b) => a + b, 0) / this.frameMs.length)) : 0,
+      });
+      w.__room = this.room;
+      w.__fins = () => Object.fromEntries([...this.finTimes].map(([k, v]) => [k, +v.toFixed(2)]));
+      w.__trace = (on: boolean) => { this.trace = on ? [] : null; return this.trace; };
+      w.__traced = () => this.trace;
       w.__step = (sec: number, fps = 60) => {
         const n = Math.max(0, Math.round(sec * fps));
         for (let i = 0; i < n; i++) { this.update(1 / fps); this.pressed.clear(); }
@@ -344,6 +629,20 @@ export class DiliCart {
       };
       w.__keys = (k: Partial<typeof this.input>) => Object.assign(this.input, k);
       w.__press = (code: string) => this.pressed.add(code);
+      w.__nearFinish = () => { const p = this.racers[0]; p.dist = this.laps * this.track.length - 12; this.lap = this.laps; this.camReady = false; };
+      // Average brightness of a freshly rendered frame (0..255), to catch black frames.
+      w.__lum = () => {
+        this.composer.render();
+        const c = document.createElement("canvas");
+        c.width = 32; c.height = 18;
+        const g = c.getContext("2d")!;
+        g.drawImage(this.renderer.domElement, 0, 0, 32, 18);
+        const d = g.getImageData(0, 0, 32, 18).data;
+        let s = 0;
+        for (let i = 0; i < d.length; i += 4) s += (d[i] + d[i + 1] + d[i + 2]) / 3;
+        return s / (d.length / 4);
+      };
+      w.__use = (k: ItemKind) => { this.item = k; this.useItem(this.racers[0]); };
       // Free camera for inspection: render from anywhere and save the frame.
       w.__cam = async (px: number, py: number, pz: number, tx: number, ty: number, tz: number, name = "cam") => {
         this.camera.position.set(px, py, pz);
@@ -379,9 +678,14 @@ export class DiliCart {
 
   private buildRacers() {
     const shadowTex = T.blobTex("rgba(10,12,40,.62)", "rgba(10,12,40,0)");
-    const make = (i: number, look: M.KartLook, slot: number) => {
-      const model = new M.KartModel(look, shadowTex);
+    const make = (i: number, look: M.KartLook, slot: number, id = i === 0 ? "me" : botId(i - 1), human = i === 0, name = "") => {
+      const lite = this.quality === "low";
+      const model = new M.KartModel(look, shadowTex, { lite });
+      // Phones: only your own kart casts into the shadow map; the rest keep
+      // their soft blob shadow on the road.
+      if (lite && i !== 0) model.noShadows();
       this.scene.add(model.root, model.shadowRoot);
+      if (this.trackId === "town") model.lightsOn();
       const g = gridSlot(slot);
       const r: Racer = {
         i, player: i === 0, model,
@@ -389,88 +693,69 @@ export class DiliCart {
         hop: 0, hopV: 0, squash: 1, air: false, y: 0, vy: 0, airT: 0,
         spin: 0, spinAng: 0, flip: 0, boostT: 0, finished: false,
         skill: 1, bias: 0, aggro: 0, itemT: 12, shoveT: 0, bumpT: 0, frozen: 0,
-        prevU: 0, color: look.trim,
+        prevU: 0, color: look.trim, purse: 0, greed: 0, cornerT: 0, hurt: false,
+        id, human, name, yaw: 0, net: null,
       };
       r.prevU = this.track.wrap(this.track.startU + r.dist);
       this.racers.push(r);
+      this.byId.set(id, r);
       return r;
     };
-    // The player starts at the back of the grid, like the reference — the
-    // whole race is a climb through the field.
-    make(0, M.DRIVER_LOOKS[this.char], RIVALS);
-    // Front of the grid is quickest. All of them are a touch slower than a
-    // player holding the gas, so passes come steadily rather than in a burst.
-    const skills = [0.955, 0.94, 0.925, 0.91, 0.895, 0.88, 0.865];
-    for (let k = 0; k < RIVALS; k++) {
-      const r = make(k + 1, M.RIVAL_LOOKS[k], k);
-      r.skill = skills[k];
+    const skills = [0.97, 0.961, 0.952, 0.943, 0.934, 0.925, 0.916];
+    const bot = (r: Racer, k: number) => {
+      r.skill = skills[k % skills.length];
       r.bias = ((k * 37) % 7) / 3 - 1;
       r.aggro = k % 3 === 0 ? 0.9 : k % 3 === 1 ? 0.5 : 0.2;
-      r.itemT = 10 + k * 2.3;
+      r.itemT = 8 + k * 1.8;
+      r.greed = [0.4, 0.9, 0.6, 0.85, 0.35, 0.8, 0.7][k % 7];
+    };
+
+    if (this.netRace) {
+      // Online: the people at the back of the grid in join order, Custodian
+      // bots filling the front. Every game builds the same order.
+      const grid = this.netRace.grid.slice(0, RIVALS + 1);
+      const me = this.room!.you;
+      const bots = RIVALS + 1 - grid.length;
+      this.order = [...grid.map((g) => g.id), ...Array.from({ length: bots }, (_, k) => botId(k))];
+      const mine = grid.find((g) => g.id === me);
+      make(0, M.lookFor(mine?.char ?? this.char, mine ? mine.skin : this.skin), bots + Math.max(0, grid.findIndex((g) => g.id === me)), me, true, mine?.name ?? "");
+      grid.forEach((g, k) => {
+        if (g.id === me) return;
+        const r = make(this.racers.length, M.lookFor(g.char, g.skin), bots + k, g.id, true, g.name);
+        r.net = this.newNetKart(r);
+      });
+      for (let k = 0; k < bots; k++) {
+        const r = make(this.racers.length, M.RIVAL_LOOKS[k], k, botId(k), false);
+        bot(r, k);
+        r.net = this.newNetKart(r);
+      }
+      return;
+    }
+    // The player starts at the back of the grid, like the reference — the
+    // whole race is a climb through the field.
+    make(0, M.lookFor(this.char, this.skin), this.rivals);
+    // Front of the grid is quickest. All of them are a touch slower than a
+    // player holding the gas, so passes come steadily rather than in a burst.
+    for (let k = 0; k < this.rivals; k++) {
+      const r = make(k + 1, M.RIVAL_LOOKS[k], k);
+      bot(r, k);
     }
   }
 
   /** Coins, item boxes, boost pads and hazards, all placed by landmark. */
   private buildPickups() {
-    const c = this.track.ctrlU;
     const tr = this.track;
     const coin = (kind: T.CoinKind, u: number, lat: number, h = 1.15) =>
       this.coins.push({ kind, u: tr.wrap(u), lat, h, alive: true, respawn: 0, pop: 0, phase: Math.random() * 6 });
-
-    // Main straight: two rails of coins.
-    for (let k = 0; k < 5; k++) {
-      coin("dli", tr.startU + 46 + k * 5, laneX(0));
-      coin("dli", tr.startU + 46 + k * 5, laneX(3));
-    }
-    // Top hairpin: an arc on the inside line, with an ETH at the apex.
-    for (let k = 0; k < 6; k++) {
-      const u = c[3] + 6 + k * ((c[5] - c[3]) / 6);
-      coin(k === 3 ? "eth" : "dli", u, 4.8);
-    }
-    // BTC on the outside of the hairpin exit — you have to commit to it.
-    coin("btc", c[6] - 4, -6.8);
-    // Back straight, lined up for the jump.
-    for (let k = 0; k < 4; k++) coin("dli", c[7] - 18 + k * 6, laneX(1) + 1);
-    // Over the gap: coins along the glide arc, BTC at the top.
-    const lipY = tr.point(tr.lipU, 0, 0).y + 0.9;
-    [[8, "dli"], [15, "eth"], [22, "btc"], [30, "eth"], [38, "dli"]].forEach(([dx, k]) => {
-      const x = dx as number;
-      const t = x / 24;
-      const y = lipY + 7.5 * t - 5 * t * t;
-      const u = tr.lipU + x;
-      const road = tr.point(u, 0, 0).y;
-      coin(k as T.CoinKind, u, 0, Math.max(1.4, y - road + 0.4));
-    });
-    // S-bends: coins weaving along the ideal line.
-    for (let k = 0; k < 8; k++) {
-      const u = c[14] + k * ((c[17] - c[14]) / 8);
-      coin(k === 4 ? "eth" : "dli", u, Math.sin(k * 0.9) * 5);
-    }
-    // Bottom hairpin exit: two ETH on the edge of the curb.
-    coin("eth", c[19] - 10, -8.2);
-    coin("eth", c[19] - 4, -8.2);
-
-    // Instanced coin meshes, one per kind.
-    for (const kind of ["dli", "eth", "btc"] as T.CoinKind[]) {
-      const n = this.coins.filter((x) => x.kind === kind).length;
-      const im = new THREE.InstancedMesh(M.coinGeometry(kind), M.coinMaterials(kind), n);
-      im.castShadow = true;
-      im.frustumCulled = false;
-      this.scene.add(im);
-      this.coinMesh.set(kind, im);
-    }
-
-    // Item box rows: one per lane.
-    const glyph = T.itemGlyphTex();
-    for (const u of [tr.startU + 120, c[10] + 18, c[16] - 12]) {
+    const face = T.itemFaceTex();
+    const spark = T.sparkleTex();
+    const boxRow = (u: number) => {
       for (let l = 0; l < 4; l++) {
-        const obj = M.itemBox(glyph);
+        const obj = M.itemBox(face, spark);
         this.scene.add(obj);
         this.boxes.push({ u: tr.wrap(u), lat: laneX(l), obj, alive: true, respawn: 0, phase: l * 0.7 });
       }
-    }
-
-    // Boost pads: before the jump (two), hairpin exit, S entry, onto the straight.
+    };
     const chev = T.chevronTex();
     const frame = T.padFrameTex();
     const pad = (u: number, lat: number) => {
@@ -480,12 +765,6 @@ export class DiliCart {
       this.scene.add(g);
       this.pads.push({ u: tr.wrap(u), lat, tex: g.userData.chev as THREE.Texture });
     };
-    pad(c[7] + 4, laneX(1));
-    pad(c[7] + 4, laneX(2));
-    pad(c[6] + 12, laneX(2));
-    pad(c[12] + 8, laneX(1));
-    pad(c[19] + 6, laneX(2));
-
     // Hazards — always with an obvious free lane.
     const stripes = T.stripeTex("#ff7a1a", "#ffffff", 4);
     const hz = (kind: Hazard["kind"], u: number, lat: number) => {
@@ -499,32 +778,235 @@ export class DiliCart {
       this.hazards.push(h);
       return h;
     };
-    hz("bollard", c[2] + 14, laneX(0));
-    hz("bollard", c[2] + 14, laneX(1));
-    hz("bollard", c[11] + 4, laneX(3));
-    hz("bollard", c[11] + 4, laneX(2));
-    hz("bollard", c[15] + 2, laneX(1) + 0.6);
-    for (let k = 0; k < 3; k++) hz("cone", c[13] + 6 + k * 2.2, laneX(3) + (k - 1) * 1.1);
-    for (let k = 0; k < 3; k++) hz("cone", c[4] + 3 + k * 2.2, laneX(0) - 0.3 + (k % 2) * 0.8);
     const ringMat = new THREE.MeshBasicMaterial({
       color: "#ff3355", transparent: true, opacity: 0.55,
       depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3,
     });
     const ringGeo = new THREE.RingGeometry(1.1, 1.55, 32).rotateX(-Math.PI / 2);
-    const addRing = (h: Hazard) => {
+    const drone = (u: number, span: number, phase = 0) => {
+      const h = hz("drone", u, 0);
       h.ring = new THREE.Mesh(ringGeo, ringMat);
       this.scene.add(h.ring);
+      h.span = span;
+      h.phase += phase;
+      return h;
     };
-    const d1 = hz("drone", c[7] - 34, 0);
-    addRing(d1);
-    d1.span = 6.5;
-    const d2 = hz("drone", c[10] + 44, 0);
-    d2.span = 6.5;
-    d2.phase += Math.PI;
-    addRing(d2);
-    const d3 = hz("drone", c[18] + 6, 0);
-    d3.span = 5.5;
-    addRing(d3);
+    // Over the gap: coins along the glide arc, BTC at the top.
+    const glideCoins = () => {
+      const lipY = tr.point(tr.lipU, 0, 0).y + 0.9;
+      [[8, "dli"], [15, "eth"], [22, "btc"], [30, "eth"], [38, "dli"]].forEach(([dx, k]) => {
+        const x = dx as number;
+        const t = x / 24;
+        const y = lipY + 7.5 * t - 5 * t * t;
+        const u = tr.lipU + x;
+        const road = tr.point(u, 0, 0).y;
+        coin(k as T.CoinKind, u, 0, Math.max(1.4, y - road + 0.4));
+      });
+    };
+
+    const c = tr.ctrlU;
+    if (this.trackId === "sky") {
+      // The Skyway's fixed furniture: a few coin lines, item boxes and pads.
+      // Infinite mode's waves lay down everything else as you go.
+      for (let k = 0; k < 6; k++) {
+        coin("dli", tr.startU + 40 + k * 5, laneX(1));
+        coin("dli", tr.startU + 40 + k * 5, laneX(2));
+      }
+      boxRow(tr.startU + 120);
+      for (const i of [5, 13, 18, 22]) boxRow(c[i]);
+      for (let k = 0; k < 6; k++) coin(k === 3 ? "eth" : "dli", c[4] + k * ((c[6] - c[4]) / 6), 4.6);
+      for (let k = 0; k < 8; k++) coin(k === 4 ? "eth" : "dli", c[15] + k * ((c[17] - c[15]) / 8), Math.sin(k * 0.9) * 5);
+      coin("btc", c[19] + 4, -7.6);
+      pad(c[9] + 2, laneX(1));
+      pad(c[9] + 2, laneX(2));
+      pad(c[12] + 24, laneX(1));
+      pad(c[20] + 6, laneX(2));
+      glideCoins();
+      if (this.endless) this.buildPools(stripes, ringGeo, ringMat);
+    } else if (this.trackId === "town") {
+      // Boulevard: two rails of coins, then a row of boxes.
+      for (let k = 0; k < 5; k++) {
+        coin("dli", tr.startU + 36 + k * 5, laneX(0));
+        coin("dli", tr.startU + 36 + k * 5, laneX(3));
+      }
+      boxRow(tr.startU + 80);
+      // First corner: an arc on the inside with an ETH at the apex.
+      for (let k = 0; k < 5; k++) coin(k === 2 ? "eth" : "dli", c[3] + k * ((c[4] - c[3]) / 5), 5);
+      // High street: a zigzag, and a BTC tucked against the far curb.
+      for (let k = 0; k < 7; k++) coin("dli", c[5] + k * 6, (k % 2 ? 1 : -1) * 4.2);
+      coin("btc", c[6] + 6, -7.6);
+      boxRow(c[6] - 8);
+      // The ramp: coins up the middle, boost pads, and over the canal.
+      for (let k = 0; k < 4; k++) coin("dli", c[8] - 14 + k * 5, laneX(2) - 0.6);
+      pad(c[8] + 6, laneX(1));
+      pad(c[8] + 6, laneX(2));
+      glideCoins();
+      // Waterfront: ETH on the curb edge.
+      coin("eth", c[11] + 4, 8.2);
+      coin("eth", c[11] + 10, 8.2);
+      pad(c[12] + 10, laneX(1));
+      // Market street: weave along the racing line.
+      for (let k = 0; k < 8; k++) coin(k === 4 ? "eth" : "dli", c[13] + k * ((c[16] - c[13]) / 8), Math.sin(k * 0.9) * 5);
+      boxRow(c[14] + 4);
+      coin("btc", c[16] + 4, 7.6);
+      pad(c[17] + 4, laneX(2));
+      // Hazards.
+      hz("bollard", c[2] - 8, laneX(0));
+      hz("bollard", c[2] - 8, laneX(1));
+      for (let k = 0; k < 3; k++) hz("cone", c[5] - 6 + k * 2.2, laneX(3) + (k - 1) * 1.1);
+      hz("bollard", c[11] + 16, laneX(3));
+      hz("bollard", c[11] + 16, laneX(2));
+      for (let k = 0; k < 3; k++) hz("cone", c[15] + 3 + k * 2.2, laneX(0) - 0.3 + (k % 2) * 0.8);
+      drone(c[7] - 16, 6.5);
+      drone(c[13] + 10, 6.5, Math.PI);
+      drone(c[17] - 6, 5.5);
+    } else {
+      // Main straight: two rails of coins.
+      for (let k = 0; k < 5; k++) {
+        coin("dli", tr.startU + 46 + k * 5, laneX(0));
+        coin("dli", tr.startU + 46 + k * 5, laneX(3));
+      }
+      // Top hairpin: an arc on the inside line, with an ETH at the apex.
+      for (let k = 0; k < 6; k++) {
+        const u = c[3] + 6 + k * ((c[5] - c[3]) / 6);
+        coin(k === 3 ? "eth" : "dli", u, 4.8);
+      }
+      // BTC on the outside of the hairpin exit — you have to commit to it.
+      coin("btc", c[6] - 4, -6.8);
+      // Back straight, lined up for the jump.
+      for (let k = 0; k < 4; k++) coin("dli", c[7] - 18 + k * 6, laneX(1) + 1);
+      glideCoins();
+      // S-bends: coins weaving along the ideal line.
+      for (let k = 0; k < 8; k++) {
+        const u = c[14] + k * ((c[17] - c[14]) / 8);
+        coin(k === 4 ? "eth" : "dli", u, Math.sin(k * 0.9) * 5);
+      }
+      // Bottom hairpin exit: two ETH on the edge of the curb.
+      coin("eth", c[19] - 10, -8.2);
+      coin("eth", c[19] - 4, -8.2);
+      for (const u of [tr.startU + 120, c[10] + 18, c[16] - 12]) boxRow(u);
+      // Boost pads: before the jump (two), hairpin exit, S entry, onto the straight.
+      pad(c[7] + 4, laneX(1));
+      pad(c[7] + 4, laneX(2));
+      pad(c[6] + 12, laneX(2));
+      pad(c[12] + 8, laneX(1));
+      pad(c[19] + 6, laneX(2));
+      hz("bollard", c[2] + 14, laneX(0));
+      hz("bollard", c[2] + 14, laneX(1));
+      hz("bollard", c[11] + 4, laneX(3));
+      hz("bollard", c[11] + 4, laneX(2));
+      hz("bollard", c[15] + 2, laneX(1) + 0.6);
+      for (let k = 0; k < 3; k++) hz("cone", c[13] + 6 + k * 2.2, laneX(3) + (k - 1) * 1.1);
+      for (let k = 0; k < 3; k++) hz("cone", c[4] + 3 + k * 2.2, laneX(0) - 0.3 + (k % 2) * 0.8);
+      drone(c[7] - 34, 6.5);
+      drone(c[10] + 44, 6.5, Math.PI);
+      drone(c[18] + 6, 5.5);
+    }
+
+    // Instanced coin meshes, one per kind.
+    for (const kind of ["dli", "eth", "btc"] as T.CoinKind[]) {
+      const n = this.coins.filter((x) => x.kind === kind).length;
+      const im = new THREE.InstancedMesh(M.coinGeometry(kind), M.coinMaterials(kind), n);
+      im.castShadow = true;
+      im.frustumCulled = false;
+      this.scene.add(im);
+      this.coinMesh.set(kind, im);
+    }
+  }
+
+  /**
+   * Infinite mode keeps every obstacle, coin and heart it will ever need in
+   * pools, built (and their shaders compiled) at load, so nothing is created
+   * mid-run. Unused pieces wait far below the clouds.
+   */
+  private buildPools(stripes: THREE.Texture, ringGeo: THREE.BufferGeometry, ringMat: THREE.Material) {
+    const park = (o: THREE.Object3D) => { o.position.set(0, -600, 0); this.scene.add(o); return o; };
+    const make = (kind: keyof DiliCart["pool"], obj: THREE.Object3D, r: number) => {
+      obj.traverse((o) => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = kind !== "laser"; });
+      park(obj);
+      const h: Hazard = { kind, u: 0, lat: 0, r, obj, life: Infinity, phase: 0, knocked: 0, kv: V(), base: 0, span: 0, ring: null, pooled: true, dist: 0 };
+      if (kind === "drone") { h.ring = new THREE.Mesh(ringGeo, ringMat); park(h.ring); }
+      this.pool[kind].push(h);
+    };
+    for (let k = 0; k < 56; k++) make("bollard", M.bollard(stripes), 0.9);
+    for (let k = 0; k < 16; k++) make("cone", M.cone(), 0.7);
+    for (let k = 0; k < 8; k++) make("drone", M.drone(), 0.95);
+    for (let k = 0; k < 6; k++) make("laser", M.laserGate(DRIVE_LIMIT + 0.6), DRIVE_LIMIT + 1);
+    for (let k = 0; k < 10; k++) make("block", M.shifter(8.2), 4.1);
+    for (let k = 0; k < 2; k++) this.heartPicks.push({ obj: park(M.heartPickup()) as THREE.Group, u: 0, lat: 0, dist: 0, alive: false });
+    for (let k = 0; k < 48; k++) {
+      const c: Coin = { kind: "dli", u: 0, lat: 0, h: 1.15, alive: false, respawn: Infinity, pop: 0, phase: Math.random() * 6, dyn: true, dist: 0 };
+      this.coins.push(c);
+      this.dynCoins.push(c);
+    }
+  }
+
+  /** The race as it stands, to rebuild it after a lost graphics context. */
+  snapshot(): RaceSnapshot | null {
+    if (this.phase !== "race" || this.attract || this.trailer) return null;
+    return {
+      karts: this.racers.map((r) => ({ dist: r.dist, lat: r.lat, speed: r.speed, purse: r.purse })),
+      raceT: this.raceT, time: this.time, lap: this.lap, lapStart: this.lapStart, bestLap: this.bestLap,
+      score: this.score, tally: { ...this.tally }, coins: this.coinCount, takedowns: this.takedowns, turbos: this.turbos, tricks: this.tricks,
+      item: this.rolling ? null : this.item,
+      endless: this.endless ? {
+        hearts: this.hearts, stage: this.stage, combo: this.combo, bestCombo: this.bestCombo, bestMult: this.bestMult,
+        nearMisses: this.nearMisses, gates: this.gates, heartsFound: this.heartsFound, paidDist: this.paidDist, nextWave: this.nextWave, waveN: this.waveN,
+      } : null,
+    };
+  }
+
+  /** Straight back into the race from a snapshot: no intro, no countdown. */
+  private resume(sn: RaceSnapshot) {
+    sn.karts.forEach((k, i) => {
+      const r = this.racers[i];
+      if (!r) return;
+      // Online, other players' karts come from the network anyway.
+      if (r.net && !this.sims(r)) return;
+      r.dist = k.dist; r.lat = k.lat; r.speed = k.speed; r.purse = k.purse;
+      r.prevU = this.track.wrap(this.track.startU + r.dist);
+    });
+    Object.assign(this, {
+      raceT: sn.raceT, time: sn.time, lap: sn.lap, lapStart: sn.lapStart, bestLap: sn.bestLap,
+      score: sn.score, tally: { ...sn.tally }, coinCount: sn.coins, takedowns: sn.takedowns, turbos: sn.turbos, tricks: sn.tricks,
+    });
+    if (sn.endless && this.endless) {
+      Object.assign(this, sn.endless);
+      this.speedK = 1 + Math.min(0.5, (this.stage - 1) * 0.065);
+      this.audio.hurry(1 + Math.min(0.2, (this.stage - 1) * 0.03));
+    }
+    this.phase = "race";
+    this.phaseT = 10;
+    this.camReady = false;
+    this.hitCool = 2;
+    this.hud.title(false);
+    this.hud.racing(true);
+    this.audio.start();
+    this.audio.setMusic(1);
+    if (sn.item) { this.item = sn.item; this.hud.item(sn.item); }
+    this.placeAll(0);
+  }
+
+  /**
+   * Compile every shader the race can need before the first frame. Things
+   * that only appear mid-race (the Custodians' goo and freeze orbs, your
+   * seeker, the shield, hidden effects) are shown for the compile and put
+   * back, so nothing stalls the game the first time it shows up.
+   */
+  private warmUp() {
+    const temps = [M.goo(), M.orb(), M.seeker()];
+    for (const t of temps) { t.position.set(0, -600, 0); this.scene.add(t); }
+    const hidden: THREE.Object3D[] = [];
+    this.scene.traverse((o) => { if (!o.visible) { hidden.push(o); o.visible = true; } });
+    // Compile for where the scene really draws: the post-processing target
+    // (no tone mapping, linear colour). Compiling for the screen built
+    // different shaders, so each object compiled again on first sight.
+    const prev = this.renderer.getRenderTarget();
+    this.renderer.setRenderTarget(this.composer.readBuffer);
+    this.renderer.compile(this.scene, this.camera);
+    this.renderer.setRenderTarget(prev);
+    for (const o of hidden) o.visible = false;
+    for (const t of temps) this.scene.remove(t);
   }
 
   /* ================================================================ */
@@ -535,11 +1017,11 @@ export class DiliCart {
     const down = e.type === "keydown";
     const k = e.code;
     if (down && (k === "Escape" || k === "KeyP")) {
-      if (this.phase === "race" || this.phase === "countdown") this.setPaused(!this.paused);
+      if (this.phase === "race" || this.phase === "countdown") this.setPaused(!(this.paused || this.menuOpen));
       e.preventDefault();
       return;
     }
-    if (down && k === "Enter" && this.paused) { this.setPaused(false); return; }
+    if (down && k === "Enter" && (this.paused || this.menuOpen)) { this.setPaused(false); return; }
     let handled = true;
     switch (k) {
       case "ArrowLeft": case "KeyA": this.input.left = down; break;
@@ -557,8 +1039,11 @@ export class DiliCart {
   };
 
   private onTap = () => {
-    if (this.phase === "intro" && this.phaseT > 0.3) this.skipIntro = true;
+    // Real time, not game time: on a slow phone the fly-in's first frames
+    // can take a while, and the tap should still count.
+    if (this.phase === "intro" && performance.now() - this.introAt > 350) this.skipIntro = true;
   };
+  private introAt = 0;
 
   private onBlur = () => {
     this.input = { left: false, right: false, gas: false, down: false };
@@ -571,6 +1056,8 @@ export class DiliCart {
 
   private setPaused(p: boolean) {
     if (this.phase !== "race" && this.phase !== "countdown") p = false;
+    // Online the race goes on underneath the menu.
+    if (this.room) { this.hud.paused(p); this.menuOpen = p; return; }
     this.paused = p;
     this.hud.paused(p);
     this.audio.setMusic(p ? 0.3 : 1);
@@ -584,7 +1071,10 @@ export class DiliCart {
 
   private frame = (now: number) => {
     if (!this.alive) return;
-    this.raf = requestAnimationFrame(this.frame);
+    // Dev tests without drawing tick on a 60 Hz timer (headless rAF is
+    // either throttled or, unthrottled, a busy loop).
+    if (NO_RENDER) this.raf = window.setTimeout(() => this.frame(performance.now()), 16) as unknown as number;
+    else this.raf = requestAnimationFrame(this.frame);
     this.timer.update(now);
     // The rAF timestamp can land a hair before the timer's reset point, so
     // the raw delta can be slightly negative; never let time run backwards.
@@ -595,10 +1085,17 @@ export class DiliCart {
       this.frameSkip = !this.frameSkip;
       if (this.frameSkip) { this.skipped += raw; return; }
     }
-    const dt = Math.min(raw + this.skipped, 1 / 20);
+    // Online a slow device must keep real time with the others, so it may
+    // take bigger steps; offline a hitch just slows the game for a frame.
+    const dt = Math.min(raw + this.skipped, this.room ? 1 / 12 : 1 / 20);
     this.skipped = 0;
     if (!this.paused) this.update(dt);
-    this.composer.render();
+    // Dev: ?norender=1 runs the game without drawing, so headless
+    // multiplayer tests get a real frame rate.
+    if (!NO_RENDER) {
+      this.renderTv(dt);
+      this.composer.render();
+    }
     this.pressed.clear();
     this.watchPerf(raw);
   };
@@ -611,8 +1108,15 @@ export class DiliCart {
     switch (this.phase) {
       case "intro": this.updateIntro(); break;
       case "countdown": this.updateCountdown(); break;
-      case "race": this.raceT += dt; break;
-      case "finish": if (this.phaseT > 3.4 && !this.result) this.endRace(); break;
+      case "race":
+        // Online the race clock is the room's, so every game agrees on it.
+        if (this.room && this.goAt) this.raceT = Math.max(0, (this.room.now() - this.goAt) / 1000);
+        else this.raceT += dt;
+        break;
+      case "finish":
+        if (this.phaseT > 3.4 && !this.result) this.endRace();
+        if (this.result && !this.replay && this.phaseT > 5.5) this.startReplay();
+        break;
     }
 
     const moving = this.phase === "race" || this.phase === "finish";
@@ -620,19 +1124,27 @@ export class DiliCart {
       for (const r of this.racers) this.updateRival(r, dt);
       this.bumps(dt);
       // Endless race: roll everyone back a lap together so nobody "finishes".
-      if (player.dist > this.track.length * 2) for (const r of this.racers) { r.dist -= this.track.length; r.finished = false; }
+      if (player.dist > this.track.length * 2) for (const r of this.racers) { r.dist -= this.track.length; r.finished = false; this.finSeen.clear(); }
     } else if (moving) {
       this.updatePlayer(player, dt);
-      for (let k = 1; k < this.racers.length; k++) this.updateRival(this.racers[k], dt);
+      for (let k = 1; k < this.racers.length; k++) if (this.sims(this.racers[k])) this.updateRival(this.racers[k], dt);
       this.bumps(dt);
       this.collide(player, dt);
       this.updateOrbs(dt);
+      this.updateSeekers(dt);
       this.standings();
+      if (this.endless) this.updateEndless(dt);
     }
+    if (this.room) this.netTick(dt);
     this.updateHazards(dt);
     this.updateProps(dt);
-    this.placeAll(dt);
-    this.driftFx();
+    if (this.replay) this.playReplay(dt);
+    else {
+      this.placeAll(dt);
+      this.recordTape(dt);
+      this.driftFx();
+    }
+    this.skids?.update();
     this.sparks.update(dt);
     this.puffs.update(dt);
     this.confetti.update(dt);
@@ -778,6 +1290,7 @@ export class DiliCart {
   private startIntro() {
     this.phase = "intro";
     this.phaseT = 0;
+    this.introAt = performance.now();
     const tr = this.track;
     const p = this.racers[0];
     const u = tr.wrap(tr.startU + p.dist);
@@ -788,11 +1301,13 @@ export class DiliCart {
       base.clone().addScaledVector(f.tan, fw).addScaledVector(f.side, sd).add(new THREE.Vector3(0, up, 0));
     const gate = tr.point(tr.startU, 0, 0);
     // Swoop over the stands, past the gate, down to Dili's face while he
-    // waves, then round his side into the chase position.
+    // waves, then round his side into the chase position. In town the
+    // street is walled in by buildings, so the swoop comes down the street.
     const chase = this.chaseTarget(p);
+    const town = this.trackId === "town";
     this.introPath = new THREE.CatmullRomCurve3([
-      at(-60, -42, 34, gate),
-      at(16, -28, 15, gate),
+      town ? at(-80, 0, 30, gate) : at(-60, -42, 34, gate),
+      town ? at(16, -7, 13, gate) : at(16, -28, 15, gate),
       at(11, 8, 5),
       at(5.4, 1.8, 2.1),
       at(4.6, -0.9, 2.2),
@@ -821,6 +1336,19 @@ export class DiliCart {
     if (this.phaseT > 2.4) this.hud.title(false);
     const any = this.pressed.size > 0;
     if (any && this.phaseT > 0.3) this.skipIntro = true;
+    if (this.room) {
+      // Online the lights go out for everyone at once: wait for the room.
+      // Skipping just cuts the fly-in short and waits on the grid.
+      if (this.skipIntro && this.phaseT < INTRO_LEN) this.phaseT = INTRO_LEN;
+      const now = this.room.now();
+      if (!this.goAt) this.hud.waiting("Waiting for racers…");
+      else if (now >= this.goAt - 3000) {
+        this.hud.waiting(null);
+        this.startCountdown();
+        this.phaseT = (now - (this.goAt - 3000)) / 1000;
+      } else this.hud.waiting(null);
+      return;
+    }
     if (t >= 1 || this.skipIntro) this.startCountdown();
   }
 
@@ -835,6 +1363,8 @@ export class DiliCart {
   }
 
   private updateCountdown() {
+    // Online, the countdown runs on the room's clock so GO is shared.
+    if (this.room && this.goAt) this.phaseT = (this.room.now() - (this.goAt - 3000)) / 1000;
     const t = this.phaseT;
     const n = t < 1 ? 3 : t < 2 ? 2 : t < 3 ? 1 : 0;
     const lamps = this.world.gateLamps;
@@ -864,6 +1394,11 @@ export class DiliCart {
     this.phaseT = 0;
     this.raceT = 0;
     this.lapStart = 0;
+    if (this.endless) {
+      // A clear run-up before the first wave.
+      this.nextWave = 150;
+      this.paidDist = Math.max(0, this.racers[0].dist);
+    }
     this.audio.setMusic(1);
     setTimeout(() => this.hud.countdown(null), 800);
     this.hud.hint(true);
@@ -883,8 +1418,15 @@ export class DiliCart {
     // The Custodians get a clean launch too.
     for (let k = 1; k < this.racers.length; k++) {
       const r = this.racers[k];
+      if (!this.sims(r)) continue;
       r.speed = 5 + (k % 3) * 1.5;
       if (k <= 2) r.boostT = 0.6;
+    }
+    if (this.room) {
+      // Same clock and the same drone sweeps in every game from here on.
+      this.raceT = Math.max(0, (this.room.now() - this.goAt) / 1000);
+      this.time = 0;
+      this.hazards.forEach((h, i) => { if (h.kind === "drone") h.phase = i * 1.37; });
     }
   }
 
@@ -895,15 +1437,39 @@ export class DiliCart {
     this.phaseT = 0;
     this.driftDir = 0; this.driftTier = 0; this.driftT = 0;
     this.hud.banner("FINISH!", "", 2600);
+    if (this.room && this.netRace) {
+      this.finTimes.set(this.room.you, this.raceT);
+      this.room.send({ t: "fin", time: this.raceT, raceId: this.netRace.raceId });
+    }
     this.audio.fanfare();
     this.audio.setMusic(0.45);
     this.confetti.burst(this.v1.copy(this.racers[0].model.root.position).add(new THREE.Vector3(0, 5, 0)), 160, 9, 12);
   }
 
   private endRace() {
-    const pos = this.lastPos;
+    if (this.endless) {
+      const p = this.racers[0];
+      const r: RaceResult = {
+        tally: { ...this.tally }, score: this.score, position: 1, coins: this.coinCount, time: this.raceT,
+        bestLap: this.bestLap, takedowns: this.takedowns, turbos: this.turbos, tricks: this.tricks,
+        finishBonus: 0, timeBonus: 0, laps: this.stage, track: this.trackId,
+        endless: {
+          distance: Math.max(0, Math.round(p.dist + 5 + this.rivals * 4.2)), stage: this.stage, bestCombo: this.bestCombo,
+          bestMult: this.bestMult, nearMisses: this.nearMisses, gates: this.gates, heartsFound: this.heartsFound, cause: this.wreck,
+        },
+      };
+      this.result = r;
+      this.hud.racing(false);
+      this.hooks.onEnd(r);
+      return;
+    }
+    let pos = this.lastPos;
+    // Online, finishing times on the room clock decide places: a photo
+    // finish reads the same in every game.
+    const mine = this.room ? this.finTimes.get(this.room.you) : undefined;
+    if (mine !== undefined) pos = 1 + [...this.finTimes.values()].filter((t) => t < mine).length;
     const finishBonus = [1000, 700, 500, 350, 250, 150, 100, 50][pos - 1] ?? 50;
-    const timeBonus = Math.max(0, Math.round((PAR_TIME - this.raceT) * 8));
+    const timeBonus = Math.max(0, Math.round((this.track.def.par - this.raceT) * 8));
     const r: RaceResult = {
       tally: { ...this.tally },
       score: this.score + finishBonus + timeBonus,
@@ -916,6 +1482,8 @@ export class DiliCart {
       tricks: this.tricks,
       finishBonus,
       timeBonus,
+      laps: this.laps,
+      track: this.trackId,
     };
     this.result = r;
     this.hud.racing(false);
@@ -927,7 +1495,7 @@ export class DiliCart {
   /* ================================================================ */
 
   private updatePlayer(p: Racer, dt: number) {
-    if (this.trailer) this.autoDrive(p, dt);
+    if (this.trailer || this.autopilot) this.autoDrive(p, dt);
     const auto = this.phase === "finish";
     let want = 0;
     if (!auto) {
@@ -948,9 +1516,9 @@ export class DiliCart {
     // to charge blue → orange → purple; let go to fire the mini-turbo.
     if (!auto && !p.air && p.spin <= 0) {
       if (this.driftDir === 0) {
-        if (want !== 0 && p.speed > 12) {
+        if (want !== 0 && p.speed > 13) {
           this.turnHeld += dt;
-          if (this.turnHeld > 0.28) {
+          if (this.turnHeld > 0.32) {
             this.driftDir = want;
             this.driftT = 0;
             this.driftTier = 0;
@@ -991,6 +1559,17 @@ export class DiliCart {
 
     // Timers.
     this.shieldT = Math.max(0, this.shieldT - dt);
+    // Ghost Mode: the kart flickers like a hologram and trails violet wisps.
+    if (this.ghostT > 0) {
+      this.ghostT = Math.max(0, this.ghostT - dt);
+      const on = this.ghostT > 0;
+      p.model.body.visible = !on || Math.sin(this.time * 38) > (this.ghostT < 1.2 ? -0.2 : 0.35);
+      if (on && Math.random() < 0.7) {
+        const q = p.model.root.position;
+        this.puffs.spawn(q.x + (Math.random() - 0.5) * 1.6, q.y + 0.6 + Math.random(), q.z + (Math.random() - 0.5) * 1.6, 0, 0.6, 0,
+          this.col.set("#b58cff"), 0.5, 0.4, { grow: 1.3, drag: 2 });
+      }
+    }
     this.magnetT = Math.max(0, this.magnetT - dt);
     this.hitCool = Math.max(0, this.hitCool - dt);
     this.attackCool = Math.max(0, this.attackCool - dt);
@@ -1001,17 +1580,31 @@ export class DiliCart {
       (this.shield.material as THREE.ShaderMaterial).uniforms.uTime.value = this.time;
       this.shield.scale.setScalar(this.shieldT < 2 ? 0.9 + Math.sin(this.time * 30) * 0.1 : 1);
     }
+    this.magnet.visible = this.magnetT > 0;
+    if (this.magnet.visible) {
+      const ud = this.magnet.userData;
+      (ud.a as THREE.Mesh).rotation.z = this.time * 2.4;
+      (ud.b as THREE.Mesh).rotation.z = -this.time * 1.6;
+      (ud.dash as THREE.Group).rotation.y = -this.time * 3.2;
+      const pulse = 1 + Math.sin(this.time * 6) * 0.05;
+      // Flicker for the last two seconds, like the shield.
+      this.magnet.scale.setScalar(this.magnetT < 2 ? pulse * (0.9 + Math.sin(this.time * 30) * 0.1) : pulse);
+    }
 
     // Laps.
-    const lapNow = Math.min(LAPS, Math.floor(p.dist / this.track.length) + 1);
-    if (p.dist >= LAPS * this.track.length && !p.finished) {
+    const lapNow = Math.min(this.laps, Math.floor(p.dist / this.track.length) + 1);
+    if (p.dist >= this.laps * this.track.length && !p.finished) {
       this.closeLap();
       this.finishRace();
+    } else if (lapNow > this.lap && p.dist > 0 && this.endless) {
+      this.closeLap();
+      this.lap = lapNow;
+      this.stageUp(lapNow);
     } else if (lapNow > this.lap && p.dist > 0) {
       this.closeLap();
       this.lap = lapNow;
       this.addScore(100, "laps");
-      if (lapNow === LAPS) {
+      if (lapNow === this.laps) {
         this.hud.banner("FINAL LAP!", "", 1900);
         this.audio.lap();
         this.audio.hurry();
@@ -1038,6 +1631,7 @@ export class DiliCart {
       const pts = [0, 15, 30, 60][this.driftTier];
       this.hud.pop(`${names[this.driftTier]} +${pts}`, cls[this.driftTier]);
       this.addScore(pts, "turbos");
+      this.chain(this.driftTier >= 2 ? 1 : 0.5);
       this.turbos++;
       this.audio.boost();
       this.shake = Math.max(this.shake, 0.25 + this.driftTier * 0.1);
@@ -1070,18 +1664,53 @@ export class DiliCart {
         this.audio.get();
         this.hud.flash("#ff3d5a");
         break;
-      case "zap": {
-        let n = 0;
+      case "seeker": {
+        // Lock onto the nearest racer ahead.
+        let target: Racer | null = null, best = 160;
         for (let k = 1; k < this.racers.length; k++) {
           const r = this.racers[k];
           const d = r.dist - p.dist;
-          if (d > -15 && d < 110 && !r.finished) {
-            r.spin = 1.6;
-            r.frozen = 2.2;
-            n++;
-            this.burst(r.model.root.position, "#8fe3ff", 26, 7);
-          }
+          if (d > 2 && d < best && !r.finished) { best = d; target = r; }
         }
+        const obj = M.seeker();
+        this.scene.add(obj);
+        const sk: Seeker = { u: this.track.wrap(this.track.startU + p.dist + 2.5), lat: p.lat, speed: p.speed + 14, life: 6, obj, target, sid: this.uid(), mine: true };
+        this.seekers.push(sk);
+        this.emit({ e: "seek", sid: sk.sid, target: target?.id ?? "", u: sk.u, lat: sk.lat, speed: sk.speed });
+        this.audio.boost();
+        this.hud.flash("#ffd84a");
+        break;
+      }
+      case "ghost":
+        this.ghostT = 5;
+        p.boostT = Math.max(p.boostT, 0.8);
+        this.audio.shield();
+        this.hud.flash("#b58cff");
+        break;
+      case "goo":
+        // Mid-jump there's no road to drop it on: it goes down on landing.
+        if (p.air) this.gooOnLand = true;
+        else this.dropGoo(p);
+        this.audio.land();
+        this.hud.flash("#6dff9e");
+        break;
+      case "zap": {
+        if (this.endless) {
+          // Infinite: the pulse also clears the road ahead.
+          let cleared = 0;
+          for (const h of [...this.hazards]) {
+            if (!h.pooled) continue;
+            const ahead = h.dist! - p.dist;
+            if (ahead > -2 && ahead < 95) {
+              this.burst(h.obj.position, "#8fe3ff", 18, 7);
+              this.retire(h);
+              cleared++;
+            }
+          }
+          if (cleared) { this.addScore(20 * cleared, "dodges"); this.hud.pop(`ROAD CLEARED ×${cleared}`, "blue big"); }
+        }
+        const n = this.applyZap(p, p.dist);
+        this.emit({ e: "zap", dist: p.dist });
         this.audio.zap();
         this.hud.flash("#8fe3ff");
         this.hud.pop(n ? `ZAPPED ${n}!` : "ZAP!", "blue");
@@ -1094,11 +1723,13 @@ export class DiliCart {
   private grantItem() {
     if (this.item || this.rolling) return;
     const pos = this.lastPos;
-    const table: [ItemKind, number][] = pos === 1
-      ? [["shield", 4], ["magnet", 4], ["turbo", 2]]
+    const table: [ItemKind, number][] = this.endless
+      ? [["shield", 3.2], ["turbo", 3], ["ghost", 2.2], ["zap", 2], ["magnet", 2], ["seeker", 1]]
+      : pos === 1
+      ? [["shield", 4], ["magnet", 3.5], ["goo", 3], ["turbo", 2]]
       : pos <= 3
-        ? [["turbo", 3.5], ["shield", 2.5], ["magnet", 2.5], ["zap", 1.5]]
-        : [["turbo", 4], ["zap", 3], ["magnet", 1.5], ["shield", 1.5]];
+        ? [["turbo", 3], ["seeker", 2.5], ["shield", 2], ["magnet", 2], ["goo", 2], ["zap", 1.2], ["ghost", 1.2]]
+        : [["turbo", 3.5], ["seeker", 3], ["zap", 2.5], ["ghost", 2], ["magnet", 1.2], ["shield", 1.2]];
     let roll = Math.random() * table.reduce((s, [, w]) => s + w, 0);
     let pick: ItemKind = "turbo";
     for (const [k, w] of table) { if ((roll -= w) <= 0) { pick = k; break; } }
@@ -1124,6 +1755,14 @@ export class DiliCart {
       this.burst(p.model.root.position, "#5ec8ff", 30, 8);
       return;
     }
+    if (this.endless) {
+      this.hearts = Math.max(0, this.hearts - 1);
+      this.combo = 0;
+      // A moment of mercy: no second hit while you recover.
+      this.hitCool = Math.max(1.3, 2.3 - this.stage * 0.12);
+      this.audio.heartLost();
+      if (this.hearts <= 0) { this.gameOver(what); return; }
+    }
     p.spin = 0.8;
     p.speed *= 0.5;
     p.boostT = 0;
@@ -1141,8 +1780,332 @@ export class DiliCart {
   }
 
   private addScore(n: number, cat: TallyKey) {
+    // Infinite: everything scores at the combo multiplier.
+    if (this.endless) n = Math.round(n * this.mult());
     this.score += n;
     this.tally[cat] += n;
+  }
+
+  /* ================================================================ */
+  /* Infinite mode                                                    */
+  /* ================================================================ */
+
+  /** The score multiplier the current combo earns, ×1 to ×5. */
+  private mult() {
+    let m = 1;
+    for (let k = 1; k < MULT_AT.length; k++) if (this.combo >= MULT_AT[k]) m = k + 1;
+    return m;
+  }
+
+  /** A clean move: the combo grows (and the multiplier with it). */
+  private chain(n = 1) {
+    if (!this.endless) return;
+    const before = this.mult();
+    this.combo += n;
+    this.comboIdle = 0;
+    this.bestCombo = Math.max(this.bestCombo, Math.floor(this.combo));
+    const after = this.mult();
+    if (after > before) {
+      this.bestMult = Math.max(this.bestMult, after);
+      this.hud.pop(`×${after} MULTIPLIER!`, "gold big");
+      this.audio.multUp(after);
+    }
+  }
+
+  /** Where race distance `d` is on the loop. */
+  private uAt(d: number) {
+    return this.track.wrap(this.track.startU + d);
+  }
+
+  /** Is race distance `d` clear of the jump (nothing spawns on the ramp or in the gap)? */
+  private offJump(d: number) {
+    const tr = this.track;
+    const u = this.uAt(d);
+    return !(tr.delta(tr.lipU - GAP_CLEAR[0], u) > 0 && tr.delta(tr.landU + GAP_CLEAR[1], u) < 0);
+  }
+
+  private take(kind: keyof DiliCart["pool"], d: number, lat: number): Hazard | null {
+    const h = this.pool[kind].pop();
+    if (!h) return null;
+    h.dist = d;
+    h.u = this.uAt(d);
+    h.lat = h.base = lat;
+    h.knocked = 0;
+    h.passed = false;
+    h.on = false;
+    h.span = 0;
+    h.rate = 1;
+    h.phase = Math.random() * 6;
+    h.obj.rotation.set(0, 0, 0);
+    h.obj.scale.setScalar(1);
+    this.hazards.push(h);
+    return h;
+  }
+
+  private retire(h: Hazard) {
+    const i = this.hazards.indexOf(h);
+    if (i >= 0) this.hazards.splice(i, 1);
+    h.obj.position.set(0, -600, 0);
+    if (h.ring) h.ring.position.set(0, -600, 0);
+    this.pool[h.kind as keyof DiliCart["pool"]].push(h);
+  }
+
+  private dynCoin(d: number, lat: number, h = 1.15) {
+    const c = this.dynCoins.find((x) => !x.alive && x.pop <= 0);
+    if (!c) return;
+    c.dist = d;
+    c.u = this.uAt(d);
+    c.lat = lat;
+    c.h = h;
+    c.alive = true;
+    c.respawn = Infinity;
+    c.pop = -0.35;
+  }
+
+  /**
+   * Lay down the next stretch of road: one obstacle pattern (harder ones
+   * unlock with the stages), a coin line to reward the clean line through
+   * it, and now and then a spare heart. Every pattern leaves a way through.
+   */
+  private spawnWave() {
+    let d = this.nextWave;
+    // Skip the jump: nothing on the ramp, in the air or on the landing.
+    while (!this.offJump(d) || !this.offJump(d + 40)) d += 10;
+    const st = this.stage;
+    const lanes = [0, 1, 2, 3];
+    const free = Math.floor(Math.random() * 4);
+    const pick = (opts: [string, number][]) => {
+      let r = Math.random() * opts.reduce((a, [, w]) => a + w, 0);
+      for (const [k, w] of opts) if ((r -= w) <= 0) return k;
+      return opts[0][0];
+    };
+    // From stage 4 the shoulders are walled off too: the open lane is the only way.
+    const wall = (at: number, open: number) => {
+      for (const l of lanes) if (l !== open) this.take("bollard", at, laneX(l) + (Math.random() - 0.5) * 0.4);
+      if (st >= 4) for (const s of [-1, 1]) { this.take("bollard", at, s * 11.4); this.take("bollard", at, s * 14.2); }
+    };
+    const drone = (at: number, phase?: number) => {
+      const h = this.take("drone", at, 0);
+      if (h) { h.span = Math.min(8.5, 6 + st * 0.35); h.rate = 0.9 + st * 0.14; if (phase !== undefined) h.phase = phase; }
+      return h;
+    };
+    const shifter = (at: number, phase?: number) => {
+      const h = this.take("block", at, 0);
+      if (h) { h.span = ROAD_HALF - 4.1; h.rate = 0.7 + st * 0.1; if (phase !== undefined) h.phase = phase; }
+      return h;
+    };
+    const kind = this.waveN < 2 ? (this.waveN === 0 ? "slalom" : "wall") : pick([
+      ["wall", 3], ["slalom", st < 3 ? 2 : 0.6], ["drone", 2], ["laser", st >= 2 ? 2 : 0], ["shifter", st >= 2 ? 2.2 : 0.6],
+      ["double", st >= 3 ? 2.2 : 0], ["gauntlet", st >= 4 ? 2 : 0], ["twins", st >= 5 ? 1.6 : 0], ["storm", st >= 6 ? 1.4 : 0],
+    ]);
+    let len = 24;
+    switch (kind) {
+      case "wall": {
+        // Bollards across three lanes; the open one has the coins.
+        wall(d, free);
+        for (let k = 0; k < 5; k++) this.dynCoin(d - 12 + k * 4, laneX(free));
+        break;
+      }
+      case "double": {
+        // Two walls, the gaps on opposite sides: weave between them.
+        const a = free, b = (free + 2 + Math.floor(Math.random() * 2)) % 4;
+        const gap = Math.max(15, 24 - st);
+        wall(d, a);
+        wall(d + gap, b);
+        for (let k = 0; k < 6; k++) this.dynCoin(d + 3 + k * (gap / 7), laneX(a) + (laneX(b) - laneX(a)) * (k / 5));
+        len = gap + 18;
+        break;
+      }
+      case "slalom": {
+        // Cones (they only slow you) zigzagging, with coins on the racing line.
+        for (let k = 0; k < 5; k++) {
+          const lat = (k % 2 ? 1 : -1) * (2.4 + Math.random() * 1.2);
+          this.take("cone", d + k * 7, lat);
+          this.dynCoin(d + k * 7, -lat * 0.9);
+        }
+        if (st >= 3) drone(d + 18);
+        len = 36;
+        break;
+      }
+      case "drone": {
+        const h = drone(d);
+        if (st >= 3 && h) drone(d + 18, h.phase + Math.PI);
+        for (let k = 0; k < 4; k++) this.dynCoin(d - 6 + k * 4, laneX(free), 2.6);
+        len = st >= 3 ? 34 : 24;
+        break;
+      }
+      case "laser": {
+        // A gate that pulses: time it, or blast through with a shield or ghost.
+        const h = this.take("laser", d, 0);
+        if (h) { h.rate = Math.min(1.7, 0.85 + st * 0.09); h.phase = Math.random() * 3; }
+        for (let k = 0; k < 4; k++) this.dynCoin(d + 4 + k * 4, laneX(free));
+        // Later on, a wall waits on the far side of the gate.
+        if (st >= 4) { wall(d + 26, free); len = 40; }
+        break;
+      }
+      case "shifter": {
+        shifter(d);
+        if (st >= 3) this.take("cone", d + 14, laneX(free));
+        len = 26;
+        break;
+      }
+      case "gauntlet": {
+        // A shifter, then a wall right behind it.
+        shifter(d);
+        wall(d + 26, free);
+        for (let k = 0; k < 4; k++) this.dynCoin(d + 30 + k * 4, laneX(free));
+        len = 44;
+        break;
+      }
+      case "twins": {
+        // Two shifters sweeping out of step: wait for the gap to open.
+        const h = shifter(d);
+        if (h) shifter(d + 16, h.phase + Math.PI);
+        len = 34;
+        break;
+      }
+      case "storm": {
+        // Drones over a wall, then a laser gate.
+        wall(d, free);
+        drone(d + 10);
+        const h = this.take("laser", d + 34, 0);
+        if (h) { h.rate = Math.min(1.7, 0.85 + st * 0.09); h.phase = Math.random() * 3; }
+        len = 48;
+        break;
+      }
+    }
+    // A spare heart, now and then, when you're short of one — rarer each stage.
+    const chance = Math.max(0.025, 0.1 - st * 0.012) + (ENDLESS_HEARTS - this.hearts) * 0.025;
+    if (this.hearts < ENDLESS_HEARTS && Math.random() < chance) {
+      const hp = this.heartPicks.find((x) => !x.alive);
+      if (hp) {
+        hp.alive = true;
+        hp.dist = d + len + 8;
+        hp.u = this.uAt(hp.dist);
+        hp.lat = laneX(Math.floor(Math.random() * 4));
+      }
+    }
+    this.waveN++;
+    // Waves come closer together every stage.
+    const gap = Math.max(22, 88 - st * 9) + Math.random() * Math.max(6, 24 - st * 2);
+    this.nextWave = d + len + gap;
+  }
+
+  /** Infinite mode, every frame of the run. */
+  private updateEndless(dt: number) {
+    const p = this.racers[0];
+    const tr = this.track;
+    if (this.phase === "race") {
+      while (this.nextWave < p.dist + 190) this.spawnWave();
+      // Points for distance, at the multiplier.
+      while (p.dist - this.paidDist >= 10) {
+        this.paidDist += 10;
+        this.addScore(10, "distance");
+      }
+      // The combo cools off if you stop earning it.
+      this.comboIdle += dt;
+      if (this.comboIdle > 7 && this.combo > 0) {
+        this.combo = Math.max(0, this.combo - dt * 0.8);
+      }
+    }
+    // Obstacles you've got past: a near miss pays, then they go back in the pool.
+    for (let i = this.hazards.length - 1; i >= 0; i--) {
+      const h = this.hazards[i];
+      if (!h.pooled) continue;
+      const behind = p.dist - h.dist!;
+      if (!h.passed && behind > 1.2 && this.phase === "race") {
+        h.passed = true;
+        if (h.kind === "laser") {
+          this.gates++;
+          this.addScore(40, "dodges");
+          this.hud.pop("GATE! +" + 40 * this.mult(), "green");
+          this.chain(1);
+        } else if (h.kind !== "cone" && h.knocked <= 0 && !p.air) {
+          const clear = Math.abs(p.lat - h.lat) - h.r - 0.95;
+          if (clear < 1.5) {
+            this.nearMisses++;
+            this.addScore(25, "dodges");
+            this.hud.pop(`CLOSE CALL! +${25 * this.mult()}`, "blue");
+            this.audio.whoosh();
+            this.chain(1);
+          }
+        }
+      }
+      if (behind > 30) this.retire(h);
+    }
+    for (const c of this.dynCoins) if (c.alive && p.dist - c.dist! > 20) { c.alive = false; c.pop = 0; }
+    // Spare hearts.
+    const pu = tr.wrap(tr.startU + p.dist);
+    for (const hp of this.heartPicks) {
+      if (!hp.alive) { if (hp.obj.position.y > -500) hp.obj.position.set(0, -600, 0); continue; }
+      if (p.dist - hp.dist > 20) { hp.alive = false; continue; }
+      tr.frame(hp.u, this.f);
+      this.orient(hp.obj, this.f, hp.lat, 1.5 + Math.sin(this.time * 3) * 0.2);
+      (hp.obj.userData.heart as THREE.Mesh).rotation.y = this.time * 2.4;
+      if (Math.abs(tr.delta(pu, hp.u)) < 1.9 && Math.abs(hp.lat - p.lat) < 1.9 && this.phase === "race") {
+        hp.alive = false;
+        this.burst(hp.obj.position, "#ff5d8a", 30, 7);
+        if (this.hearts < ENDLESS_HEARTS) {
+          this.hearts++;
+          this.heartsFound++;
+          this.hud.pop("+1 HEART", "pink big");
+        } else {
+          this.addScore(200, "stunts");
+          this.hud.pop(`FULL HEALTH +${200 * this.mult()}`, "pink");
+        }
+        this.audio.heartGain();
+        this.hud.flash("#ff5d8a");
+      }
+    }
+    // Custodians are traffic here: one that drops far behind comes back in
+    // up the road, one that runs away is brought back behind you.
+    for (let k = 1; k < this.racers.length; k++) {
+      const r = this.racers[k];
+      const gap = r.dist - p.dist;
+      if (gap > -110 && gap < 320) continue;
+      let d = gap <= -110 ? p.dist + 150 + k * 25 + Math.random() * 40 : p.dist - 80 - k * 10;
+      while (!this.offJump(d)) d += 15;
+      r.dist = d;
+      r.lat = laneX(Math.floor(Math.random() * 4));
+      r.latV = 0;
+      r.speed = Math.max(14, p.speed * 0.8);
+      r.spin = 0; r.air = false; r.boostT = 0; r.frozen = 0;
+      r.prevU = this.uAt(d);
+    }
+    // Invulnerable after a hit: the kart blinks.
+    if (this.hitCool > 0 && this.ghostT <= 0) p.model.body.visible = Math.sin(this.time * 34) > -0.3;
+    else if (this.ghostT <= 0) p.model.body.visible = true;
+  }
+
+  /** A new lap of the Skyway is a new stage: faster karts, busier road. */
+  private stageUp(n: number) {
+    this.stage = n;
+    this.speedK = 1 + Math.min(0.5, (n - 1) * 0.065);
+    const bonus = 150 * n;
+    this.addScore(bonus, "laps");
+    this.hud.banner(`STAGE ${n}`, "gold", 2000);
+    this.hud.pop(`SPEED +${Math.round((this.speedK - 1) * 100)}% · BONUS +${bonus * this.mult()}`, "gold");
+    this.audio.lap();
+    this.audio.hurry(1 + Math.min(0.2, (n - 1) * 0.03));
+    this.confetti.burst(this.v1.copy(this.racers[0].model.root.position).add(new THREE.Vector3(0, 6, 0)), 70, 7, 8);
+  }
+
+  /** Out of hearts: the run is over. */
+  private gameOver(what: string) {
+    const p = this.racers[0];
+    this.wreck = what;
+    p.finished = true;
+    this.phase = "finish";
+    this.phaseT = 0;
+    this.driftDir = 0; this.driftTier = 0; this.driftT = 0;
+    p.spin = 1.6;
+    p.model.body.visible = true;
+    this.hud.banner("WRECKED!", "red", 2600);
+    this.hud.hint(false);
+    this.audio.gameOver();
+    this.audio.setMusic(0.3);
+    this.shake = 1.2;
+    this.burst(p.model.root.position, "#ff3d5a", 50, 10);
   }
 
   /* ================================================================ */
@@ -1157,9 +2120,10 @@ export class DiliCart {
 
     // Speed.
     const offroad = !r.air && Math.abs(r.lat) > EDGE + 0.4;
-    let top = TOP * r.skill * (gas ? 1 : CRUISE) * cap;
+    // Coins carried add up to 3.5% top speed, for everyone.
+    let top = TOP * this.speedK * r.skill * (gas ? 1 : CRUISE) * cap * (1 + Math.min(10, r.purse) * 0.0035);
     if (offroad) top *= 0.62;
-    if (r.boostT > 0) top = BOOST_TOP * (r.player ? 1 : 0.94);
+    if (r.boostT > 0) top = BOOST_TOP * this.speedK * (r.player ? 1 : 0.94);
     if (r.frozen > 0) top *= 0.2;
     if (r.spin > 0) top = 3;
     if (this.driftDir !== 0 && r.player) top *= 0.985;
@@ -1173,17 +2137,20 @@ export class DiliCart {
     const push = r.air ? 0 : -f.curv * r.speed * r.speed * CENTRIFUGAL;
     let target: number;
     if (drifting) {
-      // A drift is a committed arc: it mostly cancels the corner's pull and
-      // creeps inward. Counter-steering holds the line wide.
-      r.steer += (this.driftDir * 0.8 - r.steer) * Math.min(1, dt * 9);
-      target = this.driftHold > 0
-        ? this.driftDir * steerRate * 0.62 + push * 0.45
-        : -this.driftDir * steerRate * 0.38 + push * 0.3;
+      // A drift carves an arc through the bend: the slide soaks up most of
+      // the corner's pull, and the stick sets how tight the arc is — hold
+      // into the drift to tighten it, lean the other way to run it wider.
+      // In a typical bend holding in creeps gently to the inside and
+      // counter-steering drifts gently out, so the line is yours to steer.
+      r.steer += (this.driftDir * (this.driftHold > 0 ? 0.9 : 0.45) - r.steer) * Math.min(1, dt * 8);
+      const arc = this.driftHold > 0 ? 0.42 : 0.06;
+      target = this.driftDir * steerRate * arc + push * 0.6;
     } else {
       r.steer += (steerIn - r.steer) * Math.min(1, dt * 9);
       target = r.steer * steerRate + push;
     }
-    r.latV += (target - r.latV) * Math.min(1, dt * 6);
+    // A drifting kart carries its momentum: it answers the stick a beat slower.
+    r.latV += (target - r.latV) * Math.min(1, dt * (drifting ? 4.5 : 6));
     r.lat += r.latV * dt;
 
     // Soft walls: bounce back, scrub a little speed, throw sparks.
@@ -1207,6 +2174,8 @@ export class DiliCart {
     // Timers.
     r.boostT = Math.max(0, r.boostT - dt);
     r.frozen = Math.max(0, r.frozen - dt);
+    if (r.spin > 0 && !r.hurt) { r.hurt = true; r.purse = Math.max(0, r.purse - 3); }
+    if (r.spin <= 0) r.hurt = false;
     if (r.spin > 0) {
       r.spin -= dt;
       r.spinAng += dt * Math.PI * 2 / 0.8;
@@ -1250,6 +2219,7 @@ export class DiliCart {
       if (r.y < road + 1.2) { r.y = road + 1.2; r.vy = Math.max(r.vy, 0); }
     } else if (r.y <= road && r.vy < 0) {
       r.air = false;
+      if (r.player && this.gooOnLand) { this.gooOnLand = false; this.dropGoo(r); }
       r.squash = 0.72;
       r.model.thump(2.4);
       const pos = r.model.root.position;
@@ -1265,7 +2235,8 @@ export class DiliCart {
           r.boostT = Math.max(r.boostT, 1.1);
           this.tricks++;
           this.addScore(50, "stunts");
-          this.hud.pop("TRICK! +50", "green big");
+          this.chain(1);
+          this.hud.pop(this.endless ? `TRICK! +${50 * this.mult()}` : "TRICK! +50", "green big");
           this.audio.boost();
           this.trick = false;
         }
@@ -1281,7 +2252,7 @@ export class DiliCart {
 
   private updateRival(r: Racer, dt: number) {
     const tr = this.track;
-    const p = this.racers[0];
+    const p = this.focusHuman(r);
     const u = tr.wrap(tr.startU + r.dist);
     const ahead = tr.curvature(u + 14);
 
@@ -1296,8 +2267,20 @@ export class DiliCart {
         target = o.lat + (r.lat >= o.lat ? 3.2 : -3.2);
       }
     }
+    // Swerve for coins on the way, if they're close to the line.
+    if (r.greed > 0 && !r.air) {
+      let best = Infinity;
+      for (const c of this.coins) {
+        if (!c.alive || c.h > 2) continue;
+        const d = tr.delta(u, c.u);
+        if (d < 5 || d > 30) continue;
+        const off = Math.abs(c.lat - target);
+        if (off < 1.6 + r.greed * 3.4 && off + d * 0.1 < best) { best = off + d * 0.1; target = c.lat; }
+      }
+    }
     // Dodge hazards on the line.
     for (const h of this.hazards) {
+      if (h.kind === "laser") continue;
       const d = tr.delta(u, h.u);
       if (d > 0 && d < 22 && Math.abs(h.lat - target) < h.r + 1.6) target = h.lat + (target > h.lat ? 1 : -1) * (h.r + 2.4);
     }
@@ -1315,13 +2298,22 @@ export class DiliCart {
 
     // Rubber band: close enough to fight, never a runaway.
     let band = 1;
-    if (gapToPlayer > 30) band = 1 + Math.min(0.16, (gapToPlayer - 30) * 0.004);
-    if (gapToPlayer < -25) band = 1 - Math.min(0.22, (-gapToPlayer - 25) * 0.005);
+    if (gapToPlayer > 22) band = 1 + Math.min(0.18, (gapToPlayer - 22) * 0.004);
+    if (gapToPlayer < -40) band = 1 - Math.min(0.12, (-gapToPlayer - 40) * 0.003);
     // Catch-up never makes a Custodian faster than you at full gas.
     const skill = r.skill;
-    r.skill = band > 1 ? Math.min(skill * band, 0.975) : skill * band;
+    r.skill = band > 1 ? Math.min(skill * band, 0.985) : skill * band;
     this.drive(r, steer, true, false, dt);
     r.skill = skill;
+
+    // Custodians drift the bends too, and fire a mini-turbo on the way out.
+    const bend = Math.abs(tr.curvature(u));
+    if (!r.air && bend > 0.018 && r.speed > 14) r.cornerT += dt;
+    else if (bend < 0.01) {
+      if (r.cornerT > 0.9 && r.spin <= 0 && Math.random() < 0.35 + r.skill * 0.4) r.boostT = Math.max(r.boostT, 0.45 + Math.min(0.5, (r.cornerT - 0.9) * 0.25));
+      r.cornerT = 0;
+    }
+    this.rivalCoins(r, u);
 
     if (r.air && Math.random() < dt * 0.6 && r.flip === 0) r.flip = 0.001;
     if (r.flip > 0) r.flip = Math.min(Math.PI * 2, r.flip + dt * 11);
@@ -1331,55 +2323,102 @@ export class DiliCart {
     // if you've got away from them.
     // Attacks share one cooldown across the whole pack, so they never pile up.
     r.itemT -= dt;
-    if (r.itemT <= 0 && this.attackCool <= 0 && this.phase === "race" && this.raceT > 8 && !r.finished) {
-      r.itemT = 14 + Math.random() * 9;
+    if (r.itemT <= 0 && this.attackCool <= 0 && this.phase === "race" && this.raceT > 7 && !r.finished) {
+      r.itemT = (11 + Math.random() * 7) / (this.endless ? 1 + (this.stage - 1) * 0.12 : 1);
       if (gapToPlayer < -12 && gapToPlayer > -40 && this.hazards.filter((h) => h.kind === "goo").length < 2) {
         this.dropGoo(r);
-        this.attackCool = 5;
+        this.attackCool = 4;
       } else if (gapToPlayer > 14 && gapToPlayer < 70 && this.orbs.length < 1) {
         this.fireOrb(r);
-        this.attackCool = 17 + Math.random() * 7;
+        // Infinite: an orb costs a heart, so they come rarely at first and
+        // more often as the stages go by.
+        this.attackCool = this.endless ? Math.max(13, 30 - this.stage * 2.5) + Math.random() * 6 : 15 + Math.random() * 6;
       }
     }
 
-    if (!r.finished && r.dist >= LAPS * tr.length) r.finished = true;
+    if (!r.finished && r.dist >= this.laps * tr.length) {
+      r.finished = true;
+      // Online the host reports its bots' finishes, so every game's
+      // standings agree.
+      if (this.room && this.netRace && this.phase !== "load") {
+        // The room clock, not raceT: that stops when our own race ends.
+        const t = Math.max(0, (this.room.now() - this.goAt) / 1000);
+        this.finTimes.set(r.id, t);
+        this.room.send({ t: "fin", time: t, raceId: this.netRace.raceId, who: r.id });
+      }
+    }
+  }
+
+  /** A Custodian drives through a coin: it's gone for everyone until it respawns. */
+  private rivalCoins(r: Racer, u: number) {
+    if (r.air || r.spin > 0) return;
+    const tr = this.track;
+    for (let ci = 0; ci < this.coins.length; ci++) {
+      const c = this.coins[ci];
+      if (!c.alive || c.h > 2) continue;
+      if (Math.abs(tr.delta(u, c.u)) < 1.9 && Math.abs(c.lat - r.lat) < 1.7) {
+        c.alive = false;
+        c.pop = 0.35;
+        c.respawn = c.dyn ? Infinity : 7;
+        r.purse++;
+        this.emit({ e: "coin", i: ci });
+        const w = tr.point(c.u, c.lat, c.h, this.v1);
+        if (w.distanceToSquared(this.camera.position) < 70 * 70) {
+          this.burst(w, c.kind === "eth" ? "#c9b8ff" : "#ffd84d", 8, 3);
+          if (w.distanceToSquared(this.camera.position) < 30 * 30) this.audio.coin(1, 0.35);
+        }
+      }
+    }
   }
 
   private dropGoo(r: Racer) {
+    const at = this.track.wrap(this.track.startU + r.dist - 3.5);
+    if (r.air || this.track.inGap(at)) return;
     const obj = M.goo();
     this.scene.add(obj);
     const u = this.track.wrap(this.track.startU + r.dist - 3.5);
-    this.hazards.push({ kind: "goo", u, lat: r.lat, r: 1.3, obj, life: 14, phase: 0, knocked: 0, kv: V(), base: r.lat, span: 0, ring: null });
+    const hid = this.room ? this.uid() : undefined;
+    this.hazards.push({ kind: "goo", u, lat: r.lat, r: 1.3, obj, life: 14, phase: 0, knocked: 0, kv: V(), base: r.lat, span: 0, ring: null, hid });
     obj.scale.setScalar(0.01);
+    if (hid) this.emit({ e: "goo", hid, u, lat: r.lat });
   }
 
   private fireOrb(r: Racer) {
     const obj = M.orb();
     this.scene.add(obj);
-    this.orbs.push({ u: this.track.wrap(this.track.startU + r.dist + 2), lat: r.lat, speed: r.speed + 6, life: 6, obj });
+    const target = this.focusHuman(r);
+    const o: Orb = { u: this.track.wrap(this.track.startU + r.dist + 2), lat: r.lat, speed: r.speed + 6, life: 6, obj, target, oid: this.uid() };
+    this.orbs.push(o);
+    this.emit({ e: "orb", oid: o.oid, target: target.id, u: o.u, lat: o.lat, speed: o.speed });
   }
 
   private updateOrbs(dt: number) {
-    const p = this.racers[0];
-    const pu = this.track.wrap(this.track.startU + p.dist);
     let warn = false;
     for (const o of this.orbs) {
+      const p = o.target;
+      const pu = this.track.wrap(this.track.startU + p.dist);
       o.life -= dt;
       o.speed = Math.min(40, Math.max(o.speed, p.speed + 7));
       o.u = this.track.wrap(o.u + o.speed * dt);
       o.lat += THREE.MathUtils.clamp(p.lat - o.lat, -2 * dt, 2 * dt);
       const d = this.track.delta(o.u, pu);
-      if (d > 0 && d < 45) warn = true;
+      if (d > 0 && d < 45 && p.player) warn = true;
       this.track.point(o.u, o.lat, 1.1 + Math.sin(this.time * 12) * 0.15, o.obj.position);
       o.obj.rotation.y += dt * 8;
       if (Math.random() < 0.8) {
         const q = o.obj.position;
         this.sparks.spawn(q.x, q.y, q.z, (Math.random() - 0.5), Math.random(), (Math.random() - 0.5), this.col.set("#ff4a5e"), 0.9, 0.35);
       }
-      if (Math.abs(d) < 1.5 && Math.abs(o.lat - p.lat) < 1.5 && !p.air) {
+      if (Math.abs(d) < 1.5 && Math.abs(o.lat - p.lat) < 1.5 && !p.air && !(p.player && this.ghostT > 0)) {
         o.life = 0;
-        this.hitPlayer(p, "FROZEN!");
         this.burst(o.obj.position, "#ff4a5e", 30, 8);
+        // Only the game driving the target settles the hit; elsewhere the
+        // orb just vanishes into the kart.
+        if (this.sims(p)) {
+          if (p.player) this.hitPlayer(p, "FROZEN!");
+          else if (p.spin <= 0) { p.spin = 1; p.frozen = 1.2; p.speed *= 0.5; }
+          this.emit({ e: "orbEnd", oid: o.oid });
+        }
       }
     }
     this.orbs = this.orbs.filter((o) => {
@@ -1388,6 +2427,76 @@ export class DiliCart {
       return false;
     });
     this.hud.warn(warn && this.phase === "race");
+  }
+
+  private updateSeekers(dt: number) {
+    const tr = this.track;
+    for (const o of this.seekers) {
+      o.life -= dt;
+      o.speed = Math.min(52, o.speed + dt * 20);
+      o.u = tr.wrap(o.u + o.speed * dt);
+      const t = o.target;
+      if (t) {
+        o.lat += THREE.MathUtils.clamp(t.lat - o.lat, -7 * dt, 7 * dt);
+        const tu = tr.wrap(tr.startU + t.dist);
+        const d = tr.delta(o.u, tu);
+        if (Math.abs(d) < 1.8 && Math.abs(o.lat - t.lat) < 1.8 && !t.air) {
+          o.life = 0;
+          this.burst(t.model.root.position, "#ffd84a", 34, 9);
+          // The game driving the target settles it (so a shield works).
+          if (this.sims(t)) {
+            if (t.player) this.hitPlayer(t, "SEEKER!");
+            else { t.spin = 1.4; t.frozen = 1.1; t.speed *= 0.4; }
+            if (o.mine) this.seekerScored(t);
+            if (this.room) this.emit({ e: "seekEnd", sid: o.sid, hit: true });
+          }
+        } else if (d < -6) {
+          // Overshot (the target jumped or dodged): pick them up again next lap.
+          o.target = null;
+        }
+      }
+      tr.point(o.u, o.lat, 1.2 + Math.sin(this.time * 10) * 0.12, o.obj.position);
+      o.obj.rotation.y += dt * 10;
+      o.obj.rotation.x += dt * 4;
+      if (Math.random() < 0.9) {
+        const q = o.obj.position;
+        this.sparks.spawn(q.x, q.y, q.z, (Math.random() - 0.5) * 2, Math.random(), (Math.random() - 0.5) * 2, this.col.set(Math.random() < 0.5 ? "#ffd84a" : "#7fb0ff"), 1.0, 0.4);
+      }
+    }
+    this.seekers = this.seekers.filter((o) => {
+      if (o.life > 0) return true;
+      this.scene.remove(o.obj);
+      return false;
+    });
+  }
+
+  private seekerScored(t: Racer | null) {
+    this.takedowns++;
+    this.addScore(60, "takedowns");
+    this.hud.pop(t?.human && !t.player ? `HIT ${t.name}! +60` : "SEEKER HIT! +60", "gold big");
+    this.audio.bonk();
+  }
+
+  /** A zap from `zapper` at race distance `dist`: freeze everyone just ahead of it. */
+  private applyZap(zapper: Racer, dist: number): number {
+    let n = 0;
+    for (const r of this.racers) {
+      if (r === zapper || r.finished) continue;
+      const d = r.dist - dist;
+      if (d <= -15 || d >= 110) continue;
+      n++;
+      this.burst(r.model.root.position, "#8fe3ff", 26, 7);
+      if (!this.sims(r)) continue;
+      if (r.player) {
+        const shielded = this.shieldT > 0 || this.ghostT > 0;
+        this.hitPlayer(r, "ZAPPED!");
+        if (!shielded) r.frozen = 1.8;
+      } else {
+        r.spin = 1.6;
+        r.frozen = 2.2;
+      }
+    }
+    return n;
   }
 
   /** Kart-to-kart contact. */
@@ -1399,29 +2508,39 @@ export class DiliCart {
       for (let b = a + 1; b < rs.length; b++) {
         const A = rs[a], B = rs[b];
         if (A.air || B.air) continue;
+        if (this.ghostT > 0 && (A.player || B.player)) continue;
+        // Online, each game only pushes the karts it drives.
+        const simA = this.sims(A), simB = this.sims(B);
+        if (!simA && !simB) continue;
+        if ((A.net && !simA && A.net.flags & F.ghost) || (B.net && !simB && B.net.flags & F.ghost)) continue;
         const du = tr.delta(tr.wrap(tr.startU + A.dist), tr.wrap(tr.startU + B.dist));
         const dl = B.lat - A.lat;
         if (Math.abs(du) > 2.7 || Math.abs(dl) > 1.95) continue;
         const s = Math.sign(dl) || 1;
         const overlap = 1.95 - Math.abs(dl);
-        A.lat -= s * overlap * 0.5;
-        B.lat += s * overlap * 0.5;
-        A.latV -= s * 3.5;
-        B.latV += s * 3.5;
+        // A kart that only this game moves takes the whole shove.
+        const shareA = simA ? (simB ? 0.5 : 1) : 0, shareB = simB ? (simA ? 0.5 : 1) : 0;
+        A.lat -= s * overlap * shareA;
+        B.lat += s * overlap * shareB;
+        if (simA) A.latV -= s * 3.5;
+        if (simB) B.latV += s * 3.5;
         if (A.bumpT > 0 || B.bumpT > 0) continue;
         A.bumpT = B.bumpT = 0.6;
         if (A.player || B.player) {
           const me = A.player ? A : B, them = A.player ? B : A;
           if (me.boostT > 0 && them.spin <= 0) {
-            them.spin = 1.2;
-            them.speed *= 0.5;
+            if (this.sims(them)) {
+              them.spin = 1.2;
+              them.speed *= 0.5;
+            } else this.emit({ e: "strike", who: them.id });
             this.takedowns++;
             this.addScore(100, "takedowns");
+            this.chain(2);
             this.hud.pop("TAKEDOWN! +100", "pink big");
             this.audio.bonk();
             this.burst(them.model.root.position, "#ffe14d", 24, 7);
           } else if (this.shieldT > 0) {
-            them.spin = 0.9;
+            if (this.sims(them)) them.spin = 0.9;
             this.hud.pop("BOUNCED!", "blue");
           } else {
             me.speed *= 0.92;
@@ -1432,16 +2551,27 @@ export class DiliCart {
         }
         // The one behind loses a touch of speed.
         const back = du > 0 ? A : B;
-        back.speed *= 0.96;
+        if (this.sims(back)) back.speed *= 0.96;
       }
     }
+  }
+
+  /** Racer indices, first place first: finishers by time, then by distance. */
+  private liveOrder(): number[] {
+    for (const r of this.racers) if (r.finished && !this.finSeen.has(r.i)) this.finSeen.set(r.i, this.raceT + r.i * 1e-4);
+    const fin = (r: Racer) => (r.finished ? this.finTimes.get(r.id) ?? this.finSeen.get(r.i) ?? Infinity : Infinity);
+    const ahead = (r: Racer) => r.dist + (r.net && !this.sims(r) ? r.net.lead : 0);
+    return [...this.racers].sort((a, b) => fin(a) - fin(b) || ahead(b) - ahead(a)).map((r) => r.i);
   }
 
   private standings() {
     const p = this.racers[0];
     if (p.finished) return;
     let pos = 1;
-    for (let k = 1; k < this.racers.length; k++) if (this.racers[k].dist > p.dist) pos++;
+    for (let k = 1; k < this.racers.length; k++) {
+      const r = this.racers[k];
+      if (r.dist + (r.net && !this.sims(r) ? r.net.lead : 0) > p.dist) pos++;
+    }
     if (this.phase === "race" && pos < this.lastPos && this.raceT > 1.5) {
       const gained = this.lastPos - pos;
       this.addScore(25 * gained, "passes");
@@ -1461,7 +2591,8 @@ export class DiliCart {
     const roadY = tr.point(pu, p.lat, 0).y;
     const above = p.air ? p.y - roadY : 0;
 
-    for (const c of this.coins) {
+    for (let ci = 0; ci < this.coins.length; ci++) {
+      const c = this.coins[ci];
       if (!c.alive) continue;
       let du = tr.delta(pu, c.u);
       let dl = c.lat - p.lat;
@@ -1475,10 +2606,12 @@ export class DiliCart {
       if (Math.abs(du) < 1.9 && Math.abs(dl) < 1.7 && Math.abs(c.h - 1.15 - above) < 2.2) {
         c.alive = false;
         c.pop = 0.35;
-        c.respawn = 12;
+        c.respawn = c.dyn ? Infinity : 12;
+        this.emit({ e: "coin", i: ci });
         const val = c.kind === "btc" ? 60 : c.kind === "eth" ? 30 : 10;
         this.addScore(val, "coins");
         this.coinCount++;
+        p.purse++;
         this.coinStreak++;
         this.coinStreakT = 1.2;
         this.audio.coin(this.coinStreak);
@@ -1499,6 +2632,7 @@ export class DiliCart {
         this.burst(b.obj.position, "#ff9fe0", 12, 6);
         this.grantItem();
         this.audio.get();
+        this.emit({ e: "box", i: this.boxes.indexOf(b) });
       }
     }
 
@@ -1513,6 +2647,7 @@ export class DiliCart {
     // Rivals use pads too.
     for (let k = 1; k < this.racers.length; k++) {
       const r = this.racers[k];
+      if (!this.sims(r)) continue;
       const ru = tr.wrap(tr.startU + r.dist);
       for (const pad of this.pads) {
         if (Math.abs(tr.delta(ru, pad.u)) < 2.7 && Math.abs(pad.lat - r.lat) < 1.8 && r.boostT < 0.5) r.boostT = 1.0;
@@ -1520,9 +2655,24 @@ export class DiliCart {
     }
 
     for (const h of this.hazards) {
-      if (h.knocked > 0) continue;
+      if (h.knocked > 0 || this.ghostT > 0) continue;
       const du = tr.delta(pu, h.u);
+      if (h.kind === "laser") {
+        // The beam runs the full width: only its timing (or a jump) saves you.
+        if (!h.on || Math.abs(du) > 1.3 || p.air) continue;
+        h.passed = true;
+        this.hitPlayer(p, "LASERED!");
+        continue;
+      }
+      if (h.kind === "block") {
+        if (Math.abs(du) > 1.5 || Math.abs(h.lat - p.lat) > h.r + 0.9 || p.air) continue;
+        h.passed = true;
+        p.lat += Math.sign(p.lat - h.lat || 1) * 1.4;
+        this.hitPlayer(p, "SMASHED!");
+        continue;
+      }
       if (Math.abs(du) > h.r + 1.3 || Math.abs(h.lat - p.lat) > h.r + 0.9) continue;
+      h.passed = true;
       if (p.air && h.kind !== "drone") continue;
       if (h.kind === "cone") {
         h.knocked = 4;
@@ -1535,6 +2685,7 @@ export class DiliCart {
       if (h.kind === "goo") {
         // Goo is a slip, not a crash: you lose speed and wobble.
         h.life = 0;
+        if (h.hid) this.emit({ e: "gooEnd", hid: h.hid });
         if (this.shieldT > 0) { this.hitPlayer(p, "GOOED!"); continue; }
         this.hitLog.GOOED = (this.hitLog.GOOED ?? 0) + 1;
         p.speed *= 0.6;
@@ -1559,12 +2710,16 @@ export class DiliCart {
     // Rivals spin on goo and knock cones too.
     for (let k = 1; k < this.racers.length; k++) {
       const r = this.racers[k];
+      if (!this.sims(r)) continue;
       const ru = tr.wrap(tr.startU + r.dist);
       for (const h of this.hazards) {
-        if (h.knocked > 0 || r.air) continue;
+        if (h.knocked > 0 || r.air || h.kind === "laser" || h.kind === "block") continue;
         if (Math.abs(tr.delta(ru, h.u)) > h.r + 1.2 || Math.abs(h.lat - r.lat) > h.r + 0.8) continue;
         if (h.kind === "cone") { h.knocked = 4; h.kv.set((Math.random() - 0.5) * 6, 7, r.speed * 0.6); }
-        else if (h.kind === "goo" && r.spin <= 0) { r.spin = 0.9; r.speed *= 0.5; h.life = 0; }
+        else if (h.kind === "goo" && r.spin <= 0) {
+          r.spin = 0.9; r.speed *= 0.5; h.life = 0;
+          if (h.hid) this.emit({ e: "gooEnd", hid: h.hid });
+        }
       }
     }
   }
@@ -1582,7 +2737,7 @@ export class DiliCart {
       if (h.kind === "drone") {
         for (const r of h.obj.userData.rotors as THREE.Object3D[]) r.rotation.y += dt * 38;
         (h.obj.userData.tip as THREE.Object3D).visible = Math.sin(this.time * 6 + h.phase) > 0;
-        h.phase += dt * 0.9;
+        h.phase += dt * 0.9 * (h.rate ?? 1);
         h.lat = Math.sin(h.phase) * h.span;
         tr.frame(h.u, this.f);
         this.orient(h.obj, this.f, h.lat, 1.9 + Math.sin(this.time * 3 + h.phase) * 0.25);
@@ -1593,6 +2748,28 @@ export class DiliCart {
           this.orient(h.ring, this.f, h.lat, 0.05);
           h.ring.scale.setScalar(1 + Math.sin(this.time * 6 + h.phase) * 0.12);
         }
+        continue;
+      }
+      if (h.kind === "laser") {
+        // On for a beat, off for longer; it flickers just before it fires.
+        const period = 2.8 / (h.rate ?? 1), onFor = period * (0.36 + Math.min(0.14, (this.stage - 1) * 0.02));
+        const c = ((this.time + h.phase) % period + period) % period;
+        h.on = c < onFor;
+        const warn = !h.on && c > period - 0.5;
+        const beam = h.obj.userData.beam as THREE.Object3D;
+        beam.visible = h.on || (warn && Math.sin(this.time * 60) > 0);
+        beam.scale.y = h.on ? 1 : 0.4;
+        const k = h.on ? 3 : warn ? 1.6 : 0.35;
+        for (const m of h.obj.userData.cores as THREE.MeshBasicMaterial[]) m.color.setRGB(k, k * 0.12, k * 0.2);
+        tr.frame(h.u, this.f);
+        this.orient(h.obj, this.f, 0, 0);
+        continue;
+      }
+      if (h.kind === "block") {
+        h.phase += dt * (h.rate ?? 1);
+        h.lat = h.base + Math.sin(h.phase) * h.span;
+        tr.frame(h.u, this.f);
+        this.orient(h.obj, this.f, h.lat, 0.15 + Math.sin(this.time * 4 + h.phase) * 0.08);
         continue;
       }
       if (h.kind === "goo") {
@@ -1681,14 +2858,24 @@ export class DiliCart {
         continue;
       }
       tr.frame(b.u, this.f);
-      this.orient(b.obj, this.f, b.lat, 1.3 + Math.sin(t * 2 + b.phase) * 0.2);
-      const cube = b.obj.userData.cube as THREE.Mesh;
+      const lift = 1.3 + Math.sin(t * 2 + b.phase) * 0.2;
+      this.orient(b.obj, this.f, b.lat, lift);
+      const ud = b.obj.userData;
+      const cube = ud.cube as THREE.Mesh;
       cube.rotation.set(t * 0.9 + b.phase, t * 1.3 + b.phase, 0);
+      (ud.core as THREE.Mesh).rotation.set(-t * 0.6, -t * 2.2 + b.phase, 0);
+      const orbit = ud.orbit as THREE.Group;
+      orbit.rotation.y = t * 1.4 + b.phase;
+      for (const s of orbit.children) s.scale.setScalar(0.3 + 0.28 * Math.max(0, Math.sin(t * 5 + (s.userData.k as number) * 1.9 + b.phase)));
+      const pool = ud.pool as THREE.Mesh;
+      pool.position.y = 0.06 - lift;
       const cm = cube.material as THREE.MeshPhysicalMaterial;
       const hue = (t * 0.25 + b.phase * 0.2) % 1;
-      cm.color.setHSL(hue, 0.9, 0.62);
-      cm.emissive.setHSL((hue + 0.08) % 1, 1, 0.45);
-      (b.obj.userData.frame as THREE.MeshStandardMaterial).emissive.setHSL((hue + 0.5) % 1, 1, 0.55);
+      cm.color.setHSL(hue, 0.95, 0.56);
+      cm.emissive.setHSL((hue + 0.08) % 1, 1, 0.42);
+      (ud.inner as THREE.MeshBasicMaterial).color.setHSL((hue + 0.15) % 1, 1, 0.55);
+      (pool.material as THREE.MeshBasicMaterial).color.setHSL(hue, 1, 0.6);
+      (ud.frame as THREE.MeshStandardMaterial).emissive.setHSL((hue + 0.5) % 1, 1, 0.55);
       let k = 1;
       if (b.phase < 0) {
         b.phase = Math.min(0, b.phase + dt);
@@ -1702,6 +2889,8 @@ export class DiliCart {
     w.water.offset.x += dt * 0.02;
     w.water.offset.y += dt * 0.012;
     w.sky.update(t);
+    w.weather?.update(this.camera, dt, this.racers[0]?.model.root.position);
+    w.animate?.(t, dt);
     crowdTime.value = t;
     for (const b of w.balloons) b.position.y = (b.userData.base as number) + Math.sin(t * 0.8 + b.position.x) * 1.2;
     for (const sp of w.spinners) sp.rotation.y += dt * 0.6;
@@ -1732,18 +2921,48 @@ export class DiliCart {
       sm.opacity = 0.75 / (1 + height * 0.35);
       r.model.shadow.scale.setScalar(1 + height * 0.08);
 
-      // Visual yaw: sideways velocity, plus the drift slide.
-      const slideTarget = r.player
-        ? this.driftDir * 0.42
-        : (Math.abs(this.f.curv) > 0.018 && r.speed > 14 && !r.air ? Math.sign(this.f.curv) * 0.28 : 0);
-      r.slide += (slideTarget - r.slide) * Math.min(1, dt * 7);
-      const yaw = Math.atan2(r.latV, Math.max(4, r.speed)) * 0.9 + r.slide;
+      // Visual yaw: sideways velocity, plus the drift slide. A kart another
+      // game drives arrives with its own.
+      const n = r.net && !this.sims(r) ? r.net : null;
+      let yaw: number;
+      if (n) {
+        yaw = n.yaw;
+        r.slide = n.yaw;
+      } else {
+        const slideTarget = r.player
+          ? this.driftDir * (this.driftHold < 0 ? 0.3 : 0.48)
+          : (Math.abs(this.f.curv) > 0.018 && r.speed > 14 && !r.air ? Math.sign(this.f.curv) * 0.28 : 0);
+        r.slide += (slideTarget - r.slide) * Math.min(1, dt * 7);
+        yaw = Math.atan2(r.latV, Math.max(4, r.speed)) * 0.9 + r.slide;
+      }
+      r.yaw = yaw;
       const wave = !r.player ? 0
         : this.phase === "finish" ? 2
         : this.phase === "intro" && this.phaseT > 2.2 && this.phaseT < 4.9 ? 1 : 0;
       // Distant karts drop their fine detail.
-      r.model.setDetail(r.player || r.model.root.position.distanceToSquared(this.camera.position) < 48 * 48);
-      r.model.update({
+      const camD2 = r.model.root.position.distanceToSquared(this.camera.position);
+      r.model.setDetail(r.player || camD2 < 48 * 48);
+      // A kart right on the lens (tailgating the camera) would fill the
+      // screen from the inside: hide it until it pulls clear.
+      if (!r.player) {
+        let near = camD2 < (r.model.root.visible ? 2.6 * 2.6 : 3.2 * 3.2);
+        // Also a kart sitting between the camera and the player: it would
+        // hide your own kart behind its dome.
+        if (!near && !this.attract && !this.replay && !this.director) {
+          const cam = this.camera.position, me = this.racers[0].model.root.position;
+          const vx = me.x - cam.x, vy = me.y - cam.y, vz = me.z - cam.z;
+          const kx = r.model.root.position.x - cam.x, ky = r.model.root.position.y - cam.y, kz = r.model.root.position.z - cam.z;
+          const len2 = vx * vx + vy * vy + vz * vz;
+          const t = len2 > 1 ? (kx * vx + ky * vy + kz * vz) / len2 : 1;
+          if (t > 0 && t < 0.8) {
+            const px = kx - vx * t, py = ky - vy * t, pz = kz - vz * t;
+            near = px * px + py * py + pz * pz < (r.model.root.visible ? 1.5 * 1.5 : 1.9 * 1.9);
+          }
+        }
+        r.model.root.visible = !near;
+        if (r.net?.label) r.net.label.visible = !near;
+      }
+      const pose: M.KartPose = {
         speed: r.speed,
         steer: r.steer,
         slide: yaw,
@@ -1751,13 +2970,549 @@ export class DiliCart {
         squash: r.squash,
         roll: r.spinAng,
         flip: r.flip,
-        boost: r.boostT > 0 ? Math.min(1, r.boostT * 2) : 0,
-        glide: r.air ? Math.min(1, r.airT * 2.5) : 0,
-        pitch: r.air ? THREE.MathUtils.clamp(r.vy * 0.035, -0.28, 0.3) : 0,
+        boost: n ? n.boost : r.boostT > 0 ? Math.min(1, r.boostT * 2) : 0,
+        glide: n ? n.glide : r.air ? Math.min(1, r.airT * 2.5) : 0,
+        pitch: n ? n.pitch : r.air ? THREE.MathUtils.clamp(r.vy * 0.035, -0.28, 0.3) : 0,
         wave,
         time: this.time + r.i,
+      };
+      r.model.update(this.poseOverride ? this.poseOverride(r.i, pose) : pose, dt);
+      this.poses[r.i] = pose;
+      if (r.net) this.dressNetKart(r);
+    }
+  }
+
+  /* ---------------- Multiplayer ---------------- */
+
+  /**
+   * Is this kart simulated by this game? The player always; bots (and
+   * players who left) by the host, or by us offline. Everything else is
+   * drawn from the network.
+   */
+  private sims(r: Racer): boolean {
+    return r.player || (!r.human && (!this.room || this.room.isHost()));
+  }
+
+  private newNetKart(r: Racer): NetKart {
+    return {
+      buf: [], lateMean: 0, lateDev: 0, lates: [], want: 120, gap: SEND_MS, delay: 120, primed: false,
+      yaw: 0, boost: 0, glide: 0, pitch: 0, tier: 0, flags: 0, lead: 0, ahead: 0, shown: -Infinity,
+      label: r.human ? this.nameLabel(r.name) : null, shield: null,
+    };
+  }
+
+  /** Once the track is built: listen to the room and tell it we're ready. */
+  private joinNet() {
+    const room = this.room!, nr = this.netRace!;
+    this.netOff.push(
+      room.on("state", (id, d) => this.onState(id, d)),
+      room.on("bots", (list) => {
+        if (room.isHost()) return;
+        for (const e of list) {
+          const r = this.byId.get(this.order[e[0]]);
+          if (r && !r.player) this.pushState(r, e.slice(1));
+        }
+      }),
+      room.on("go", (m) => { if (m.raceId === nr.raceId) this.goAt = m.at; }),
+      room.on("ev", (m) => this.onEvent(m.id, m.ev)),
+      room.on("left", (m) => this.netLeft(m.id)),
+      room.on("status", (st) => this.hud.waiting(st === "reconnecting" ? "Connection dropped — reconnecting…" : st === "closed" && this.alive ? "Disconnected from the room" : null)),
+      room.on("fin", (m) => {
+        if (m.raceId !== nr.raceId) return;
+        this.finTimes.set(m.id, m.time);
+        const r = this.byId.get(m.id);
+        if (r && !r.player) r.finished = true;
+      }),
+    );
+    room.send({ t: "loaded", raceId: nr.raceId });
+    const known = nr.goAt?.() ?? 0;
+    if (known) this.goAt = known;
+  }
+
+  private onState(id: string, d: number[]) {
+    const r = this.byId.get(id);
+    if (!r || r.player || !r.net || !Array.isArray(d) || d.length < 12) return;
+    // They're back (a reconnect after we'd handed their kart to the host).
+    if (!r.human && this.netRace?.grid.some((g) => g.id === id)) r.human = true;
+    this.pushState(r, d);
+  }
+
+  /** Keep a state in time order, and learn how late states tend to arrive. */
+  private pushState(r: Racer, d: number[]) {
+    const n = r.net!;
+    const buf = n.buf;
+    const ts = d[S.ts];
+    if (buf.length && ts > buf[buf.length - 1][S.ts]) n.gap += (Math.min(1000, ts - buf[buf.length - 1][S.ts]) - n.gap) * 0.1;
+    if (buf.length && ts <= buf[buf.length - 1][S.ts]) {
+      if (buf.some((x) => x[S.ts] === ts)) return;
+      buf.push(d);
+      buf.sort((a, b) => a[S.ts] - b[S.ts]);
+    } else buf.push(d);
+    if (buf.length > 40) buf.splice(0, buf.length - 40);
+    // Lateness = clock error + one-way trip + jitter. Render far enough in
+    // the past that the next state has almost always arrived: mean plus a
+    // few deviations plus one send interval.
+    const late = this.room!.now() - ts;
+    if (!n.primed) { n.lateMean = late; n.lateDev = 12; n.primed = true; }
+    else {
+      n.lateMean += (late - n.lateMean) * 0.08;
+      n.lateDev += (Math.abs(late - n.lateMean) - n.lateDev) * 0.08;
+    }
+    // Render far enough back that ~90% of states have arrived in time (the
+    // rest are bridged by a short extrapolation), plus one send interval.
+    n.lates.push(late);
+    if (n.lates.length > 40) n.lates.shift();
+    const sorted = [...n.lates].sort((x, y) => x - y);
+    const p90 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))];
+    const want = THREE.MathUtils.clamp(p90 + Math.max(SEND_MS, n.gap) + 10, 50, 600);
+    n.want = want;
+  }
+
+  private netTick(dt: number) {
+    const room = this.room!;
+    const now = room.now();
+    for (const r of this.racers) {
+      if (!r.net || this.sims(r)) continue;
+      // Ease the render delay toward what the network needs. Changing it
+      // bends the kart's apparent speed, so slowly: shrinking by at most 6%
+      // of real time (invisible), growing by up to 25% (a starving buffer
+      // looks worse than a brief slow-down).
+      const n = r.net, ms = dt * 1000;
+      n.delay += THREE.MathUtils.clamp(n.want - n.delay, -0.06 * ms, 0.25 * ms);
+      this.followNet(r, now, dt);
+    }
+    if (this.trace && this.trace.length < 3000) {
+      const k: Record<string, number[]> = {};
+      for (const r of this.racers) k[r.id] = [+r.dist.toFixed(3), +r.lat.toFixed(3), r.net && !this.sims(r) ? Math.round(r.net.delay - (r.speed > 0.5 ? r.net.ahead / r.speed * 1000 : 0)) : 0, r.net ? Math.round(r.net.lateMean) : 0, r.net ? Math.round(r.net.lateDev) : 0, r.net ? Math.round(r.net.gap) : 0];
+      this.trace.push({ t: +now.toFixed(1), k });
+    }
+
+    // Send ours 20 times a second (and the bots', if we're the host).
+    this.sendT += dt;
+    if (this.sendT < SEND_MS / 1000) return;
+    this.sendT = Math.min(this.sendT - SEND_MS / 1000, SEND_MS / 1000);
+    if (this.phase === "load") return;
+    room.sendState(this.packState(this.racers[0], now));
+    if (room.isHost()) {
+      const list: number[][] = [];
+      for (const r of this.racers) {
+        if (r.player || r.human) continue;
+        list.push([this.order.indexOf(r.id), ...this.packState(r, now)]);
+      }
+      if (list.length) room.sendBots(list);
+    }
+  }
+
+  private packState(r: Racer, now: number): number[] {
+    const pose = this.poses[r.i];
+    const me = r.player;
+    const flags = (r.air ? F.air : 0) | (r.spin > 0 ? F.spin : 0) | (r.finished ? F.finished : 0) | (r.frozen > 0 ? F.frozen : 0)
+      | (me && this.shieldT > 0 ? F.shield : 0) | (me && this.ghostT > 0 ? F.ghost : 0) | (me && this.magnetT > 0 ? F.magnet : 0)
+      | ((me ? this.driftDir !== 0 : Math.abs(r.slide) > 0.2) ? F.drift : 0);
+    const q = (v: number, k = 100) => Math.round(v * k) / k;
+    return [
+      Math.round(now), q(r.dist), q(r.lat), q(r.speed), q(r.y), flags, q(r.yaw, 1000), q(r.steer), q(r.hop), q(r.flip),
+      q(r.spinAng), me ? this.driftTier : 0, q(pose?.glide ?? 0), q(pose?.pitch ?? 0, 1000), q(pose?.boost ?? 0), q(r.squash),
+    ];
+  }
+
+  /** Put a network kart where it was `delay` ms ago, between the two states either side. */
+  private followNet(r: Racer, now: number, dt: number) {
+    const n = r.net!;
+    const buf = n.buf;
+    if (!buf.length) return;
+    const t = now - n.delay;
+    // Drop states we've moved past (keeping one behind for the blend).
+    while (buf.length > 2 && buf[1][S.ts] <= t) buf.shift();
+    let a = buf[0], b = buf[0];
+    if (buf.length > 1 && buf[0][S.ts] <= t) { a = buf[0]; b = buf[1]; }
+    const span = b[S.ts] - a[S.ts];
+    const k = span > 0 ? THREE.MathUtils.clamp((t - a[S.ts]) / span, 0, 1) : 1;
+    const L = (i: number) => a[i] + (b[i] - a[i]) * k;
+    const near = k < 0.5 ? a : b;
+    let dist = L(S.dist);
+    // Ran out of states (a hiccup): carry on at the pace it was really
+    // making (not its speedo — a struggling device moves slower), briefly.
+    if (t > b[S.ts] && span > 0) {
+      const pace = Math.max(0, (b[S.dist] - a[S.dist]) / (span / 1000));
+      dist += Math.min(pace, b[S.speed] + 2) * Math.min(0.25, (t - b[S.ts]) / 1000);
+    }
+    r.lat = L(S.lat);
+    r.speed = L(S.speed);
+    // Karts mostly just go forward, so predict along the road to show them
+    // closer to where they really are now (sideways stays interpolated —
+    // that's where the surprises are). Eased, so a sudden stop doesn't snap.
+    const pace = span > 0 ? Math.min(r.speed, Math.max(0, (b[S.dist] - a[S.dist]) / (span / 1000)) + 1) : r.speed;
+    const stopped = (near[S.flags] & (F.spin | F.frozen)) !== 0;
+    const look = stopped ? 0 : THREE.MathUtils.clamp(n.delay - 60, 0, 160) / 1000;
+    n.ahead += (pace * look - n.ahead) * Math.min(1, dt * 8);
+    // Never roll a kart backwards to fix an over-prediction: hold it for a
+    // moment and let the real position catch up (a big jump still snaps).
+    let shown = dist + n.ahead;
+    if (shown < n.shown && n.shown - shown < 4) shown = n.shown;
+    n.shown = shown;
+    r.dist = shown;
+    r.latV = span > 0 ? (b[S.lat] - a[S.lat]) / (span / 1000) : 0;
+    r.y = L(S.y);
+    const fl = near[S.flags];
+    r.air = (fl & F.air) !== 0;
+    r.spin = fl & F.spin ? 0.3 : 0;
+    r.frozen = fl & F.frozen ? 0.3 : 0;
+    r.finished = r.finished || (fl & F.finished) !== 0;
+    r.boostT = near[S.boost] > 0 ? 0.2 : 0;
+    r.steer = L(S.steer);
+    r.hop = L(S.hop);
+    r.flip = L(S.flip);
+    r.spinAng = near[S.roll];
+    r.squash = L(S.squash);
+    n.yaw = L(S.yaw);
+    n.boost = L(S.boost);
+    n.glide = L(S.glide);
+    n.pitch = L(S.pitch);
+    n.tier = near[S.tier];
+    n.flags = fl;
+    // Where it really is now, for fair standings.
+    n.lead = Math.max(0, r.speed * n.delay / 1000 - n.ahead);
+  }
+
+  /** Name over the kart, the shield bubble and ghost flicker for other players. */
+  private dressNetKart(r: Racer) {
+    const n = r.net!;
+    if (n.label) {
+      const w = r.model.root.position;
+      n.label.position.set(w.x, w.y + 2.95 + r.hop, w.z);
+      const d = w.distanceTo(this.camera.position);
+      // Grows with distance so a name stays readable down the straight.
+      const k = THREE.MathUtils.clamp(d / 13, 0.7, 2.6);
+      n.label.scale.set(3.1 * k, 0.74 * k, 1);
+      (n.label.material as THREE.SpriteMaterial).opacity = THREE.MathUtils.clamp(1.3 - d / 140, 0, 1);
+    }
+    if (this.sims(r)) return;
+    const shield = (n.flags & F.shield) !== 0;
+    if (shield && !n.shield) {
+      n.shield = M.shieldBubble();
+      r.model.body.add(n.shield);
+    }
+    if (n.shield) {
+      n.shield.visible = shield;
+      if (shield) (n.shield.material as THREE.ShaderMaterial).uniforms.uTime.value = this.time;
+    }
+    r.model.body.visible = !(n.flags & F.ghost) || Math.sin(this.time * 38 + r.i) > 0.35;
+  }
+
+  private nameLabel(name: string): THREE.Sprite {
+    const c = document.createElement("canvas");
+    c.width = 512; c.height = 122;
+    const g = c.getContext("2d")!;
+    g.font = "800 58px Inter, system-ui, sans-serif";
+    const text = name.length > 16 ? name.slice(0, 15) + "…" : name;
+    const w = Math.min(500, g.measureText(text).width + 64);
+    const x = (512 - w) / 2;
+    g.fillStyle = "rgba(10,12,32,.78)";
+    g.beginPath(); g.roundRect(x, 14, w, 86, 43); g.fill();
+    g.strokeStyle = "rgba(143,160,255,.55)";
+    g.lineWidth = 4;
+    g.stroke();
+    g.fillStyle = "#fff";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(text, 256, 60);
+    // A little pointer down at the kart.
+    g.fillStyle = "rgba(10,12,32,.78)";
+    g.beginPath(); g.moveTo(240, 99); g.lineTo(272, 99); g.lineTo(256, 118); g.fill();
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false }));
+    sp.renderOrder = 8;
+    this.scene.add(sp);
+    return sp;
+  }
+
+  /** A player dropped out: their kart becomes a bot the host drives. */
+  private netLeft(id: string) {
+    const r = this.byId.get(id);
+    if (!r || r.player || !r.human) return;
+    if (this.phase === "race") this.hud.pop(`${r.name} left · a Custodian takes over`, "purple");
+    r.human = false;
+    r.skill = 0.95;
+    r.greed = 0.6;
+    r.aggro = 0.3;
+    r.itemT = 10;
+    if (r.net?.label) (r.net.label.material as THREE.SpriteMaterial).color.set("#9aa3c7");
+  }
+
+  /** The person a bot races against: whoever is nearest on the road. */
+  private focusHuman(r: Racer): Racer {
+    let best = this.racers[0], gap = Infinity;
+    for (const o of this.racers) {
+      if (!o.human || o.finished) continue;
+      const d = Math.abs(o.dist - r.dist);
+      if (d < gap) { gap = d; best = o; }
+    }
+    return best;
+  }
+
+  private emit(ev: GameEvent) {
+    this.room?.event(ev);
+  }
+
+  private uid() {
+    return `${this.room?.you ?? "me"}:${++this.nextId}`;
+  }
+
+  private onEvent(from: string, ev: GameEvent) {
+    const tr = this.track;
+    switch (ev.e) {
+      case "coin": {
+        const c = this.coins[ev.i];
+        if (c?.alive) { c.alive = false; c.pop = 0.35; c.respawn = 12; }
+        break;
+      }
+      case "box": {
+        const b = this.boxes[ev.i];
+        if (b?.alive) { b.alive = false; b.respawn = 3; b.obj.visible = false; this.burst(b.obj.position, "#9fd4ff", 10, 5); }
+        break;
+      }
+      case "seek": {
+        const obj = M.seeker();
+        this.scene.add(obj);
+        this.seekers.push({ u: ev.u, lat: ev.lat, speed: ev.speed, life: 6, obj, target: this.byId.get(ev.target) ?? null, sid: ev.sid, mine: false });
+        break;
+      }
+      case "seekEnd": {
+        const o = this.seekers.find((x) => x.sid === ev.sid);
+        if (o) o.life = 0;
+        // Our seeker landed on someone in another game: our points.
+        if (ev.hit && ev.sid.startsWith(this.room!.you + ":")) this.seekerScored(o?.target ?? null);
+        break;
+      }
+      case "zap": {
+        const zapper = this.byId.get(from);
+        if (zapper) this.applyZap(zapper, ev.dist);
+        break;
+      }
+      case "goo": {
+        const obj = M.goo();
+        this.scene.add(obj);
+        obj.scale.setScalar(0.01);
+        this.hazards.push({ kind: "goo", u: tr.wrap(ev.u), lat: ev.lat, r: 1.3, obj, life: 14, phase: 0, knocked: 0, kv: V(), base: ev.lat, span: 0, ring: null, hid: ev.hid });
+        break;
+      }
+      case "gooEnd": {
+        const h = this.hazards.find((x) => x.hid === ev.hid);
+        if (h) h.life = 0;
+        break;
+      }
+      case "orb": {
+        const target = this.byId.get(ev.target);
+        if (!target) break;
+        const obj = M.orb();
+        this.scene.add(obj);
+        this.orbs.push({ u: ev.u, lat: ev.lat, speed: ev.speed, life: 6, obj, target, oid: ev.oid });
+        break;
+      }
+      case "orbEnd": {
+        const o = this.orbs.find((x) => x.oid === ev.oid);
+        if (o) { o.life = 0; this.burst(o.obj.position, "#ff4a5e", 20, 7); }
+        break;
+      }
+      case "strike": {
+        const r = this.byId.get(ev.who);
+        if (!r || !this.sims(r)) break;
+        if (r.player) this.hitPlayer(r, "RAMMED!");
+        else if (r.spin <= 0) { r.spin = 1.2; r.speed *= 0.5; }
+        break;
+      }
+    }
+  }
+
+  /* ---------------- Replay ---------------- */
+
+  private recordTape(dt: number) {
+    if (!this.tape || !(this.phase === "race" || this.phase === "finish")) return;
+    this.tape.record(dt, (k, out, o) => {
+      const r = this.racers[k];
+      const m = r.model;
+      const p = this.poses[k];
+      m.root.position.toArray(out, o);
+      m.root.quaternion.toArray(out, o + 3);
+      m.shadowRoot.position.toArray(out, o + 7);
+      m.shadowRoot.quaternion.toArray(out, o + 10);
+      if (p) {
+        out[o + 14] = p.speed; out[o + 15] = p.steer; out[o + 16] = p.slide; out[o + 17] = p.hop; out[o + 18] = p.squash;
+        out[o + 19] = p.roll; out[o + 20] = p.flip; out[o + 21] = p.boost; out[o + 22] = p.glide; out[o + 23] = p.pitch ?? 0;
+      }
+      out[o + 24] = (m.shadow.material as THREE.MeshBasicMaterial).opacity;
+      out[o + 25] = r.dist;
+    });
+  }
+
+  /** The finish again from trackside cameras, looping behind the results. */
+  private startReplay() {
+    const tape = this.tape;
+    if (!tape || tape.length < 5) return;
+    // The newest frame is phaseT after the line; play from 6 s before it.
+    const cross = this.phaseT;
+    const from = Math.min(tape.length - 0.1, cross + 6);
+    const to = Math.max(0, cross - 1.4);
+    this.replay = { t: 0, from, to, shot: -1, shotT: 99, pos: V(), side: 1 };
+    for (const r of this.racers) r.model.root.visible = true;
+    this.hud.replay(true);
+  }
+
+  private playReplay(dt: number) {
+    const rp = this.replay!;
+    const tape = this.tape!;
+    const len = rp.from - rp.to;
+    rp.t += dt;
+    if (rp.t > len) { rp.t = 0; rp.shotT = 99; }
+    const back = rp.from - rp.t;
+    const qa = this.q1, qb = new THREE.Quaternion();
+    for (let k = 0; k < this.racers.length; k++) {
+      const [d, a, b, f] = tape.at(k, back);
+      const lerp = (i: number) => d[a + i] + (d[b + i] - d[a + i]) * f;
+      const m = this.racers[k].model;
+      m.root.position.set(lerp(0), lerp(1), lerp(2));
+      m.root.quaternion.copy(qa.fromArray(d, a + 3).slerp(qb.fromArray(d, b + 3), f));
+      m.shadowRoot.position.set(lerp(7), lerp(8), lerp(9));
+      m.shadowRoot.quaternion.copy(qa.fromArray(d, a + 10).slerp(qb.fromArray(d, b + 10), f));
+      (m.shadow.material as THREE.MeshBasicMaterial).opacity = lerp(24);
+      m.setDetail(k === 0 || m.root.position.distanceToSquared(this.camera.position) < 48 * 48);
+      m.update({
+        speed: lerp(14), steer: lerp(15), slide: lerp(16), hop: lerp(17), squash: lerp(18), roll: lerp(19),
+        flip: lerp(20), boost: lerp(21), glide: lerp(22), pitch: lerp(23), wave: 0, time: this.time + k,
       }, dt);
     }
+  }
+
+  /** Where the player's kart is in the replay, and how far round the lap. */
+  private replayDist() {
+    const [d, a, b, f] = this.tape!.at(0, this.replay!.from - this.replay!.t);
+    return d[a + 25] + (d[b + 25] - d[a + 25]) * f;
+  }
+
+  private replayCamera(dt: number) {
+    const rp = this.replay!;
+    const cam = this.camera;
+    const tr = this.track;
+    const kart = this.racers[0].model.root.position;
+    const u = tr.wrap(tr.startU + this.replayDist());
+    rp.shotT += dt;
+    if (rp.shotT > 2.6) {
+      rp.shotT = 0;
+      rp.shot++;
+      rp.side = Math.random() < 0.5 ? -1 : 1;
+      // Kerb camera, planted up the road for the kart to rush past.
+      rp.pos.copy(tr.point(u + 24, rp.side * (EDGE - 2.2), 0)).y += 1.1;
+    }
+    tr.frame(u, this.f2);
+    const f = this.f2;
+    let fov = 50;
+    const kind = rp.shot % 4;
+    if (kind === 0) {
+      // Long lens from the trackside, panning as the kart flies by.
+      cam.position.copy(rp.pos);
+      // Zoom to hold the kart at a steady size, like a camera operator.
+      const d = cam.position.distanceTo(kart);
+      fov = THREE.MathUtils.clamp(2 * THREE.MathUtils.radToDeg(Math.atan(3.2 / d)), 9, 45);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this.v1.copy(kart).setY(kart.y + 0.8));
+    } else if (kind === 1) {
+      // Low tracking shot just ahead of the front wheel.
+      const want = this.v1.copy(kart).addScaledVector(f.tan, 3.4).addScaledVector(f.side, rp.side * 2.3);
+      want.y = kart.y + 0.45;
+      if (rp.shotT < dt * 1.5) this.camPos.copy(want);
+      this.camPos.lerp(want, 1 - Math.exp(-dt * 10));
+      cam.position.copy(this.camPos);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this.v2.copy(kart).setY(kart.y + 0.9).addScaledVector(f.tan, -1));
+      fov = 58;
+    } else if (kind === 2) {
+      // Helicopter, high and behind, the field strung out ahead.
+      const want = this.v1.copy(kart).addScaledVector(f.tan, -16).addScaledVector(f.side, rp.side * 6);
+      want.y = kart.y + 11;
+      if (rp.shotT < dt * 1.5) this.camPos.copy(want);
+      this.camPos.lerp(want, 1 - Math.exp(-dt * 4));
+      cam.position.copy(this.camPos);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this.v2.copy(kart).addScaledVector(f.tan, 8));
+      fov = 48;
+    } else {
+      // Slow orbit round the driver, rolling with them.
+      const a = rp.shotT * 0.7 + rp.side;
+      const dir = this.v3.copy(f.tan).multiplyScalar(Math.cos(a)).addScaledVector(f.side, Math.sin(a));
+      cam.position.copy(kart).addScaledVector(dir, 4.6).setY(kart.y + 1.5);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this.v2.copy(kart).setY(kart.y + 0.9));
+      fov = 52;
+    }
+    // The results card covers the right of wide screens: shift the lens so
+    // the action sits in the open space on the left.
+    const w = this.renderer.domElement.width, h = this.renderer.domElement.height;
+    if (cam.aspect > 1) cam.setViewOffset(w, h, w * 0.2, 0, w, h);
+    return fov;
+  }
+
+  /* ---------------- Live TV ---------------- */
+
+  /** Point the circuit's jumbotrons at a live broadcast camera. */
+  private buildTv() {
+    const screens = this.world.liveScreens;
+    if (!screens?.length || this.attract || this.quality === "low") return;
+    const rt = new THREE.WebGLRenderTarget(384, 216, { type: THREE.HalfFloatType });
+    const cam = new THREE.PerspectiveCamera(30, 16 / 9, 0.5, 420);
+    for (const s of screens) {
+      const m = s.material as THREE.MeshBasicMaterial;
+      m.map = rt.texture;
+      m.color.setScalar(0.8);
+      m.needsUpdate = true;
+    }
+    this.tv = { rt, cam, screens, n: 0, shot: 0, t: 99, pos: V() };
+  }
+
+  private renderTv(dt: number) {
+    const tv = this.tv;
+    if (!tv || this.lowered || this.tvOff) return;
+    tv.t += dt;
+    // A second view of the whole scene: drawn every fifth frame only, so no
+    // single frame gets much heavier than the rest.
+    if (++tv.n % 5) return;
+    const tr = this.track;
+    const p = this.racers[0];
+    const kart = p.model.root.position;
+    const u = tr.wrap(tr.startU + p.dist);
+    if (tv.t > 5) { tv.t = 0; tv.shot++; }
+    const cam = tv.cam;
+    tr.frame(u, this.f2);
+    const f = this.f2;
+    const shot = tv.shot % 3;
+    if (shot === 0) {
+      // Leader cam: a camera bike just ahead, looking back at the driver.
+      cam.position.copy(kart).addScaledVector(f.tan, 8).addScaledVector(f.side, 1.8).setY(kart.y + 2.4);
+      cam.lookAt(this.v1.copy(kart).setY(kart.y + 0.9));
+      cam.fov = 38;
+    } else if (shot === 1) {
+      // Chase helicopter.
+      cam.position.copy(kart).addScaledVector(f.tan, -14).setY(kart.y + 9);
+      cam.lookAt(this.v1.copy(kart).addScaledVector(f.tan, 10));
+      cam.fov = 44;
+    } else {
+      // The blimp's view: high above, long lens on the pack.
+      cam.position.copy(kart).addScaledVector(f.tan, -22).addScaledVector(f.side, 12).setY(kart.y + 42);
+      cam.lookAt(this.v1.copy(kart).addScaledVector(f.tan, 6));
+      cam.fov = 26;
+    }
+    cam.updateProjectionMatrix();
+    const r = this.renderer;
+    // Never sample the feed while drawing it, and reuse this frame's shadows.
+    for (const s of tv.screens) s.visible = false;
+    const auto = r.shadowMap.autoUpdate;
+    r.shadowMap.autoUpdate = false;
+    r.setRenderTarget(tv.rt);
+    r.render(this.scene, cam);
+    r.setRenderTarget(null);
+    r.shadowMap.autoUpdate = auto;
+    for (const s of tv.screens) s.visible = true;
   }
 
   /** Drift sparks, boost embers, grass spray. */
@@ -1786,10 +3541,12 @@ export class DiliCart {
           }
         }
       }
-      if (r.air || r.spin > 0) continue;
+      if (r.air || r.spin > 0) { this.skids?.lift(r.i * 2); this.skids?.lift(r.i * 2 + 1); continue; }
       this.track.frame(this.track.wrap(this.track.startU + r.dist), this.f2);
-      const drifting = r.player ? this.driftDir !== 0 : Math.abs(r.slide) > 0.2;
-      const tier = r.player ? this.driftTier : 0;
+      const nk = r.net && !this.sims(r) ? r.net : null;
+      const drifting = r.player ? this.driftDir !== 0 : nk ? (nk.flags & F.drift) !== 0 : Math.abs(r.slide) > 0.2;
+      this.tyreFx(r, drifting);
+      const tier = r.player ? this.driftTier : nk ? nk.tier : 0;
       if (drifting && r.speed > 8) {
         const n = r.player ? 3 : 1;
         for (let k = 0; k < n; k++) {
@@ -1819,6 +3576,57 @@ export class DiliCart {
         const w = root.localToWorld(this.v1.set(0, 0.2, -1.2));
         this.puffs.spawn(w.x, w.y, w.z, (Math.random() - 0.5) * 2, 1.5, (Math.random() - 0.5) * 2,
           this.col.set(Math.random() < 0.5 ? "#7bd65c" : "#b9e68f"), 0.7, 0.5, { grav: 5, grow: 0.8 });
+      }
+    }
+  }
+
+  /** Rubber on the road, smoke off the tyres, spray on the wet street. */
+  private tyreFx(r: Racer, drifting: boolean) {
+    const root = r.model.root;
+    const wet = this.trackId === "town";
+    const near = r.player || root.position.distanceToSquared(this.camera.position) < 55 * 55;
+    const side = this.v3.set(1, 0, 0).applyQuaternion(root.quaternion);
+    const sliding = drifting && r.speed > (r.player ? 8 : 12);
+    for (const w of [0, 1]) {
+      const key = r.i * 2 + w;
+      const sx = w ? -0.95 : 0.95;
+      if (!sliding || !this.skids) { this.skids?.lift(key); continue; }
+      const p = root.localToWorld(this.v1.set(sx, 0.035, -0.95));
+      this.skids.mark(key, p, side, 0.36, r.player ? 1 : 0.55);
+    }
+    if (!near) return;
+    const back = this.v2.copy(this.f2.tan).multiplyScalar(-1);
+    if (sliding && !wet && Math.random() < (r.player ? 0.9 : 0.35)) {
+      for (const sx of [0.95, -0.95]) {
+        const w = root.localToWorld(this.v1.set(sx, 0.35, -1.05));
+        const g = 0.82 + Math.random() * 0.12;
+        this.puffs.spawn(w.x, w.y, w.z,
+          back.x * 2 + (Math.random() - 0.5) * 1.6, 0.7 + Math.random() * 0.8, back.z * 2 + (Math.random() - 0.5) * 1.6,
+          this.col.setRGB(g, g, g * 1.03), 0.75 + this.driftTier * 0.12, 1.1 + Math.random() * 0.5,
+          { grow: 4, drag: 1.4, grav: -0.4, alpha: 0.26 });
+      }
+    }
+    if (wet && r.speed > 9) {
+      // Rooster tails of spray off the rear tyres, and a fine mist.
+      const k = Math.min(1, r.speed / 30);
+      const n = (r.player ? 2 : 1) + (sliding ? 1 : 0);
+      for (let j = 0; j < n; j++) {
+        for (const sx of [0.95, -0.95]) {
+          if (!r.player && Math.random() < 0.5) continue;
+          const w = root.localToWorld(this.v1.set(sx, 0.15, -1.15));
+          const sp = r.speed * (0.25 + Math.random() * 0.2);
+          this.sparks.spawn(w.x, w.y, w.z,
+            back.x * sp + side.x * sx * 1.2 + (Math.random() - 0.5), 2 + Math.random() * 2.5 * k, back.z * sp + side.z * sx * 1.2 + (Math.random() - 0.5),
+            this.col.set("#9fc4ff"), 0.14 + Math.random() * 0.08, 0.35 + Math.random() * 0.25, { grav: 16, drag: 1.2, alpha: 0.5 });
+        }
+      }
+      // Fine mist behind: small and faint for your own kart (it's right by
+      // the lens), fuller behind the others.
+      if (Math.random() < (r.player ? 0.5 : 0.3) * k) {
+        const w = root.localToWorld(this.v1.set((Math.random() - 0.5) * 1.8, 0.3, -1.4));
+        this.puffs.spawn(w.x, w.y, w.z, back.x * r.speed * 0.15, 0.5, back.z * r.speed * 0.15,
+          this.col.set("#7d8fb0"), r.player ? 0.45 : 0.9, r.player ? 0.45 : 0.7,
+          { grow: r.player ? 1.6 : 2.6, drag: 2, alpha: (r.player ? 0.1 : 0.18) + (sliding ? 0.08 : 0) });
       }
     }
   }
@@ -1883,6 +3691,9 @@ export class DiliCart {
       cam.up.set(0, 1, 0);
       cam.lookAt(this.camLook);
       wantFov = 58;
+    } else if (this.replay) {
+      wantFov = this.replayCamera(dt);
+      this.fov = wantFov;
     } else if (this.phase === "finish") {
       // Swing round to the front of the kart, like the reference's finish.
       const tr = this.track;
@@ -1919,7 +3730,22 @@ export class DiliCart {
       cam.position.copy(this.camPos);
       cam.up.set(0, 1, 0).lerp(c.up, 0.5).normalize();
       cam.lookAt(this.camLook);
-      wantFov = 64 + (p.boostT > 0 ? 10 : 0) + Math.max(0, p.speed - 18) * 0.35 + Math.max(0, 1 - cam.aspect) * 22;
+      // A punch of FOV the moment a boost fires, easing into the boost FOV.
+      const boosting = p.boostT > 0;
+      if (boosting && !this.wasBoost) { this.boostKick = 1; this.shake = Math.max(this.shake, 0.18); }
+      this.wasBoost = boosting;
+      this.boostKick = Math.max(0, this.boostKick - dt * 2.4);
+      wantFov = 64 + (boosting ? 10 : 0) + this.boostKick * 7 + Math.max(0, p.speed - 18) * 0.35 + Math.max(0, 1 - cam.aspect) * 22;
+      // Road rumble: a smooth, fast tremble that grows with speed and on the grass.
+      if (!p.air && this.phase === "race") {
+        const off = Math.abs(p.lat) > EDGE + 0.4 ? 3 : 1;
+        // Capped: at Infinite's top speeds an ever-growing tremble read as judder.
+        const amp = Math.min(0.022, Math.max(0, p.speed - 14) * 0.0016 + (boosting ? 0.012 : 0)) * off;
+        const t = this.time;
+        cam.position.x += (Math.sin(t * 41.3) + Math.sin(t * 23.7 + 1.3)) * amp;
+        cam.position.y += (Math.sin(t * 37.9 + 0.7) + Math.sin(t * 19.1 + 2.1)) * amp * 0.8;
+        cam.position.z += Math.sin(t * 29.3 + 2.6) * amp;
+      }
     }
 
     if (this.shake > 0) {
@@ -1939,8 +3765,46 @@ export class DiliCart {
     this.followSun();
   }
 
+  /**
+   * Real reflections: photograph the finished track (neon, towers, stands,
+   * sky) into a cube map once at load and light every material with it, so
+   * paint, glass and wet tarmac mirror what's actually around them.
+   */
+  private captureReflections() {
+    // Neon Town's reflections are hand-tuned (pink and cyan light panels that
+    // make the wet streets glow), which reads better than a photo of dark towers.
+    if (this.trackId === "town") return;
+    const size = this.quality === "low" ? 128 : 256;
+    const cubeRT = new THREE.WebGLCubeRenderTarget(size, { type: THREE.HalfFloatType });
+    const cubeCam = new THREE.CubeCamera(0.5, 3000, cubeRT);
+    // Hide the karts and particles so the capture is just the world.
+    const hidden: THREE.Object3D[] = [];
+    for (const r of this.racers) for (const o of [r.model.root, r.model.shadowRoot]) if (o.visible) { o.visible = false; hidden.push(o); }
+    for (const o of [this.sparks.points, this.puffs.points, this.confetti.mesh]) if (o.visible) { o.visible = false; hidden.push(o); }
+    const at = this.track.point(this.track.startU + 60, 0, 9);
+    cubeCam.position.copy(at);
+    this.scene.add(cubeCam);
+    cubeCam.update(this.renderer, this.scene);
+    this.scene.remove(cubeCam);
+    for (const o of hidden) o.visible = true;
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const env = pmrem.fromCubemap(cubeRT.texture);
+    pmrem.dispose();
+    cubeRT.dispose();
+    this.scene.environment?.dispose();
+    this.scene.environment = env.texture;
+    this.scene.environmentIntensity = 0.8;
+  }
+
   /** Keep the shadow camera centred on the player, and size particles for the view. */
   private followSun() {
+    // Speed blur while boosting (not in the menus' backdrop).
+    if (this.grade && !this.attract && this.racers[0]) {
+      const p = this.racers[0];
+      const want = p.boostT > 0 && this.phase === "race" ? Math.min(1, 0.55 + p.speed / 90) : 0;
+      this.speedBlur += (want - this.speedBlur) * (want > this.speedBlur ? 0.18 : 0.06);
+      (this.grade.uniforms as Record<string, THREE.IUniform>).uBlur.value = this.speedBlur < 0.02 ? 0 : this.speedBlur;
+    }
     const sun = this.world.sun;
     const pp = this.racers[0].model.root.position;
     sun.target.position.copy(pp);
@@ -1986,10 +3850,40 @@ export class DiliCart {
         want = Math.abs(s) > 0.3 ? Math.sign(s) : 0;
       }
       if (this.driftDir === 0 && Math.abs(p.lat) > EDGE - 1.4 && want === Math.sign(p.lat)) want = 0;
+      // Infinite (tests): pick the clearest lane through the obstacles ahead,
+      // and lift off for a live laser gate.
+      if (this.endless && this.phase === "race") {
+        let best = p.lat, bestCost = Infinity;
+        for (const lat of [laneX(0), laneX(1), laneX(2), laneX(3)]) {
+          let cost = Math.abs(lat - p.lat) * 0.12;
+          for (const h of this.hazards) {
+            if (!h.pooled || h.kind === "laser" || h.kind === "cone") continue;
+            const ahead = h.dist! - p.dist;
+            if (ahead < -1.5 || ahead > 50) continue;
+            const reach = h.kind === "drone" || h.kind === "block" ? h.span : 0;
+            if (Math.abs(h.lat - lat) < h.r + 1.7 || (reach && Math.abs(h.base - lat) < h.r + reach + 1)) cost += 10 + (50 - ahead) * 0.2;
+          }
+          if (cost < bestCost) { bestCost = cost; best = lat; }
+        }
+        const need = tr.curvature(u) * p.speed * p.speed * CENTRIFUGAL;
+        const rate = Math.min(p.speed, 16) * 0.62 + 1.2;
+        const st = need / rate + (best - p.lat) * 0.4 - p.latV * 0.1;
+        if (this.driftDir === 0) want = Math.abs(st) > 0.2 ? Math.sign(st) : 0;
+        // Sidestep a freeze orb closing in from behind.
+        for (const o of this.orbs) {
+          const d = tr.delta(o.u, u);
+          if (d > 0 && d < 10 && Math.abs(o.lat - p.lat) < 2.5) want = o.lat > p.lat ? -1 : 1;
+        }
+        for (const h of this.hazards) {
+          if (h.kind !== "laser") continue;
+          const ahead = h.dist! - p.dist;
+          if (ahead > 0 && ahead < 14 && (h.on || ahead / Math.max(1, p.speed) > 0.2)) this.input.gas = !h.on && ahead > 8;
+        }
+      }
     }
     this.input.left = want < 0;
     this.input.right = want > 0;
-    if (this.item && !this.rolling && Math.random() < dt * 0.7) this.pressed.add("ArrowDown");
+    if (this.autoItems && this.item && !this.rolling && Math.random() < dt * 0.7) this.pressed.add("ArrowDown");
   }
 
   /** Trailer: run the race forward one step and (optionally) draw it. */
@@ -1998,6 +3892,17 @@ export class DiliCart {
     this.update(dt);
     if (draw) this.composer.render();
     this.pressed.clear();
+  }
+
+  /** Trailer: put a kart exactly where the shot needs it. */
+  placeKart(k: number, o: { dist?: number; lat?: number; speed?: number; boost?: number }) {
+    const r = this.racers[k];
+    if (!r) return;
+    if (o.dist !== undefined) { r.dist = o.dist; r.prevU = this.track.wrap(this.track.startU + r.dist); }
+    if (o.lat !== undefined) { r.lat = o.lat; r.latV = 0; }
+    if (o.speed !== undefined) r.speed = o.speed;
+    if (o.boost !== undefined) r.boostT = o.boost;
+    r.spin = 0; r.frozen = 0;
   }
 
   /** Trailer: start the countdown now; GO comes three seconds later. */
@@ -2017,6 +3922,9 @@ export class DiliCart {
     return {
       camera: this.camera,
       canvas: this.renderer.domElement,
+      scene: this.scene,
+      renderer: this.renderer,
+      models: this.racers.map((r) => r.model),
       track: this.track,
       world: this.world,
       karts: this.racers.map((r) => ({
@@ -2027,7 +3935,7 @@ export class DiliCart {
         get air() { return r.air; },
         get boost() { return r.boostT; },
       })),
-      hazards: () => this.hazards.map((h) => ({ kind: h.kind, obj: h.obj, u: h.u })),
+      hazards: () => this.hazards.map((h) => ({ kind: h.kind, obj: h.obj, u: h.u, dist: h.dist, on: h.on })),
       orbs: () => this.orbs.map((o) => o.obj),
       boxes: this.boxes.map((b) => b.obj),
       drift: () => ({ dir: this.driftDir, tier: this.driftTier }),
@@ -2046,8 +3954,18 @@ export class DiliCart {
     const hud = this.hud;
     hud.score(this.score);
     hud.coins(this.coinCount);
-    hud.position(this.lastPos);
-    hud.lap(Math.min(LAPS, this.lap), LAPS);
+    if (this.endless) {
+      hud.hearts(this.hearts);
+      const m = this.mult();
+      const lo = MULT_AT[m - 1], hi = MULT_AT[m] ?? lo + 1;
+      hud.run(Math.max(0, p.dist + 5 + this.rivals * 4.2), m, (this.combo - lo) / (hi - lo));
+      hud.stage(this.stage);
+    } else {
+      hud.position(this.lastPos);
+      // The standings list: a few times a second is plenty.
+      if ((this.rankT -= 1) <= 0) { this.rankT = 12; hud.rank(this.liveOrder()); }
+      hud.lap(Math.min(this.laps, this.lap), this.laps);
+    }
     hud.clock(this.raceT);
     for (const r of this.racers) {
       const w = r.model.root.position;
@@ -2055,7 +3973,7 @@ export class DiliCart {
     }
     const boosting = p.boostT > 0 && (this.phase === "race");
     hud.speedLines(boosting ? 0.9 : p.speed > 23 && this.phase === "race" ? 0.18 : 0);
-    hud.vignette(this.shieldT > 0 ? "rgba(94,200,255,.55)" : this.magnetT > 0 ? "rgba(255,61,90,.4)" : null);
+    hud.vignette(this.ghostT > 0 ? "rgba(181,140,255,.55)" : this.shieldT > 0 ? "rgba(94,200,255,.55)" : this.magnetT > 0 ? "rgba(255,61,90,.4)" : null);
   }
 
   /* ================================================================ */
@@ -2075,19 +3993,40 @@ export class DiliCart {
     this.camera.updateProjectionMatrix();
   };
 
-  /** If the machine can't hold ~45 fps, drop resolution and bloom once. */
+  /**
+   * Keep the frame rate up: every couple of seconds, if frames average over
+   * ~23 ms, step down — AO first, then the pixel ratio in stages, and only
+   * as a last resort a cheaper bloom. Once lowered it stays lowered.
+   */
+  private perfStep = 0;
+  private tvOff = false;
+  private grade: ReturnType<typeof gradePass> | null = null;
+  private speedBlur = 0;
   private watchPerf(raw: number) {
     if (this.lowered || this.phase === "load" || this.paused) return;
     this.frameMs.push(raw * 1000);
-    if (this.frameMs.length < 120) return;
-    const avg = this.frameMs.reduce((a, b) => a + b, 0) / this.frameMs.length;
+    if (this.frameMs.length < (this.endless ? 75 : 120)) return;
+    const sorted = [...this.frameMs].sort((a, b) => a - b);
+    // The median ignores one-off hitches (a tab switch, a GC pause).
+    const avg = sorted[sorted.length >> 1];
     this.frameMs.length = 0;
-    if (avg > 23) {
-      this.lowered = true;
-      this.renderer.setPixelRatio(1);
-      this.bloom.enabled = avg > 30 ? false : this.bloom.enabled;
+    // The live TV feed is the first luxury to go, as soon as frames slip.
+    if (avg > 18 && this.tv && !this.tvOff) { this.tvOff = true; return; }
+    if (avg <= 23) return;
+    if (this.ao?.enabled) { this.ao.enabled = false; return; }
+    const steps = [1.25, 1, 0.85, 0.75];
+    const cur = this.renderer.getPixelRatio();
+    const next = steps.find((r) => r < cur - 0.01);
+    if (next !== undefined && this.perfStep < steps.length) {
+      this.perfStep++;
+      this.renderer.setPixelRatio(next);
       this.resize();
+      return;
     }
+    // Bloom at quarter resolution keeps the neon glow for a fraction of the cost.
+    this.lowered = true;
+    const r = this.mountEl.getBoundingClientRect();
+    this.bloom.resolution.set(r.width / 4, r.height / 4);
   }
 
   stats() {
@@ -2098,8 +4037,11 @@ export class DiliCart {
     this.alive = false;
     this.mountEl?.classList.remove("attract");
     cancelAnimationFrame(this.raf);
+    clearTimeout(this.raf);
     removeEventListener("resize", this.resize);
     removeEventListener("keydown", this.onKey);
+    for (const off of this.netOff) off();
+    this.netOff = [];
     removeEventListener("keyup", this.onKey);
     removeEventListener("blur", this.onBlur);
     document.removeEventListener("visibilitychange", this.onVis);
@@ -2115,11 +4057,18 @@ export class DiliCart {
     });
     this.sparks.dispose();
     this.puffs.dispose();
+    this.skids?.dispose();
+    this.tv?.rt.dispose();
     T.disposeTextures();
     M.disposeModels();
     this.scene.environment?.dispose();
+    this.ao?.dispose();
     this.composer?.dispose();
     this.renderer?.dispose();
+    // Hand the GPU context back now. Left to the garbage collector, contexts
+    // piled up over a few races until the browser killed the live one (the
+    // black screen).
+    this.renderer?.forceContextLoss();
     this.renderer?.domElement.remove();
   }
 }

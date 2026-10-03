@@ -9,6 +9,8 @@ dist
 # Generated media: re-render with /trailer.html on the dev server.
 trailer/*.mp4
 trailer/*.wav
+# Intro film frames (tools/render-intro.cjs); the finished film is kept in public/intro/.
+.intro-frames/
 
 # Python helpers' cache
 __pycache__/

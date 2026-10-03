@@ -43,17 +43,89 @@ export const CHAR_INFO: Record<CharId, { name: string; rarity: string; color: st
 };
 export const isCharId = (c: unknown): c is CharId => typeof c === "string" && (CHAR_IDS as readonly string[]).includes(c);
 
+/**
+ * Kart skins, bought with the Dili coins picked up on track. Driver skins
+ * put a new character in the seat with their own kart; liveries repaint the
+ * kart of whichever squad driver is picked.
+ */
+// "cipher" is Retree's id; it was named before release and stays for saved purchases.
+export const SKIN_IDS = ["quang", "cipher", "gold", "carbon"] as const;
+export type SkinId = (typeof SKIN_IDS)[number];
+export const SKIN_INFO: Record<SkinId, { name: string; kind: "driver" | "livery"; price: number; rarity: string; blurb: string; color: string }> = {
+  quang: { name: "Quang", kind: "driver", price: 300, rarity: "Epic", blurb: "Sky-blue wave racer. Glasses on, smile on.", color: "#3fc7ff" },
+  cipher: { name: "Retree", kind: "driver", price: 500, rarity: "Legendary", blurb: "Code in the dome, stars in the sweater.", color: "#2f4dff" },
+  gold: { name: "Gold Rush", kind: "livery", price: 200, rarity: "Rare", blurb: "Polished gold paint with black pinstripes.", color: "#ffc21a" },
+  carbon: { name: "Carbon Ghost", kind: "livery", price: 120, rarity: "Rare", blurb: "Bare carbon weave and ice-blue neon.", color: "#8fe3ff" },
+};
+export const isSkinId = (s: unknown): s is SkinId => typeof s === "string" && (SKIN_IDS as readonly string[]).includes(s);
+/** Owned skins are stored as a comma list. */
+export const parseSkins = (s: string | null | undefined): SkinId[] => (s ?? "").split(",").filter(isSkinId);
+
 /** Daily streak multiplier: ×1.0 on day one, up to ×2.0 on day seven. */
 export function streakMultiplier(streak: number): number {
   return 1 + Math.min(Math.max(streak - 1, 0), 6) / 6;
 }
+
+/** The tracks. Neon Town is a night street circuit through Dlicom City. */
+export const TRACK_IDS = ["circuit", "town"] as const;
+export type TrackId = (typeof TRACK_IDS)[number];
+export const TRACK_INFO: Record<TrackId, { name: string; laps: number; blurb: string }> = {
+  circuit: { name: "Dili Circuit", laps: 3, blurb: "Stadium at dusk · lake jump" },
+  town: { name: "Neon Town", laps: 5, blurb: "City streets at night · canal jump" },
+};
+export const isTrackId = (t: unknown): t is TrackId => typeof t === "string" && (TRACK_IDS as readonly string[]).includes(t);
+
+/**
+ * Every course the game can load: the race tracks, plus the Dlicom Skyway,
+ * which only runs Infinite mode (it isn't on the race or room track lists).
+ */
+export type CourseId = TrackId | "sky";
+export const COURSE_INFO: Record<CourseId, { name: string; laps: number; blurb: string }> = {
+  ...TRACK_INFO,
+  sky: { name: "Dlicom Skyway", laps: Infinity, blurb: "A highway above the clouds · endless" },
+};
+
+/**
+ * Infinite mode: one run on the Skyway until your four hearts are gone.
+ * Scores are checked against how long the run lasted.
+ */
+export const ENDLESS_HEARTS = 4;
+export const ENDLESS_LIMITS = {
+  minTime: 8,
+  maxTime: 3 * 3600,
+  /** Score per second of running can't beat this (a perfect run is ~250/s). */
+  maxRate: 900,
+  /** Metres per second: faster than the top boost speed at the top stage. */
+  maxSpeed: 50,
+  maxCoinRate: 4,
+  cooldown: 8,
+} as const;
+
+export interface EndlessSubmit {
+  score: number;
+  /** Metres covered. */
+  distance: number;
+  time: number;
+  coins: number;
+  stage: number;
+}
+
+export interface EndlessReply {
+  player: PlayerDTO;
+  earned: number;
+  isBest: boolean;
+  rank: number;
+}
+
+/** Lifetime points from an Infinite run: a share of the score, so racing still pays best per minute. */
+export const endlessPoints = (score: number) => Math.round(score * 0.4);
 
 /**
  * Plausibility bounds for a submitted race. A clean three-lap race takes
  * around two minutes, and even a perfect one can't score beyond these.
  */
 export const RACE_LIMITS = {
-  maxScore: 15_000,
+  maxScore: 20_000,
   minTime: 60,
   maxTime: 900,
   maxCoins: 250,
@@ -73,6 +145,14 @@ export interface PlayerDTO {
   streak: number;
   char: CharId;
   tier: string;
+  /** Dili coins to spend in the shop. */
+  coins: number;
+  skins: SkinId[];
+  skin: SkinId | null;
+  /** Infinite mode: best score, the distance of that run (m), and runs played. */
+  endless: number;
+  endlessDist: number;
+  endlessRuns: number;
 }
 
 export interface BoardEntry {
@@ -82,7 +162,12 @@ export interface BoardEntry {
   races: number;
   wins: number;
   tier: string;
+  /** Infinite mode best and its distance (the Infinite board). */
+  endless?: number;
+  endlessDist?: number;
 }
+
+export type BoardBy = "best" | "points" | "endless";
 
 export interface RaceSubmit {
   score: number;
