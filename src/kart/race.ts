@@ -3894,6 +3894,17 @@ export class DiliCart {
     this.pressed.clear();
   }
 
+  /** Trailer: put a kart exactly where the shot needs it. */
+  placeKart(k: number, o: { dist?: number; lat?: number; speed?: number; boost?: number }) {
+    const r = this.racers[k];
+    if (!r) return;
+    if (o.dist !== undefined) { r.dist = o.dist; r.prevU = this.track.wrap(this.track.startU + r.dist); }
+    if (o.lat !== undefined) { r.lat = o.lat; r.latV = 0; }
+    if (o.speed !== undefined) r.speed = o.speed;
+    if (o.boost !== undefined) r.boostT = o.boost;
+    r.spin = 0; r.frozen = 0;
+  }
+
   /** Trailer: start the countdown now; GO comes three seconds later. */
   go() {
     this.startCountdown();
@@ -3924,7 +3935,7 @@ export class DiliCart {
         get air() { return r.air; },
         get boost() { return r.boostT; },
       })),
-      hazards: () => this.hazards.map((h) => ({ kind: h.kind, obj: h.obj, u: h.u })),
+      hazards: () => this.hazards.map((h) => ({ kind: h.kind, obj: h.obj, u: h.u, dist: h.dist, on: h.on })),
       orbs: () => this.orbs.map((o) => o.obj),
       boxes: this.boxes.map((b) => b.obj),
       drift: () => ({ dir: this.driftDir, tier: this.driftTier }),

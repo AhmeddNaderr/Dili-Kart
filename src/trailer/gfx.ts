@@ -436,30 +436,58 @@ export class Gfx {
   }
 
   /** The end card: DILI CART, the button, the link. */
-  endCard(t: number) {
+  /** A row of hearts popping in one after another (Infinite's four lives). */
+  hearts(n: number, x: number, y: number, size: number, t: number, out?: number) {
+    if (t < 0) return;
     const g = this.g;
+    for (let i = 0; i < n; i++) {
+      const lt = t - i * 0.07;
+      if (lt <= 0) continue;
+      let s = outBack(lt / 0.35, 2.6);
+      if (out !== undefined && t > out) s *= 1 - inCubic((t - out) / 0.2);
+      if (s <= 0.001) continue;
+      g.save();
+      g.translate(x + i * size * 1.25, y);
+      g.scale(s * size / 24, s * size / 24);
+      g.translate(-12, -12);
+      const p = new Path2D("M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 4.4 2.6.8-1.4 2.3-2.6 4.4-2.6 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z");
+      g.shadowColor = "rgba(255,45,95,.9)";
+      g.shadowBlur = 18;
+      g.fillStyle = "#ff3d6b";
+      g.fill(p);
+      g.shadowBlur = 0;
+      g.lineWidth = 1.4;
+      g.strokeStyle = "#ffd0dc";
+      g.stroke(p);
+      g.restore();
+    }
+  }
+
+  endCard(t: number, o: { first?: string; second?: string; size?: number; tag?: string; credit?: string } = {}) {
+    const g = this.g;
+    const first = o.first ?? "DILI ", second = o.second ?? "CART", size = o.size ?? 250;
     // Logo slam.
     const s = t < 0.35 ? lerp(2.6, 0.94, outExpo(t / 0.35)) : lerp(0.94, 1, outBack((t - 0.35) / 0.4, 3));
     g.save();
     g.translate(W / 2, H / 2 - 70);
     g.scale(s, s);
     g.textAlign = "center";
-    g.font = font(250);
-    const a = g.measureText("DILI ").width, b = g.measureText("CART").width;
+    g.font = font(size);
+    const a = g.measureText(first).width, b = g.measureText(second).width;
     const x0 = -(a + b) / 2;
     g.textAlign = "left";
     // Rainbow energy glow.
     g.shadowColor = `hsl(${(t * 120) % 360}, 100%, 60%)`;
     g.shadowBlur = 60;
     g.fillStyle = COL.ink;
-    g.fillText("DILI CART", x0 + 14, 16);
+    g.fillText(first + second, x0 + 14, 16);
     g.shadowBlur = 0;
     g.fillStyle = "#fff";
-    g.fillText("DILI ", x0, 0);
+    g.fillText(first, x0, 0);
     const grad = g.createLinearGradient(0, -200, 0, 10);
     grad.addColorStop(0, "#fff6c2"); grad.addColorStop(0.45, COL.gold); grad.addColorStop(1, COL.gold2);
     g.fillStyle = grad;
-    g.fillText("CART", x0 + a, 0);
+    g.fillText(second, x0 + a, 0);
     // Shine sweep across the letters.
     const sw = ((t - 0.6) / 0.9);
     if (sw > 0 && sw < 1) {
@@ -475,7 +503,7 @@ export class Gfx {
     g.restore();
 
     // Tagline bubble.
-    this.bubble("THE DLICOM GRAND PRIX", W / 2, H / 2 + 60, 40, t - 0.5, { align: "center", bg: COL.blue, fg: "#fff" });
+    this.bubble(o.tag ?? "THE DLICOM GRAND PRIX", W / 2, H / 2 + 60, 40, t - 0.5, { align: "center", bg: COL.blue, fg: "#fff" });
 
     // Play button.
     const bt = t - 0.9;
@@ -518,7 +546,7 @@ export class Gfx {
       g.fillText("dili-cart.pages.dev", W / 2, H / 2 + 370 + (1 - outCubic(lt / 0.4)) * 30);
       g.font = font(26, 700, false);
       g.fillStyle = "rgba(255,255,255,.7)";
-      g.fillText("Made for the @DlicomApp AI Game Jam", W / 2, H / 2 + 420 + (1 - outCubic(lt / 0.4)) * 30);
+      g.fillText(o.credit ?? "Made for the @DlicomApp AI Game Jam", W / 2, H / 2 + 420 + (1 - outCubic(lt / 0.4)) * 30);
       g.restore();
     }
   }
