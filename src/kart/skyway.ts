@@ -33,7 +33,9 @@ export function buildSkyway(scene: THREE.Scene, renderer: THREE.WebGLRenderer, t
 
   /* ---------- light: golden hour above the clouds ---------- */
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  room.dispose();
   scene.environmentIntensity = 0.5;
   pmrem.dispose();
   // Fill from a violet sky above and warm bounce off the sunlit cloud tops.

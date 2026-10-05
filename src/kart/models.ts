@@ -6,7 +6,7 @@ import type { CharId, SkinId } from "../../shared/rules";
 import { animateCape, blink, buildMascot, disposeMascots, type DriverId, type EvilLook, type MascotRig } from "./mascot";
 import { isSkinDriver, type SkinDriver } from "./chibi";
 import { rimLight } from "./rim";
-import { setToonLOD } from "./toon";
+import { SHARED, setToonLOD, share } from "./toon";
 
 /**
  * Procedural 3D models, built from rounded primitives and glossy materials
@@ -23,7 +23,7 @@ import { setToonLOD } from "./toon";
 const geoCache = new Map<string, THREE.BufferGeometry>();
 function cached<G extends THREE.BufferGeometry>(key: string, make: () => G): G {
   let g = geoCache.get(key) as G | undefined;
-  if (!g) { g = make(); geoCache.set(key, g); }
+  if (!g) { g = make(); geoCache.set(key, g); SHARED.add(g); }
   return g;
 }
 
@@ -61,7 +61,7 @@ export function plastic(color: string, rough = 0.34, metal = 0.05): THREE.MeshSt
   let m = matCache.get(k) as THREE.MeshStandardMaterial | undefined;
   if (!m) {
     m = rimLight(new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal }));
-    matCache.set(k, m);
+    matCache.set(k, m); share(m);
   }
   return m;
 }
@@ -74,7 +74,7 @@ export function glow(color: string, strength = 2.2): THREE.MeshStandardMaterial 
     m = new THREE.MeshStandardMaterial({
       color: "#000000", emissive: color, emissiveIntensity: strength * 1.9, roughness: 0.4,
     });
-    matCache.set(k, m);
+    matCache.set(k, m); share(m);
   }
   return m;
 }
@@ -84,7 +84,7 @@ export function cloth(color: string): THREE.MeshStandardMaterial {
   let m = matCache.get(k) as THREE.MeshStandardMaterial | undefined;
   if (!m) {
     m = new THREE.MeshStandardMaterial({ color, roughness: 0.6, side: THREE.DoubleSide });
-    matCache.set(k, m);
+    matCache.set(k, m); share(m);
   }
   return m;
 }
@@ -173,7 +173,7 @@ export function paint(color: string): THREE.MeshPhysicalMaterial {
   let m = matCache.get(k) as THREE.MeshPhysicalMaterial | undefined;
   if (!m) {
     m = rimLight(new THREE.MeshPhysicalMaterial({ color, roughness: 0.3, metalness: 0.12, clearcoat: 1, clearcoatRoughness: 0.06 }), 0.38);
-    matCache.set(k, m);
+    matCache.set(k, m); share(m);
   }
   return m;
 }
@@ -187,14 +187,14 @@ function liveryPaint(kind: T.Livery): THREE.MeshPhysicalMaterial {
     m = rimLight(new THREE.MeshPhysicalMaterial({
       map: T.liveryTex(kind), roughness: kind === "gold" ? 0.22 : kind === "tux" ? 0.26 : 0.3, metalness: metal, clearcoat: 1, clearcoatRoughness: 0.05,
     }), 0.38);
-    matCache.set(k, m);
+    matCache.set(k, m); share(m);
   }
   return m;
 }
 
 function texMat(key: string, make: () => THREE.Material) {
   let m = matCache.get(key);
-  if (!m) { m = make(); matCache.set(key, m); }
+  if (!m) { m = make(); matCache.set(key, m); share(m); }
   return m;
 }
 
@@ -399,18 +399,25 @@ export class KartModel {
   }
 
   /**
-   * Free this kart's own GPU buffers (its merged meshes, baked copies and
-   * flag); shared parts stay cached for the next kart. Menus swap karts a
-   * lot, and the renderer they use is kept and reused.
+   * Free this kart's own GPU resources (its merged meshes, baked copies,
+   * flag, and per-kart materials and textures); cached parts are shared
+   * with the next kart and stay. Menus swap karts a lot, and the renderer
+   * they use is kept and reused.
    */
   dispose() {
     for (const root of [this.root, this.shadowRoot]) {
       root.traverse((o) => {
-        const g = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
-        if (g?.userData.own) g.dispose();
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        if (m.geometry && !SHARED.has(m.geometry)) m.geometry.dispose();
+        for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+          if (!mat || SHARED.has(mat)) continue;
+          // Its own textures too (the spinning rims and tyres are per kart).
+          for (const v of Object.values(mat)) if (v instanceof THREE.Texture && !SHARED.has(v)) v.dispose();
+          mat.dispose();
+        }
       });
     }
-    (this.shadow.material as THREE.Material).dispose();
   }
 
   /** Stop casting into the sun's shadow map (phones: only the player's kart does; the blob shadow stays). */
@@ -642,7 +649,6 @@ export class KartModel {
     add(d, cyl(0.014, 0.022, 1.6, 6), dark, -0.62, 1.6, -1.02, false);
     add(d, sphere(0.04, 8, 6), glow(L.glow, 2), -0.62, 2.41, -1.02, false);
     const flagGeo = new THREE.PlaneGeometry(0.78, 0.4, 10, 3).translate(0.39, -0.1, 0);
-    flagGeo.userData.own = true;
     const fp = flagGeo.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < fp.count; i++) fp.setY(i, (fp.getY(i) + 0.1) * (1 - fp.getX(i) / 0.95) - 0.1);   // pennant taper
     const flag = new THREE.Mesh(flagGeo, cloth(L.driver === "custodian" ? L.glow : L.trim));
@@ -849,6 +855,7 @@ function vcMat(rough: number, metal: number, side: THREE.Side, lite: boolean) {
   if (!mat) {
     mat = rimLight(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: r, metalness: m, side }));
     vcMats.set(k, mat);
+    share(mat);
   }
   return mat;
 }
@@ -865,6 +872,7 @@ function plainOf(mat: THREE.MeshPhysicalMaterial) {
       depthWrite: mat.depthWrite, flatShading: mat.flatShading,
     }));
     plainCache.set(mat, p);
+    share(p);
   }
   return p;
 }
@@ -875,6 +883,7 @@ function glowVc(side: THREE.Side) {
   if (!mat) {
     mat = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, side });
     vcMats.set(k, mat as unknown as THREE.MeshStandardMaterial);
+    share(mat);
   }
   return mat;
 }
@@ -903,7 +912,6 @@ function bakeColors(root: THREE.Object3D, skip: Set<THREE.Object3D>, lite: boole
     const glowing = mat.emissiveIntensity > 0 && mat.emissive.getHex() !== 0;
     if (glowing && !lite) return;
     const g = m.geometry.clone();
-    g.userData.own = true;
     const n = g.attributes.position.count;
     const col = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) { col[i * 3] = mat.color.r; col[i * 3 + 1] = mat.color.g; col[i * 3 + 2] = mat.color.b; }
@@ -945,7 +953,6 @@ function mergeChildren(group: THREE.Object3D, skip: Set<THREE.Object3D>, shadows
   for (const d of drop) group.remove(d);
   for (const [mat, b] of buckets) {
     const merged = mergeGeometries(b.geos, false);
-    if (merged) merged.userData.own = true;
     b.geos.forEach((g) => g.dispose());
     if (!merged) continue;
     const mesh = new THREE.Mesh(merged, mat);

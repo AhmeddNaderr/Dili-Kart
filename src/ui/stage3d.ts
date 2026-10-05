@@ -4,6 +4,7 @@ import { hdriEnvironment } from "../kart/hdri";
 import { DILI_LOOK, KartModel, add, coinGeometry, coinMaterials, glow, plastic, rbox, torus, type KartLook } from "../kart/models";
 import { MascotModel, type DriverId, type Pose } from "../kart/mascot";
 import { blobTex } from "../kart/textures";
+import { SHARED, share } from "../kart/toon";
 import type { CharId } from "../../shared/rules";
 
 /**
@@ -50,6 +51,29 @@ function giveRenderer(r: THREE.WebGLRenderer) {
   else { r.dispose(); r.forceContextLoss(); }
 }
 
+/** One soft contact shadow for every menu kart. */
+let stageShadow: THREE.Texture | null = null;
+
+/**
+ * Free everything a stage built for itself (platform, rings, beam, props,
+ * thrown-away karts' leftovers). Cached model parts are shared with the
+ * next menu and the races, so they stay.
+ */
+function freeStage(scene: THREE.Scene) {
+  scene.traverse((o) => {
+    const light = o as THREE.DirectionalLight;
+    if (light.isLight && light.shadow?.map) light.shadow.dispose();
+    const m = o as THREE.Mesh;
+    if (!m.isMesh && !(o as THREE.Points).isPoints && !(o as THREE.Line).isLine && !(o as THREE.Sprite).isSprite) return;
+    if (m.geometry && !SHARED.has(m.geometry)) m.geometry.dispose();
+    for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+      if (!mat || SHARED.has(mat)) continue;
+      for (const v of Object.values(mat)) if (v instanceof THREE.Texture && !SHARED.has(v)) v.dispose();
+      mat.dispose();
+    }
+  });
+}
+
 /** Free the spare menu renderers (before a race, when phones need the memory). */
 export function trimStagePool() {
   if (!document.documentElement.classList.contains("lite")) return;
@@ -75,7 +99,9 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
 
   const scene = new THREE.Scene();
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  room.dispose();
   scene.environmentIntensity = 0.5;
   pmrem.dispose();
   // Swap in a photographed studio (softboxes, real falloff) once it arrives.
@@ -166,7 +192,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   let kart: KartModel | null = null;
   let mascots: MascotModel[] = [];
   const coins: THREE.Object3D[] = [];
-  const shadowTex = blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)");
+  const shadowTex = (stageShadow ??= share(blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)")));
 
   const buildKart = (l: KartLook) => {
     if (kart) { spin.remove(kart.root, kart.shadowRoot); kart.dispose(); }
@@ -451,6 +477,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       scene.environment?.dispose();
       kart?.dispose();
       introKart?.dispose();
+      freeStage(scene);
       cv.remove();
       giveRenderer(renderer);
     },

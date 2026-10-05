@@ -16,17 +16,30 @@ export const setToonLOD = (v: number) => { TOON_LOD = v; };
 /** Segment count for a curve at the current detail level. */
 export const seg = (n: number, min = 6) => (TOON_LOD ? Math.max(min, Math.round(n * 0.6)) : n);
 
+/**
+ * Cached assets shared by every model that uses them (geometry, materials,
+ * textures). Menus free what they built themselves when they close, but
+ * never these: the next menu or race reuses them as they are.
+ */
+export const SHARED = new WeakSet<object>();
+/** Mark a cached asset shared, with a material's textures. */
+export function share<T extends object>(x: T): T {
+  SHARED.add(x);
+  if (x instanceof THREE.Material) for (const v of Object.values(x)) if (v instanceof THREE.Texture) SHARED.add(v);
+  return x;
+}
+
 const cache = new Map<string, THREE.BufferGeometry | THREE.Material>();
 export function once<T extends THREE.BufferGeometry | THREE.Material>(key: string, make: () => T): T {
   const k = TOON_LOD ? `${key}|lod` : key;
   let v = cache.get(k) as T | undefined;
-  if (!v) { v = make(); cache.set(k, v); }
+  if (!v) { v = make(); cache.set(k, v); share(v); }
   return v;
 }
 const texCache = new Map<string, THREE.Texture>();
 export function onceTex(key: string, make: () => THREE.Texture) {
   let t = texCache.get(key);
-  if (!t) { t = make(); texCache.set(key, t); }
+  if (!t) { t = make(); texCache.set(key, t); SHARED.add(t); }
   return t;
 }
 
