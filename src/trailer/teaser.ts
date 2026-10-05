@@ -7,7 +7,7 @@ import { COL, Gfx, H, W, clamp01, inOutCubic, lerp, loadImage } from "./gfx";
 import { N, SR, createKit, master as finish } from "./synth";
 
 /**
- * Dili Kart 2.0 teaser (dev only: open /teaser.html on the dev server).
+ * Dili Kart 3.0 teaser (dev only: open /teaser.html on the dev server).
  *
  * Five and a half seconds of the real game on the Dlicom Skyway: the leap
  * over the clouds, a pack of karts, an Infinite obstacle wave, and the end
@@ -93,7 +93,7 @@ const SHOTS: Shot[] = [
     speed: () => (rig.karts[0].air ? 0.45 : 1),
     over(g, lt) {
       const w = g.kinetic("DILI KART", 130, 930, 190, lt - 0.15, { stagger: 0.025, out: 1.35 }) ?? 0;
-      g.bubble("2.0", 130 + w + 30, 850, 84, lt - 0.45, { bg: COL.gold, out: 1.4 });
+      g.bubble("3.0", 130 + w + 30, 850, 84, lt - 0.45, { bg: COL.gold, out: 1.4 });
     },
   },
   {
@@ -163,8 +163,8 @@ const SHOTS: Shot[] = [
     dim: (lt) => lerp(0.35, 0.6, clamp01(lt / 0.5)),
     over(g, lt) {
       g.endCard(lt * 1.5, {
-        first: "DILI KART ", second: "2.0", size: 220,
-        tag: "RACE FRIENDS · SURVIVE INFINITE", credit: "Built for the Dlicom community",
+        first: "DILI KART ", second: "3.0", size: 220,
+        tag: "NEW DRIVERS · RACE FRIENDS · SURVIVE INFINITE", credit: "Built for the Dlicom community",
       });
     },
   },
