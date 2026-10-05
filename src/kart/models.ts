@@ -6,6 +6,7 @@ import type { CharId, SkinId } from "../../shared/rules";
 import { animateCape, blink, buildMascot, disposeMascots, type DriverId, type EvilLook, type MascotRig } from "./mascot";
 import { isSkinDriver, type SkinDriver } from "./chibi";
 import { rimLight } from "./rim";
+import { setToonLOD } from "./toon";
 
 /**
  * Procedural 3D models, built from rounded primitives and glossy materials
@@ -26,14 +27,23 @@ function cached<G extends THREE.BufferGeometry>(key: string, make: () => G): G {
   return g;
 }
 
+/**
+ * Phones build karts with coarser curves (about half the facets): at that
+ * screen size it looks the same, and eight karts are most of a race's
+ * triangles. Set per kart while it's built; the cache keys include it.
+ */
+let LOD = 0;
+const lod = (hi: number, lo: number) => (LOD ? lo : hi);
+const fewer = (n: number, min: number) => lod(n, Math.max(min, Math.round(n * 0.6)));
+
 const rbox = (w: number, h: number, d: number, r: number) =>
-  cached(`rb${w},${h},${d},${r}`, () => new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2, h / 2, d / 2) * 0.999));
-const sphere = (r: number, ws = 24, hs = 16) => cached(`s${r},${ws}`, () => new THREE.SphereGeometry(r, ws, hs));
+  cached(`rb${w},${h},${d},${r},${LOD}`, () => new RoundedBoxGeometry(w, h, d, lod(3, 2), Math.min(r, w / 2, h / 2, d / 2) * 0.999));
+const sphere = (r: number, ws = 24, hs = 16) => cached(`s${r},${ws},${hs},${LOD}`, () => new THREE.SphereGeometry(r, fewer(ws, 8), fewer(hs, 6)));
 const cyl = (rt: number, rb: number, h: number, seg = 20) =>
-  cached(`c${rt},${rb},${h},${seg}`, () => new THREE.CylinderGeometry(rt, rb, h, seg));
-const capsule = (r: number, len: number) => cached(`cap${r},${len}`, () => new THREE.CapsuleGeometry(r, len, 6, 12));
+  cached(`c${rt},${rb},${h},${seg},${LOD}`, () => new THREE.CylinderGeometry(rt, rb, h, fewer(seg, 8)));
+const capsule = (r: number, len: number) => cached(`cap${r},${len},${LOD}`, () => new THREE.CapsuleGeometry(r, len, lod(6, 3), lod(12, 8)));
 const torus = (r: number, t: number, arc = Math.PI * 2) =>
-  cached(`t${r},${t},${arc}`, () => new THREE.TorusGeometry(r, t, 10, 28, arc));
+  cached(`t${r},${t},${arc},${LOD}`, () => new THREE.TorusGeometry(r, t, lod(10, 6), lod(28, 18), arc));
 
 export function disposeModels() {
   for (const g of geoCache.values()) g.dispose();
@@ -190,7 +200,7 @@ function texMat(key: string, make: () => THREE.Material) {
 
 /** Side profile of the body shell, extruded across the kart's width. */
 function shellGeo(extra: number, width: number) {
-  return cached(`shell${extra}${width}`, () => {
+  return cached(`shell${extra}${width}${LOD}`, () => {
     const s = new THREE.Shape();
     s.moveTo(-1.0, 0.32);
     s.lineTo(-1.0, 0.58);
@@ -204,7 +214,7 @@ function shellGeo(extra: number, width: number) {
     s.quadraticCurveTo(1.48, 0.37, 1.4, 0.32);
     s.lineTo(-1.0, 0.32);
     const g = new THREE.ExtrudeGeometry(s, {
-      depth: width, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.1 + extra, bevelSegments: 5, curveSegments: 16,
+      depth: width, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.1 + extra, bevelSegments: lod(5, 3), curveSegments: lod(16, 9),
     });
     g.rotateY(-Math.PI / 2);
     g.translate(width / 2, 0, 0);
@@ -215,7 +225,7 @@ function shellGeo(extra: number, width: number) {
 
 /** Side pod, seen from above; `s` is the side (+1 left, -1 right). */
 function podGeo(s: number) {
-  return cached(`pod${s}`, () => {
+  return cached(`pod${s}${LOD}`, () => {
     const p = new THREE.Shape();
     const y = (v: number) => v * s;
     p.moveTo(-0.4, 0);
@@ -225,7 +235,7 @@ function podGeo(s: number) {
     p.quadraticCurveTo(0.56, y(0.34), 0.56, y(0.1));
     p.lineTo(0.56, 0);
     p.lineTo(-0.4, 0);
-    const g = new THREE.ExtrudeGeometry(p, { depth: 0.28, bevelEnabled: true, bevelThickness: 0.06, bevelSize: 0.06, bevelSegments: 4, curveSegments: 12 });
+    const g = new THREE.ExtrudeGeometry(p, { depth: 0.28, bevelEnabled: true, bevelThickness: 0.06, bevelSize: 0.06, bevelSegments: lod(4, 2), curveSegments: lod(12, 7) });
     // Shape x → forward (z), shape y → sideways (x), extrusion → up (y).
     g.rotateX(-Math.PI / 2);
     g.rotateY(-Math.PI / 2);
@@ -236,24 +246,24 @@ function podGeo(s: number) {
 
 /** Exhaust pipe that curves back and up out of the engine. */
 function exhaustGeo(s: number) {
-  return cached(`exhaust${s}`, () => new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+  return cached(`exhaust${s}${LOD}`, () => new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
     new THREE.Vector3(0.24 * s, 0.62, -0.82),
     new THREE.Vector3(0.3 * s, 0.6, -1.08),
     new THREE.Vector3(0.33 * s, 0.7, -1.32),
     new THREE.Vector3(0.34 * s, 0.84, -1.46),
-  ]), 20, 0.075, 12, false));
+  ]), lod(20, 12), 0.075, lod(12, 8), false));
 }
 
 /** A coil spring for the rear shocks. */
 function springGeo() {
-  return cached("spring", () => {
+  return cached(`spring${LOD}`, () => {
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i <= 80; i++) {
       const t = i / 80;
       const a = t * Math.PI * 2 * 6;
       pts.push(new THREE.Vector3(Math.cos(a) * 0.055, t * 0.3, Math.sin(a) * 0.055));
     }
-    return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 160, 0.012, 6, false);
+    return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), lod(160, 90), 0.012, lod(6, 4), false);
   });
 }
 
@@ -296,6 +306,8 @@ export class KartModel {
    * so even more of the kart collapses into a handful of draw calls.
    */
   constructor(readonly look: KartLook, shadowTex: THREE.Texture, opts: { lite?: boolean } = {}) {
+    LOD = opts.lite ? 1 : 0;
+    setToonLOD(LOD);
     this.root.add(this.body);
     this.body.add(this.chassis, this.driver);
     this.chassis.add(this.detail);
@@ -386,6 +398,21 @@ export class KartModel {
     this.shadowRoot.add(pool);
   }
 
+  /**
+   * Free this kart's own GPU buffers (its merged meshes, baked copies and
+   * flag); shared parts stay cached for the next kart. Menus swap karts a
+   * lot, and the renderer they use is kept and reused.
+   */
+  dispose() {
+    for (const root of [this.root, this.shadowRoot]) {
+      root.traverse((o) => {
+        const g = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+        if (g?.userData.own) g.dispose();
+      });
+    }
+    (this.shadow.material as THREE.Material).dispose();
+  }
+
   /** Stop casting into the sun's shadow map (phones: only the player's kart does; the blob shadow stays). */
   noShadows() {
     this.root.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = false; });
@@ -456,7 +483,7 @@ export class KartModel {
     for (const s of [1, -1]) add(d, rbox(0.06, 0.46, 0.02, 0.01), accent, 0.14 * s, 1.0, -0.49);
     const col = add(c, cyl(0.035, 0.035, 0.42, 8), dark, 0, 0.86, 0.5);
     col.rotation.x = -0.9;
-    const wheel = add(c, cached("steer", () => new THREE.TorusGeometry(0.2, 0.034, 10, 26, Math.PI * 1.55).rotateZ(-Math.PI * 0.28)), dark, 0, 1.0, 0.36);
+    const wheel = add(c, cached(`steer${LOD}`, () => new THREE.TorusGeometry(0.2, 0.034, lod(10, 6), lod(26, 16), Math.PI * 1.55).rotateZ(-Math.PI * 0.28)), dark, 0, 1.0, 0.36);
     wheel.rotation.x = -0.6;
     const bar = add(c, rbox(0.34, 0.05, 0.05, 0.02), dark, 0, 0.93, 0.4);
     bar.rotation.x = -0.6;
@@ -471,7 +498,7 @@ export class KartModel {
     const screenMat = texMat(`ws${L.glow}`, () => new THREE.MeshPhysicalMaterial({
       color: L.glow, transparent: true, opacity: 0.28, roughness: 0.05, clearcoat: 1, side: THREE.DoubleSide, depthWrite: false,
     }));
-    const ws = add(c, cached("windscreen", () => new THREE.CylinderGeometry(0.44, 0.47, 0.24, 28, 1, true, -0.95, 1.9)), screenMat, 0, 0.93, 0.2, false);
+    const ws = add(c, cached(`windscreen${LOD}`, () => new THREE.CylinderGeometry(0.44, 0.47, 0.24, lod(28, 16), 1, true, -0.95, 1.9)), screenMat, 0, 0.93, 0.2, false);
     ws.rotation.x = -0.32;
 
     // Engine: block, valve covers, intake trumpets, curved exhausts.
@@ -580,18 +607,18 @@ export class KartModel {
       add(holder, tyreGeo(r, w), tyreMat, o.x, o.y, o.z).rotation.z = Math.PI / 2;
       // A thin team-colour stripe round each sidewall.
       for (const sd of [1, -1]) {
-        const stripe = add(holder, cached(`sidestripe${r}`, () => new THREE.TorusGeometry(r * 0.8, 0.012, 6, 48).rotateY(Math.PI / 2)), stripeMat, o.x + sd * (w * 0.5 + 0.004), o.y, o.z, false);
+        const stripe = add(holder, cached(`sidestripe${r}${LOD}`, () => new THREE.TorusGeometry(r * 0.8, 0.012, lod(6, 4), lod(48, 28)).rotateY(Math.PI / 2)), stripeMat, o.x + sd * (w * 0.5 + 0.004), o.y, o.z, false);
         stripe.castShadow = false;
       }
       // Inside the wheel: a dark well, a drilled disc and the caliper.
-      add(holder, cached(`well${r}`, () => new THREE.CylinderGeometry(r * 0.63, r * 0.63, w * 0.6, 24)), hubMat, o.x, o.y, o.z, false).rotation.z = Math.PI / 2;
+      add(holder, cached(`well${r}${LOD}`, () => new THREE.CylinderGeometry(r * 0.63, r * 0.63, w * 0.6, lod(24, 14))), hubMat, o.x, o.y, o.z, false).rotation.z = Math.PI / 2;
       for (const sd of [1, -1]) {
-        const disc = add(holder, cached(`disc${r}`, () => new THREE.CylinderGeometry(r * 0.5, r * 0.5, 0.03, 28)), discMat, o.x + sd * (w * 0.5 - 0.045), o.y, o.z, false);
+        const disc = add(holder, cached(`disc${r}${LOD}`, () => new THREE.CylinderGeometry(r * 0.5, r * 0.5, 0.03, lod(28, 16))), discMat, o.x + sd * (w * 0.5 - 0.045), o.y, o.z, false);
         disc.rotation.z = Math.PI / 2;
         add(holder, rbox(0.06, r * 0.34, r * 0.22, 0.02), caliperMat, o.x + sd * (w * 0.5 - 0.075), o.y + r * 0.33, o.z - r * 0.2, false).rotation.x = 0.5;
-        const f = add(holder, cached(`rimface${r}`, () => new THREE.CircleGeometry(r * 0.64, 24)), rimMat, o.x + sd * w * 0.5, o.y, o.z, false);
+        const f = add(holder, cached(`rimface${r}${LOD}`, () => new THREE.CircleGeometry(r * 0.64, lod(24, 16))), rimMat, o.x + sd * w * 0.5, o.y, o.z, false);
         f.rotation.y = (sd * Math.PI) / 2;
-        const lip = add(holder, cached(`lip${r}`, () => new THREE.TorusGeometry(r * 0.64, 0.025, 8, 28)), chromeM, o.x + sd * w * 0.49, o.y, o.z, false);
+        const lip = add(holder, cached(`lip${r}${LOD}`, () => new THREE.TorusGeometry(r * 0.64, 0.025, lod(8, 5), lod(28, 18))), chromeM, o.x + sd * w * 0.49, o.y, o.z, false);
         lip.rotation.y = Math.PI / 2;
       }
       if (front) mergeChildren(holder, new Set());
@@ -615,6 +642,7 @@ export class KartModel {
     add(d, cyl(0.014, 0.022, 1.6, 6), dark, -0.62, 1.6, -1.02, false);
     add(d, sphere(0.04, 8, 6), glow(L.glow, 2), -0.62, 2.41, -1.02, false);
     const flagGeo = new THREE.PlaneGeometry(0.78, 0.4, 10, 3).translate(0.39, -0.1, 0);
+    flagGeo.userData.own = true;
     const fp = flagGeo.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < fp.count; i++) fp.setY(i, (fp.getY(i) + 0.1) * (1 - fp.getX(i) / 0.95) - 0.1);   // pennant taper
     const flag = new THREE.Mesh(flagGeo, cloth(L.driver === "custodian" ? L.glow : L.trim));
@@ -875,6 +903,7 @@ function bakeColors(root: THREE.Object3D, skip: Set<THREE.Object3D>, lite: boole
     const glowing = mat.emissiveIntensity > 0 && mat.emissive.getHex() !== 0;
     if (glowing && !lite) return;
     const g = m.geometry.clone();
+    g.userData.own = true;
     const n = g.attributes.position.count;
     const col = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) { col[i * 3] = mat.color.r; col[i * 3 + 1] = mat.color.g; col[i * 3 + 2] = mat.color.b; }
@@ -916,6 +945,7 @@ function mergeChildren(group: THREE.Object3D, skip: Set<THREE.Object3D>, shadows
   for (const d of drop) group.remove(d);
   for (const [mat, b] of buckets) {
     const merged = mergeGeometries(b.geos, false);
+    if (merged) merged.userData.own = true;
     b.geos.forEach((g) => g.dispose());
     if (!merged) continue;
     const mesh = new THREE.Mesh(merged, mat);
@@ -927,7 +957,7 @@ function mergeChildren(group: THREE.Object3D, skip: Set<THREE.Object3D>, shadows
 
 /** A rounded tyre profile, revolved. */
 function tyreGeo(r: number, w: number) {
-  return cached(`tyre${r},${w}`, () => {
+  return cached(`tyre${r},${w},${LOD}`, () => {
     const pts: THREE.Vector2[] = [];
     const hw = w / 2, bev = Math.min(0.11, r * 0.28);
     const inner = r * 0.6;
@@ -941,7 +971,7 @@ function tyreGeo(r: number, w: number) {
       pts.push(new THREE.Vector2(r - bev + Math.cos(a) * bev, hw - bev + Math.sin(a) * bev));
     }
     pts.push(new THREE.Vector2(inner, hw));
-    return new THREE.LatheGeometry(pts, 48);
+    return new THREE.LatheGeometry(pts, lod(48, 28));
   });
 }
 

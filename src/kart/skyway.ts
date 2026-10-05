@@ -1,9 +1,10 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import * as T from "./textures";
 import * as M from "./models";
-import { EDGE, ROAD_HALF, WALL, Track, newFrame } from "./track";
+import { EDGE, LANE_W, ROAD_HALF, WALL, Track, newFrame } from "./track";
 import { buildSky, cloudTexture } from "./sky";
 import { skyTraffic } from "./skyline";
 import { blimp } from "./circuit";
@@ -70,13 +71,33 @@ export function buildSkyway(scene: THREE.Scene, renderer: THREE.WebGLRenderer, t
   const landI = Math.round(track.landU / track.ds);
   const runFrom = landI, runTo = lipI + N;
 
-  // Deck: dark, faintly metallic tarmac that catches the sunset.
-  const road = new THREE.MeshStandardMaterial({
-    map: T.asphaltTex(), color: "#8790b4", roughness: 0.5, metalness: 0.28, envMapIntensity: 1.15,
-  });
+  // Deck: dark, glossy composite panels that mirror the sunset, a faint
+  // hex weave, and a lit expansion joint every ten metres.
+  // On big screens a clear coat over the panels mirrors the sunset and the
+  // low sun down the road; phones get plain gloss.
+  const deckT = skyDeckTex();
+  const deckOpts = {
+    map: deckT, emissive: "#ffffff", emissiveMap: deckT.userData.glow as THREE.Texture, emissiveIntensity: 1,
+    roughness: 0.42, metalness: 0.3, envMapIntensity: 1.3,
+  };
+  const road = lite
+    ? new THREE.MeshStandardMaterial({ ...deckOpts, roughness: 0.32, metalness: 0.38 })
+    : new THREE.MeshPhysicalMaterial({ ...deckOpts, clearcoat: 1, clearcoatRoughness: 0.1 });
   const deck = strip(track, runFrom, runTo, 2, [-ROAD_HALF, 0], [ROAD_HALF, 0], 1 / 10, road, false);
   deck.receiveShadow = true;
   scene.add(deck);
+
+  // LED lane dividers: dashes with a bright pulse that races ahead of you
+  // down every lane line (the texture scrolls; see animate).
+  const led = ledTex();
+  const ledMat = (r: number, g: number, b: number) => new THREE.MeshBasicMaterial({
+    map: led, color: new THREE.Color(r, g, b), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  const laneGeo = (xs: number[]) => mergeGeometries(xs.map((x) => strip(track, runFrom, runTo, 2, [x - 0.09, 0.015], [x + 0.09, 0.015], 1 / 32, road, false).geometry))!;
+  const sideLeds = new THREE.Mesh(laneGeo([-LANE_W, LANE_W]), ledMat(0.45, 1.5, 2.1));
+  const midLed = new THREE.Mesh(laneGeo([0]), ledMat(2.0, 0.55, 1.3));
+  for (const m of [sideLeds, midLed]) { m.renderOrder = 1; scene.add(m); }
 
   // Curbs: hot pink on the left, electric cyan on the right, lit from within.
   for (const s of [-1, 1]) {
@@ -103,8 +124,9 @@ export function buildSkyway(scene: THREE.Scene, renderer: THREE.WebGLRenderer, t
   }
 
   // Glass barriers with a neon rail on top: you can see the drop through them.
+  // Glass, frosted toward the foot so the barrier reads against the sky.
   const glass = new THREE.MeshStandardMaterial({
-    color: "#bfe4ff", transparent: true, opacity: 0.2, roughness: 0.05, metalness: 0.9, envMapIntensity: 2.2,
+    color: "#cfeaff", transparent: true, opacity: 0.55, alphaMap: glassFade(), roughness: 0.05, metalness: 0.9, envMapIntensity: 2.2,
     side: THREE.DoubleSide, depthWrite: false,
   });
   const haloT = haloTex();
@@ -217,6 +239,28 @@ export function buildSkyway(scene: THREE.Scene, renderer: THREE.WebGLRenderer, t
     a++;
   }
 
+  /* ---------- highway lamps, their light on the deck, corner chevrons ---------- */
+  const archAt: number[] = [];
+  for (let u = track.startU + 120; u < track.startU + track.length - 40; u += lite ? 260 : 170) archAt.push(track.wrap(u));
+  const clearOf = (u: number) => !track.inGap(u) && !track.inGap(u + 10) && !track.inGap(u - 10)
+    && archAt.every((x) => Math.abs(track.wrap(u - x + track.length / 2) - track.length / 2) > 8)
+    && Math.abs(track.wrap(u - track.startU + track.length / 2) - track.length / 2) > 16;
+  // Overhead gantries with LED boards (one warns of the gap), kept clear of the arches.
+  const gantryAt: number[] = [];
+  for (const u0 of [track.startU + 430, track.lipU - 170, track.startU + 1130]) {
+    let u = track.wrap(u0);
+    for (let k = 0; k < 6 && !(clearOf(u) && clearOf(u + 6) && clearOf(u - 6)); k++) u = track.wrap(u + 14);
+    gantryAt.push(u);
+    gantry(scene, track, u);
+  }
+  const clearOfAll = (u: number) => clearOf(u) && gantryAt.every((x) => Math.abs(track.wrap(u - x + track.length / 2) - track.length / 2) > 6);
+  const lamps = lampSet(track, lite ? 44 : 30, clearOfAll, steel);
+  for (const m of lamps.meshes) scene.add(m);
+  const chev = chevrons(track, lite ? 14 : 10, clearOfAll);
+  if (chev) scene.add(chev);
+  scene.add(gantrySigns(track, gantryAt));
+  scene.add(deckMarks(track, runFrom, runTo, lite));
+
   /* ---------- floating islands ---------- */
   const centre: { x: number; z: number }[] = [];
   for (let u = 0; u < track.length; u += 10) { const p = track.point(u, 0, 0); centre.push({ x: p.x, z: p.z }); }
@@ -276,6 +320,8 @@ export function buildSkyway(scene: THREE.Scene, renderer: THREE.WebGLRenderer, t
     sun, gateLamps, sky, water, balloons: [], spinners, flags: [], center,
     animate: (t: number) => {
       sea.uTime.value = t;
+      led.offset.y = -((t * 62) / 32) % 1;
+      if (chev) (chev.material as THREE.MeshBasicMaterial).color.setScalar(Math.sin(t * 9) > -0.2 ? 1.7 : 0.55);
       airship.update(t);
       traffic.update(t);
       for (let i = 0; i < wisps.length; i++) {
@@ -492,7 +538,7 @@ function islands(center: THREE.Vector3, count: number, clear: (x: number, z: num
     const y = 25 + rnd(n, 4) * 120;
     placed++;
     // The rock: an icosphere, flattened on top and drawn down into a cone.
-    const g = new THREE.IcosahedronGeometry(1, 2).toNonIndexed();
+    const g = new THREE.IcosahedronGeometry(1, 2);
     const p = g.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < p.count; i++) {
       let vx = p.getX(i), vy = p.getY(i), vz = p.getZ(i);
@@ -573,4 +619,310 @@ function fasciaTex() {
   for (const x of [t, tg]) { x.wrapS = x.wrapT = THREE.RepeatWrapping; x.colorSpace = THREE.SRGBColorSpace; }
   t.userData.glow = tg;
   return t;
+}
+
+/**
+ * The deck: dark composite panels with a faint hex weave, soft racing
+ * grooves, edge lines and channels for the LED lane lights, plus a glow map
+ * with one lit expansion joint per tile. U runs across all four lanes
+ * (16.8 m), V along ten metres, so the hexes are drawn squashed to come
+ * out round on the road.
+ */
+function skyDeckTex() {
+  const W = 512, H = 512;
+  const c = document.createElement("canvas"), cg = document.createElement("canvas");
+  c.width = cg.width = W; c.height = cg.height = H;
+  const g = c.getContext("2d")!, gg = cg.getContext("2d")!;
+  const base = g.createLinearGradient(0, 0, W, 0);
+  base.addColorStop(0, "#2a2f55"); base.addColorStop(0.5, "#323864"); base.addColorStop(1, "#2a2f55");
+  g.fillStyle = base; g.fillRect(0, 0, W, H);
+  for (let i = 0; i < 7000; i++) {
+    g.fillStyle = ["#292e52", "#363c6a", "#2f3560", "#3b4173"][i % 4];
+    g.fillRect(rnd(i, 1) * W, rnd(i, 2) * H, 2, 2);
+  }
+  // Hex weave, very faint.
+  g.strokeStyle = "rgba(160,180,255,.07)";
+  g.lineWidth = 1;
+  const rx = 12, ry = 20;
+  for (let row = 0, y = 0; y < H + ry; row++, y += ry * 1.5) {
+    for (let x = row % 2 ? rx * 0.866 : 0; x < W + rx; x += rx * 1.732) {
+      g.beginPath();
+      for (let k = 0; k <= 6; k++) {
+        const a = Math.PI / 6 + (k * Math.PI) / 3;
+        g.lineTo(x + Math.cos(a) * rx, y + Math.sin(a) * ry);
+      }
+      g.stroke();
+    }
+  }
+  // Racing grooves down the middle of each lane.
+  for (let l = 0; l < 4; l++) {
+    const x = (l + 0.5) * (W / 4);
+    const grad = g.createLinearGradient(x - 36, 0, x + 36, 0);
+    grad.addColorStop(0, "rgba(14,16,34,0)"); grad.addColorStop(0.5, "rgba(14,16,34,.22)"); grad.addColorStop(1, "rgba(14,16,34,0)");
+    g.fillStyle = grad; g.fillRect(x - 36, 0, 72, H);
+  }
+  // Edge lines, and dark channels the LED strips sit in.
+  g.fillStyle = "#eef1ff";
+  g.fillRect(6, 0, 8, H);
+  g.fillRect(W - 14, 0, 8, H);
+  g.fillStyle = "#171a33";
+  for (const f of [0.25, 0.5, 0.75]) g.fillRect(f * W - 5, 0, 10, H);
+  // The expansion joint: a steel strip with a lit seam.
+  g.fillStyle = "#59608c"; g.fillRect(0, 0, W, 7);
+  g.fillStyle = "#1a1d38"; g.fillRect(0, 7, W, 2);
+  gg.fillStyle = "#000"; gg.fillRect(0, 0, W, H);
+  gg.fillStyle = "#3fb4ff"; gg.fillRect(0, 2, W, 3);
+  for (const x of [10, W - 10]) { gg.fillStyle = "#c8f0ff"; gg.fillRect(x - 3, 0, 6, 9); }
+  const t = new THREE.CanvasTexture(c), tg = new THREE.CanvasTexture(cg);
+  for (const x of [t, tg]) { x.wrapS = x.wrapT = THREE.RepeatWrapping; x.colorSpace = THREE.SRGBColorSpace; x.anisotropy = 8; }
+  t.userData.glow = tg;
+  return t;
+}
+
+/**
+ * LED lane lights: eight dashes per 32 m, one bright with a fading tail
+ * behind it. Scrolled forward faster than the karts drive.
+ */
+function ledTex() {
+  const W = 4, H = 256;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  for (let k = 0; k < 8; k++) {
+    const b = 0.16 + 0.84 * Math.exp(-k * 0.85);
+    g.fillStyle = `rgba(255,255,255,${b})`;
+    g.fillRect(0, k * 32 + 10, W, 12);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+/** Barrier glass: frosted at the foot, clear toward the rail (U runs bottom to top). */
+function glassFade() {
+  const c = document.createElement("canvas");
+  c.width = 64; c.height = 4;
+  const g = c.getContext("2d")!;
+  const grad = g.createLinearGradient(0, 0, 64, 0);
+  grad.addColorStop(0, "#e6e6e6"); grad.addColorStop(0.35, "#8c8c8c"); grad.addColorStop(1, "#3a3a3a");
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 4);
+  return new THREE.CanvasTexture(c);
+}
+
+/** A soft round pool of lamplight for the deck. */
+function poolTex() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const g = c.getContext("2d")!;
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, "rgba(255,255,255,1)"); grad.addColorStop(0.45, "rgba(255,255,255,.45)"); grad.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/**
+ * Highway lamps on both barriers: a pole, a long arm reaching over the
+ * shoulder and a slim head with a bright strip underneath, with a pool of
+ * light on the deck below each. Three instanced meshes for the whole road.
+ */
+function lampSet(track: Track, every: number, ok: (u: number) => boolean, steel: THREE.Material) {
+  const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+  const REACH = 4.9, TOP = 7.6;
+  const body = mergeGeometries([
+    new THREE.CylinderGeometry(0.22, 0.26, 0.5, 10).translate(0, 0.25, 0),
+    new THREE.CylinderGeometry(0.075, 0.12, TOP - 0.3, 8).translate(0, (TOP - 0.3) / 2, 0),
+    new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(v(0, TOP - 0.45, 0), v(0, TOP + 0.25, 0), v(-REACH + 0.4, TOP, 0)), 12, 0.065, 6),
+    new RoundedBoxGeometry(1.5, 0.17, 0.44, 2, 0.06).translate(-REACH - 0.35, TOP, 0),
+  ].map((g) => {
+    for (const k of Object.keys(g.attributes)) if (!["position", "normal", "uv"].includes(k)) g.deleteAttribute(k);
+    return g.index ? g.toNonIndexed() : g;
+  }))!;
+  const strip = new THREE.BoxGeometry(1.32, 0.04, 0.3).translate(-REACH - 0.35, TOP - 0.1, 0);
+  const pool = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+  const f = newFrame();
+  const spots: { u: number; s: number }[] = [];
+  for (let u = 4; u < track.length; u += every) if (ok(u)) for (const s of [-1, 1]) spots.push({ u, s });
+  const posts = new THREE.InstancedMesh(body, steel, spots.length);
+  const glow = new THREE.InstancedMesh(strip, new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 2.1, 1.7), toneMapped: false }), spots.length);
+  const pools = new THREE.InstancedMesh(pool, new THREE.MeshBasicMaterial({
+    map: poolTex(), color: new THREE.Color(0.62, 0.5, 0.34), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+  }), spots.length);
+  const m = new THREE.Matrix4(), sc = new THREE.Matrix4(), x = new THREE.Vector3(), z = new THREE.Vector3(), p = new THREE.Vector3();
+  spots.forEach(({ u, s }, i) => {
+    track.frame(u, f);
+    // Local −X reaches over the road: the right-hand lamps face +side, the left ones are turned round.
+    x.copy(f.side).multiplyScalar(s);
+    z.crossVectors(x, f.up);
+    p.copy(f.pos).addScaledVector(f.side, (WALL + 0.5) * s).addScaledVector(f.up, 0.1);
+    m.makeBasis(x, f.up, z).setPosition(p);
+    posts.setMatrixAt(i, m);
+    glow.setMatrixAt(i, m);
+    p.copy(f.pos).addScaledVector(f.side, (WALL + 0.5 - REACH - 0.6) * s).addScaledVector(f.up, 0.14);
+    m.makeBasis(f.side, f.up, z.crossVectors(f.side, f.up)).multiply(sc.makeScale(7.5, 1, 10)).setPosition(p);
+    pools.setMatrixAt(i, m);
+  });
+  posts.castShadow = false;
+  pools.renderOrder = 1;
+  return { meshes: [posts, glow, pools] };
+}
+
+/** Flashing chevron boards on the outside of the tight corners, pointing into the turn. */
+function chevrons(track: Track, every: number, ok: (u: number) => boolean) {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 128;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#14172a"; g.fillRect(0, 0, 256, 128);
+  g.strokeStyle = "#ffd84a"; g.lineWidth = 10; g.strokeRect(5, 5, 246, 118);
+  g.fillStyle = "#ffcc33";
+  for (let k = 0; k < 3; k++) {
+    const x = 50 + k * 62;
+    g.beginPath();
+    g.moveTo(x, 22); g.lineTo(x + 34, 64); g.lineTo(x, 106); g.lineTo(x + 22, 106); g.lineTo(x + 56, 64); g.lineTo(x + 22, 22);
+    g.closePath(); g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  const f = newFrame();
+  const spots: { u: number; out: number }[] = [];
+  for (let u = 0; u < track.length; u += every) {
+    track.frame(u, f);
+    if (Math.abs(f.curv) < 1 / 95 || !ok(u)) continue;
+    spots.push({ u, out: f.curv > 0 ? -1 : 1 });
+  }
+  if (!spots.length) return null;
+  const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(2.2, 1.1), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, toneMapped: false }), spots.length);
+  const m = new THREE.Matrix4(), back = new THREE.Vector3(), x = new THREE.Vector3(), p = new THREE.Vector3();
+  spots.forEach(({ u, out }, i) => {
+    track.frame(u, f);
+    back.copy(f.tan).negate();
+    // Arrows point across the road from the outside wall, into the turn.
+    x.copy(f.side).multiplyScalar(-out);
+    p.copy(f.pos).addScaledVector(f.side, (WALL - 0.1) * out).addScaledVector(f.up, WALL_H + 0.25 + 0.75);
+    m.makeBasis(x, f.up, back.crossVectors(x, f.up)).setPosition(p);
+    mesh.setMatrixAt(i, m);
+  });
+  return mesh;
+}
+
+/** An overhead gantry: two steel legs outside the barriers and a truss beam across the road. */
+function gantry(scene: THREE.Scene, track: Track, u: number) {
+  const f = newFrame();
+  track.frame(u, f);
+  const steel = M.plastic("#262b46", 0.4, 0.7);
+  const basis = new THREE.Matrix4().makeBasis(f.side, f.up, f.side.clone().cross(f.up));
+  const put = (geo: THREE.BufferGeometry, x: number, y: number) => {
+    const m = new THREE.Mesh(geo, steel);
+    m.position.copy(f.pos).addScaledVector(f.side, x).addScaledVector(f.up, y);
+    m.quaternion.setFromRotationMatrix(basis);
+    scene.add(keep(m));
+  };
+  // Legs on the strip of deck outside the glass.
+  const X = WALL + 0.35, H = 9.2;
+  for (const s of [-1, 1]) {
+    put(M.rbox(0.66, H, 0.7, 0.1), X * s, H / 2);
+    put(M.rbox(0.7, 0.5, 1.5, 0.1), X * s, 0.25);
+  }
+  put(M.rbox(X * 2 + 0.7, 0.55, 0.9, 0.12), 0, H - 0.3);
+  put(M.rbox(X * 2 + 0.7, 0.3, 0.6, 0.1), 0, H - 1.1);
+}
+
+/**
+ * The gantries' LED boards, one atlas for all three: the Skyway's name, a
+ * warning for the gap, and a reminder about the hearts. Bright enough to
+ * bloom, facing the oncoming karts.
+ */
+function gantrySigns(track: Track, at: number[]) {
+  const W = 1024, R = 160;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = R * 3;
+  const g = c.getContext("2d")!;
+  const rows: [string, string, string][] = [
+    ["DLICOM", "∞", "SKYWAY"],
+    ["GAP AHEAD", "▲", "HIT THE RAMP"],
+    ["4 HEARTS", "♥", "DON'T WASTE THEM"],
+  ];
+  const tints = ["#5fd8ff", "#ffcc33", "#ff5fa8"];
+  rows.forEach(([a, mid, b], i) => {
+    const y = i * R;
+    g.fillStyle = "#0b0d1c"; g.fillRect(0, y, W, R);
+    // LED dot grid.
+    g.fillStyle = "rgba(255,255,255,.05)";
+    for (let yy = y + 6; yy < y + R; yy += 8) for (let x = 4; x < W; x += 8) g.fillRect(x, yy, 3, 3);
+    g.strokeStyle = tints[i]; g.lineWidth = 6; g.strokeRect(6, y + 6, W - 12, R - 12);
+    g.textBaseline = "middle"; g.textAlign = "center";
+    g.fillStyle = "#ffffff";
+    for (const [t, x] of [[a, W * 0.25], [b, W * 0.75]] as const) {
+      // Shrink long words to fit their half of the board.
+      g.font = "900 64px 'Inter', 'Arial Black', sans-serif";
+      const k = Math.min(1, (W * 0.36) / g.measureText(t).width);
+      g.font = `900 ${Math.floor(64 * k)}px 'Inter', 'Arial Black', sans-serif`;
+      g.fillText(t, x, y + R / 2 + 3);
+    }
+    g.fillStyle = tints[i];
+    g.font = "900 96px 'Inter', 'Arial Black', sans-serif";
+    g.fillText(mid, W / 2, y + R / 2 + 4);
+  });
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  const f = newFrame();
+  const parts: THREE.BufferGeometry[] = [];
+  at.forEach((u, i) => {
+    track.frame(u, f);
+    const geo = new THREE.PlaneGeometry(19, 3);
+    const uv = geo.attributes.uv as THREE.BufferAttribute;
+    for (let k = 0; k < uv.count; k++) uv.setY(k, (2 - i + uv.getY(k)) / 3);
+    // Face the oncoming karts, on the front of the beam.
+    const back = f.tan.clone().negate();
+    const x = back.clone().cross(f.up).negate();
+    geo.applyMatrix4(new THREE.Matrix4().makeBasis(x, f.up, back).setPosition(
+      f.pos.clone().addScaledVector(f.up, 9.2 - 1.05).addScaledVector(back, 0.55)));
+    parts.push(geo);
+  });
+  return new THREE.Mesh(mergeGeometries(parts)!, new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(1.5, 1.5, 1.5), toneMapped: false }));
+}
+
+/** Big ∞ marks painted in the lanes now and then. */
+function deckMarks(track: Track, from: number, to: number, lite: boolean) {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 128;
+  const g = c.getContext("2d")!;
+  g.strokeStyle = "#ffffff"; g.lineWidth = 16; g.lineCap = "round";
+  g.beginPath();
+  for (let i = 0; i <= 64; i++) {
+    const t = (i / 64) * Math.PI * 2;
+    const x = 128 + Math.sin(t) * 100, y = 64 + Math.sin(t) * Math.cos(t) * 80;
+    if (i) g.lineTo(x, y); else g.moveTo(x, y);
+  }
+  g.stroke();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  const f = newFrame();
+  const parts: THREE.BufferGeometry[] = [];
+  const step = lite ? 240 : 160;
+  for (let i = from + 40; i < to - 20; i += Math.round(step / track.ds)) {
+    const u = track.wrap(i * track.ds);
+    if (track.inGap(u) || track.inGap(u + 8)) continue;
+    track.frame(u, f);
+    for (const lane of [1, 2]) {
+      const x = -ROAD_HALF + LANE_W * (lane + 0.5);
+      // U across the lane, V stretched along it so it reads in perspective.
+      const geo = new THREE.PlaneGeometry(3.2, 6.4).rotateX(-Math.PI / 2);
+      geo.applyMatrix4(new THREE.Matrix4().makeBasis(f.side, f.up, f.side.clone().cross(f.up)).setPosition(
+        f.pos.clone().addScaledVector(f.side, x).addScaledVector(f.up, 0.02)));
+      parts.push(geo);
+    }
+  }
+  return new THREE.Mesh(mergeGeometries(parts)!, new THREE.MeshBasicMaterial({
+    map: tex, color: new THREE.Color(0.55, 0.62, 0.95), transparent: true, opacity: 0.42, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  }));
 }

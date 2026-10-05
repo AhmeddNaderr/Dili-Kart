@@ -6,10 +6,21 @@ import { rimLight } from "./rim";
  * materials, vinyl and fabric finishes, trim metal, and the glass dome.
  */
 
+/**
+ * Detail level for the characters: 1 on phones, where curves are built with
+ * about half the facets (see `seg`). The kart sets it before building its
+ * driver; cache keys include it.
+ */
+export let TOON_LOD = 0;
+export const setToonLOD = (v: number) => { TOON_LOD = v; };
+/** Segment count for a curve at the current detail level. */
+export const seg = (n: number, min = 6) => (TOON_LOD ? Math.max(min, Math.round(n * 0.6)) : n);
+
 const cache = new Map<string, THREE.BufferGeometry | THREE.Material>();
 export function once<T extends THREE.BufferGeometry | THREE.Material>(key: string, make: () => T): T {
-  let v = cache.get(key) as T | undefined;
-  if (!v) { v = make(); cache.set(key, v); }
+  const k = TOON_LOD ? `${key}|lod` : key;
+  let v = cache.get(k) as T | undefined;
+  if (!v) { v = make(); cache.set(k, v); }
   return v;
 }
 const texCache = new Map<string, THREE.Texture>();
@@ -73,7 +84,7 @@ export const flat = (color: string, rough = 0.5) => once(`flat${color}${rough}`,
 export function dome(tint: string, radius: number, opacity = 0.2, rimTint = tint) {
   const g = new THREE.Group();
   const glass = new THREE.Mesh(
-    once(`domegeo${radius}`, () => new THREE.SphereGeometry(radius, 40, 28)),
+    once(`domegeo${radius}`, () => new THREE.SphereGeometry(radius, seg(40), seg(28))),
     once(`glass${tint}${opacity}`, () => new THREE.MeshPhysicalMaterial({
       color: tint, transparent: true, opacity, roughness: 0.03, metalness: 0,
       clearcoat: 1, clearcoatRoughness: 0.02, envMapIntensity: 1.6, depthWrite: false,
@@ -82,7 +93,7 @@ export function dome(tint: string, radius: number, opacity = 0.2, rimTint = tint
   glass.renderOrder = 3;
   g.add(glass);
   const rim = new THREE.Mesh(
-    once(`domegeo${radius}`, () => new THREE.SphereGeometry(radius, 40, 28)),
+    once(`domegeo${radius}`, () => new THREE.SphereGeometry(radius, seg(40), seg(28))),
     once(`rim${rimTint}`, () => new THREE.ShaderMaterial({
       // Additive light that leaves the destination alpha alone, so the rim
       // doesn't punch a dark disc into menus drawn on a transparent canvas.

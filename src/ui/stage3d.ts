@@ -169,10 +169,26 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   const shadowTex = blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)");
 
   const buildKart = (l: KartLook) => {
-    if (kart) spin.remove(kart.root, kart.shadowRoot);
+    if (kart) { spin.remove(kart.root, kart.shadowRoot); kart.dispose(); }
     kart = new KartModel(l, shadowTex, { lite });
     kart.root.rotation.y = 0.5;
     spin.add(kart.root, kart.shadowRoot);
+  };
+  // The shop swaps karts as you browse: compile the new one's shaders off
+  // to the side first, so the turntable never stalls on a new skin.
+  let lookSeq = 0;
+  const swapKart = (l: KartLook, done: () => void) => {
+    const want = ++lookSeq;
+    const next = new KartModel(l, shadowTex, { lite });
+    next.root.rotation.y = kart?.root.rotation.y ?? 0.5;
+    const swap = () => {
+      if (!alive || want !== lookSeq) { next.dispose(); return; }
+      if (kart) { spin.remove(kart.root, kart.shadowRoot); kart.dispose(); }
+      kart = next;
+      spin.add(kart.root, kart.shadowRoot);
+      done();
+    };
+    renderer.compileAsync(next.root, camera, scene).then(swap, swap);
   };
   const buildMascots = (chars: DriverId[]) => {
     for (const m of mascots) spin.remove(m.root);
@@ -406,10 +422,11 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
     },
     setLook(l: KartLook) {
       if (mode.kind !== "kart") return;
-      buildKart(l);
-      waveT = 1.6;
-      // A little hop onto the platform.
-      hopT = 0;
+      swapKart(l, () => {
+        waveT = 1.6;
+        // A little hop onto the platform.
+        hopT = 0;
+      });
     },
     setProp(p: Prop) {
       if (mode.kind !== "solo" || p === prop) return;
@@ -432,6 +449,8 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       // uploaded models, so the next menu opens without a stall (building a
       // fresh GL context and recompiling cost phones well over a second).
       scene.environment?.dispose();
+      kart?.dispose();
+      introKart?.dispose();
       cv.remove();
       giveRenderer(renderer);
     },

@@ -56,7 +56,7 @@ const draw = () => {
   renderer.render(scene, cam);
   const w = window as unknown as { __done: boolean; __calls: number; __tris: number };
   w.__calls = renderer.info.render.calls;
-  w.__tris = renderer.info.render.triangles;
+  if (!Array.isArray((w as unknown as { __tris: unknown }).__tris)) w.__tris = renderer.info.render.triangles;
   w.__done = true;
 };
 let lookY = 1.0;
@@ -72,6 +72,18 @@ if (what === "mascot") {
   const look = what === "rival" ? RIVAL_LOOKS[num("n", 0)] : lookFor((skin ? "dili" : char) as CharId, skin as never);
   const k = new KartModel(look, blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)"), { lite: q.has("lite") });
   scene.add(k.root, k.shadowRoot);
+  // Dev: triangles per mesh, biggest first.
+  const rows: [string, number][] = [];
+  k.root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const g = m.geometry;
+    const tris = (g.index ? g.index.count : g.attributes.position.count) / 3 * ((m as THREE.InstancedMesh).count ?? 1);
+    const path: string[] = [];
+    for (let p: THREE.Object3D | null = m; p && p !== k.root; p = p.parent) path.push(p.name || p.type);
+    rows.push([`${path.reverse().join("/")} ${(m.material as THREE.Material).type}`, Math.round(tris)]);
+  });
+  (window as unknown as { __tris: [string, number][] }).__tris = rows.sort((a, b) => b[1] - a[1]);
   k.update({ speed: 0, steer: 0, slide: 0, hop: 0, squash: 1, roll: 0, flip: 0, boost: 0, glide: 0, wave: num("wave", 0), time: t }, 1 / 60);
   lookY = 0.9;
 }

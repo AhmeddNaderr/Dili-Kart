@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { MascotRig } from "./mascot";
-import { chromeTrim, dome, fabricNormal, flat, glowMat, lighten, once, onceTex, suitMat, vinyl } from "./toon";
+import { chromeTrim, dome, fabricNormal, flat, glowMat, lighten, once, onceTex, seg, suitMat, vinyl } from "./toon";
 import { rimLight } from "./rim";
 
 /**
@@ -59,7 +59,7 @@ function adopt(g: THREE.Object3D) {
 function lockGeo(len: number, r: number, bend: number) {
   return onceC(`lock${len}${r}${bend}`, () => {
     // Apex down at −len, base at the root; flattened, and bent forward toward the tip.
-    const g = new THREE.ConeGeometry(r, len, 10, 6).rotateX(Math.PI).translate(0, -len / 2, 0);
+    const g = new THREE.ConeGeometry(r, len, seg(10), seg(6, 3)).rotateX(Math.PI).translate(0, -len / 2, 0);
     const p = g.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < p.count; i++) {
       const t = Math.min(1, Math.max(0, -p.getY(i) / len));
@@ -133,7 +133,7 @@ export const TORSO_PTS = [
   [0, -0.44], [0.26, -0.42], [0.39, -0.3], [0.44, -0.08], [0.43, 0.12], [0.37, 0.3], [0.22, 0.42], [0, 0.45],
 ];
 export const torsoGeo = () => onceC("torso", () =>
-  new THREE.LatheGeometry(new THREE.SplineCurve(TORSO_PTS.map(([x, y]) => new THREE.Vector2(x, y))).getPoints(20), 32));
+  new THREE.LatheGeometry(new THREE.SplineCurve(TORSO_PTS.map(([x, y]) => new THREE.Vector2(x, y))).getPoints(seg(20)), seg(32)));
 
 export function buildChibi(kind: "quang" | "cipher", seated: boolean): MascotRig {
   const quang = kind === "quang";
@@ -209,10 +209,10 @@ export function buildChibi(kind: "quang" | "cipher", seated: boolean): MascotRig
   const head = new THREE.Group();
   head.position.set(0, 1.98, -0.16);
   root.add(head);
-  const skull = mesh(onceC("chibiHead", () => new THREE.SphereGeometry(1, 48, 36)), skin, head);
+  const skull = mesh(onceC("chibiHead", () => new THREE.SphereGeometry(1, seg(48), seg(36))), skin, head);
   skull.scale.set(HEAD.a, HEAD.b, HEAD.c);
   // Cheeks puff a little lower on the face.
-  const jaw = mesh(onceC("jaw", () => new THREE.SphereGeometry(1, 32, 24)), skin, head, 0, -0.12, 0.0);
+  const jaw = mesh(onceC("jaw", () => new THREE.SphereGeometry(1, seg(32), seg(24))), skin, head, 0, -0.12, 0.0);
   jaw.scale.set(0.37, 0.3, 0.33);
 
   const eyes: THREE.Object3D[] = [];

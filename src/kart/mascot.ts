@@ -3,7 +3,7 @@ import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeom
 import type { CharId } from "../../shared/rules";
 import { buildChibi, isSkinDriver, type SkinDriver } from "./chibi";
 import { buildCrew, isCrew } from "./crew";
-import { chromeTrim, darken, disposeToon, dome, flat, glowMat, lighten, once, onceTex, suitMat, vinyl } from "./toon";
+import { chromeTrim, darken, disposeToon, dome, flat, glowMat, lighten, once, onceTex, seg, suitMat, vinyl } from "./toon";
 
 /**
  * The Dlicom squad, modelled after the official mascots: a speech-bubble
@@ -94,7 +94,7 @@ function bubbleGeo() {
     s.lineTo(-w + r, h);
     s.absarc(-w + r, 0, r, Math.PI / 2, Math.PI * 1.5, false);
     const g = new THREE.ExtrudeGeometry(s, {
-      depth: 0.3, bevelEnabled: true, bevelThickness: 0.08, bevelSize: 0.07, bevelSegments: 6, curveSegments: 24,
+      depth: 0.3, bevelEnabled: true, bevelThickness: 0.08, bevelSize: 0.07, bevelSegments: seg(6, 3), curveSegments: seg(24),
     });
     g.translate(0, 0, -0.15);
     g.computeVertexNormals();
@@ -198,11 +198,11 @@ export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): M
     const pts = [
       [0, -0.44], [0.26, -0.42], [0.39, -0.3], [0.44, -0.08], [0.43, 0.12], [0.37, 0.3], [0.22, 0.42], [0, 0.45],
     ].map(([x, y]) => new THREE.Vector2(x, y));
-    return new THREE.LatheGeometry(new THREE.SplineCurve(pts).getPoints(20), 32);
+    return new THREE.LatheGeometry(new THREE.SplineCurve(pts).getPoints(seg(20)), seg(32));
   }), suit, root, 0, 1.12, -0.18);
   torso.scale.set(1, 1, 0.82);
   // Belt with a polished buckle, and piping down each side of the suit.
-  const belt = mesh(once("belt", () => new THREE.TorusGeometry(0.405, 0.042, 12, 56).rotateX(Math.PI / 2)), flat(evil ? "#0f0e17" : "#1e2236", 0.45), root, 0, 0.86, -0.18);
+  const belt = mesh(once("belt", () => new THREE.TorusGeometry(0.405, 0.042, seg(12), seg(56)).rotateX(Math.PI / 2)), flat(evil ? "#0f0e17" : "#1e2236", 0.45), root, 0, 0.86, -0.18);
   belt.scale.z = 0.82;
   mesh(once("buckle", () => new RoundedBoxGeometry(0.15, 0.1, 0.05, 3, 0.02)), silver, root, 0, 0.86, 0.19);
   for (const sx of [-1, 1]) {
@@ -244,11 +244,11 @@ export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): M
   }
 
   // Collar ring the dome seats into.
-  const collar = mesh(once("collar", () => new THREE.TorusGeometry(0.3, 0.075, 12, 32)), once(`collar${c.dome}`, () => new THREE.MeshPhysicalMaterial({
+  const collar = mesh(once("collar", () => new THREE.TorusGeometry(0.3, 0.075, seg(12), seg(32))), once(`collar${c.dome}`, () => new THREE.MeshPhysicalMaterial({
     color: c.dome, transparent: true, opacity: 0.75, roughness: 0.1, clearcoat: 1,
   })), root, 0, 1.54, -0.18);
   collar.rotation.x = Math.PI / 2;
-  mesh(once("collarRing", () => new THREE.TorusGeometry(0.335, 0.028, 10, 48).rotateX(Math.PI / 2)), silver, root, 0, 1.585, -0.18);
+  mesh(once("collarRing", () => new THREE.TorusGeometry(0.335, 0.028, seg(10), seg(48)).rotateX(Math.PI / 2)), silver, root, 0, 1.585, -0.18);
   for (let k = 0; k < 8; k++) {
     const a = (k / 8) * Math.PI * 2;
     mesh(once("bolt", () => new THREE.SphereGeometry(0.02, 8, 6)), silver, root, Math.cos(a) * 0.335, 1.615, -0.18 + Math.sin(a) * 0.335);
@@ -372,7 +372,7 @@ export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): M
     mesh(once("pipeA", () => new THREE.BoxGeometry(0.022, 0.4, 0.03)), piping, g, 0.116 * s, -0.24, 0).rotation.z = 0.025 * s;
     mesh(once("gcuff", () => new THREE.CylinderGeometry(0.128, 0.1, 0.1, 24, 1, true)), glove, g, 0, -0.475, 0);
     mesh(once("gcuffRim", () => new THREE.TorusGeometry(0.126, 0.018, 8, 28).rotateX(Math.PI / 2)), glove, g, 0, -0.43, 0);
-    const palm = mesh(once("palm", () => new THREE.SphereGeometry(0.13, 24, 18)), glove, g, 0, -0.59, 0.01);
+    const palm = mesh(once("palm", () => new THREE.SphereGeometry(0.13, seg(24), seg(18))), glove, g, 0, -0.59, 0.01);
     palm.scale.set(1, 1.02, 0.8);
     for (let f = 0; f < 3; f++) {
       const fx = (f - 1) * 0.056;
@@ -405,7 +405,7 @@ export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): M
       soleM.scale.set(1, 1, 1.42);
       const band = mesh(once("soleBand", () => new THREE.CylinderGeometry(0.186, 0.186, 0.022, 32, 1, true)), pad, g, 0, -0.603, 0.075);
       band.scale.set(1, 1, 1.42);
-      const upper = mesh(once("boot2", () => new THREE.SphereGeometry(0.19, 26, 16)), white, g, 0, -0.5, 0.06);
+      const upper = mesh(once("boot2", () => new THREE.SphereGeometry(0.19, seg(26), seg(16))), white, g, 0, -0.5, 0.06);
       upper.scale.set(0.93, 0.7, 1.28);
       const toe = mesh(once("toe", () => new THREE.SphereGeometry(0.12, 20, 12)), flat("#dfe3ee", 0.45), g, 0, -0.555, 0.215);
       toe.scale.set(1.15, 0.62, 1);

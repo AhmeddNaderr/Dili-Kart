@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { MascotRig } from "./mascot";
 import { HEAD, TORSO_PTS, basic, hairMat, onHead, onceC, skinMat, torsoGeo } from "./chibi";
-import { chromeTrim, darken, fabricNormal, flat, glowMat, lighten, onceTex, suitMat, vinyl } from "./toon";
+import { chromeTrim, darken, fabricNormal, flat, glowMat, lighten, onceTex, seg, suitMat, vinyl } from "./toon";
 import { rimLight } from "./rim";
 
 /**
@@ -144,7 +144,8 @@ const blunt: Taper = (t) => Math.sqrt(Math.max(0, 1 - Math.pow(t, 6)));
  * A tapering strip with an oval section along a path: locks of hair, lash
  * lines, cords, the tongue. `up` says which way its flat side faces.
  */
-function ribbon(path: V3[], w: number, th: number, up: (p: V3) => V3, taper: Taper = pointed, n = 14, m = 8) {
+function ribbon(path: V3[], w: number, th: number, up: (p: V3) => V3, taper: Taper = pointed, n0 = 14, m0 = 8) {
+  const n = seg(n0, 6), m = seg(m0, 5);
   const curve = new THREE.CatmullRomCurve3(path, false, "centripetal");
   const pos: number[] = [], idx: number[] = [];
   const P = v3(0, 0, 0), T = v3(0, 0, 0), U = v3(0, 0, 0), B = v3(0, 0, 0);
@@ -191,7 +192,8 @@ const lockAt = (key: string, pts: [number, number, number][], w: number, th: num
  * hairline at θ = tmax(φ). The locks lie on top of it, so it only has to
  * hide the scalp between them.
  */
-function shellGeo(lift: number | ((th: number, ph: number) => number), tmax: (ph: number) => number, rows = 22, cols = 56) {
+function shellGeo(lift: number | ((th: number, ph: number) => number), tmax: (ph: number) => number, rows0 = 22, cols0 = 56) {
+  const rows = seg(rows0), cols = seg(cols0);
   const pos: number[] = [], idx: number[] = [];
   for (let i = 0; i <= rows; i++) for (let j = 0; j < cols; j++) {
     const ph = -Math.PI + (j / cols) * Math.PI * 2;
@@ -513,7 +515,7 @@ interface EyeSpec {
 }
 
 function buildEyes(c: Ctx, e: EyeSpec): THREE.Object3D[] {
-  const ball = onceC("crewBall", () => new THREE.SphereGeometry(1, 28, 20));
+  const ball = onceC("crewBall", () => new THREE.SphereGeometry(1, seg(28), seg(20)));
   const irisM = onceC(`crewIris${e.iris}`, () => new THREE.MeshPhysicalMaterial({
     color: e.iris, roughness: 0.15, clearcoat: 1, emissive: e.deep, emissiveIntensity: 0.45,
   }));
@@ -713,9 +715,9 @@ export function buildCrew(kind: Crew, seated: boolean): MascotRig {
   const c: Ctx = { kind, root, head, torso, wear, keep, skin, ink: flat("#15161f", 0.35) };
 
   mesh(onceC("neck", () => new THREE.CylinderGeometry(0.11, 0.13, 0.22, 18)), skin, root, 0, 1.56, -0.17);
-  const skull = mesh(onceC("chibiHead", () => new THREE.SphereGeometry(1, 48, 36)), skin, head);
+  const skull = mesh(onceC("chibiHead", () => new THREE.SphereGeometry(1, seg(48), seg(36))), skin, head);
   skull.scale.set(HEAD.a, HEAD.b, HEAD.c);
-  const jaw = mesh(onceC("jaw", () => new THREE.SphereGeometry(1, 32, 24)), skin, head, 0, kind === "abhishek" ? -0.125 : -0.12, 0);
+  const jaw = mesh(onceC("jaw", () => new THREE.SphereGeometry(1, seg(32), seg(24))), skin, head, 0, kind === "abhishek" ? -0.125 : -0.12, 0);
   if (kind === "abhishek") jaw.scale.set(0.378, 0.305, 0.334);
   else jaw.scale.set(0.37, 0.3, 0.33);
 
@@ -744,7 +746,7 @@ function rehan(c: Ctx): Look {
   const hair = crewHair("#16171f", "#5a78d8");
   const fl = fleece("#1b1c23", "#3a4b80");
   const rib = ribbed("#17181e", 14);
-  const white = onceC("rehanPrint", () => new THREE.MeshStandardMaterial({ color: "#f4f6ff", emissive: "#ffffff", emissiveIntensity: 0.1, roughness: 0.5 }));
+  const white = flat("#f6f8ff", 0.5);
   const cord = flat("#e7eaf2", 0.55);
 
   // Hoodie: kangaroo pocket, ribbed hem, the hood lying down round the
