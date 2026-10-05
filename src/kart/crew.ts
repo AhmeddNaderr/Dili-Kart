@@ -1129,7 +1129,7 @@ function abhishek(c: Ctx): Look {
   neckBand(c, "shirtBand", shirt, 0.15, 1.52, -0.31, 0.04, 0.016, 0.0);
   neckBand(c, "collar", lapelM, 0.2, 1.49, -0.345, 0.05, 0.024, -0.04);
 
-  // Face: sharp almond eyes, thick brows, a strong jaw, a smirk.
+  // Face: sharp almond eyes, thick brows, a strong jaw, a straight mouth.
   ears(c, "#c08360");
   const eyes = buildEyes(c, {
     x: 0.16, y: -0.02, w: 0.088, h: 0.08, iris: "#4a2d1a", deep: "#21120a", look: [0.004, -0.004], ik: 0.72,
@@ -1139,10 +1139,10 @@ function abhishek(c: Ctx): Look {
   nose(c, 0.025, -0.105);
   const ridge = onHead(mesh(onceC("abhiRidge", () => new THREE.CapsuleGeometry(0.012, 0.05, 4, 8)), c.skin, c.head), 0, -0.06, -0.002);
   ridge.scale.z = 0.7;
-  const mouth = arcMouth(c, 0.046, Math.PI * 0.42, 0.0075, -Math.PI / 2 + 0.3, 0.012, -0.2);
-  const dimple = mesh(onceC("abhiDimple", () => new THREE.CapsuleGeometry(0.004, 0.014, 3, 6)), c.ink, mouth, 0.046, 0.022, 0.0);
-  dimple.rotation.z = 0.5;
-  dimple.castShadow = false;
+  // A straight, serious mouth, like his picture.
+  const mouth = onHead(new THREE.Group(), 0, -0.2, 0.002);
+  c.head.add(mouth);
+  mesh(onceC("abhiMouth", () => new RoundedBoxGeometry(0.07, 0.011, 0.01, 2, 0.005)), c.ink, mouth).castShadow = false;
 
   // Hair: combed up from a side part over his right eye, swept across the
   // top with a lift at the front, tight and glossy at the sides and back.
