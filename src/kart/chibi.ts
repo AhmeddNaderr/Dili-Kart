@@ -17,25 +17,42 @@ import { rimLight } from "./rim";
  *            speckled with stars.
  */
 
-export const SKIN_DRIVERS = ["quang", "cipher"] as const;
+export const SKIN_DRIVERS = ["quang", "cipher", "rehan", "abubakker", "vic", "abhishek"] as const;
 export type SkinDriver = (typeof SKIN_DRIVERS)[number];
 export const isSkinDriver = (x: unknown): x is SkinDriver => typeof x === "string" && (SKIN_DRIVERS as readonly string[]).includes(x);
 
 type Mesh = THREE.Mesh;
 
 /** The cache is shared with the squad's builder, so keys get their own prefix. */
-const onceC = <T extends THREE.BufferGeometry | THREE.Material>(key: string, make: () => T): T => once(`chibi:${key}`, make);
+export const onceC = <T extends THREE.BufferGeometry | THREE.Material>(key: string, make: () => T): T => once(`chibi:${key}`, make);
 
 /** The head is an ellipsoid; face parts sit on its surface, facing out. */
-const HEAD = { a: 0.44, b: 0.42, c: 0.4 };
+export const HEAD = { a: 0.44, b: 0.42, c: 0.4 };
 
-function onHead(o: THREE.Object3D, x: number, y: number, off = 0, h = HEAD) {
+export function onHead(o: THREE.Object3D, x: number, y: number, off = 0, h = HEAD) {
   const k = Math.max(0, 1 - (x / h.a) ** 2 - (y / h.b) ** 2);
   const z = h.c * Math.sqrt(k);
   const n = new THREE.Vector3(x / (h.a * h.a), y / (h.b * h.b), z / (h.c * h.c)).normalize();
   o.position.set(x, y, z).addScaledVector(n, off);
   o.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
   return o;
+}
+
+/**
+ * Fold a helper group's transform into its meshes and hand them to its
+ * parent, so they merge with their neighbours instead of costing a draw
+ * call each.
+ */
+function adopt(g: THREE.Object3D) {
+  const parent = g.parent!;
+  g.updateMatrix();
+  for (const m of [...g.children]) {
+    m.updateMatrix();
+    m.matrix.premultiply(g.matrix);
+    m.matrix.decompose(m.position, m.quaternion, m.scale);
+    parent.add(m);
+  }
+  parent.remove(g);
 }
 
 /** A tapered, slightly curved lock of hair, pointing down −Y from its root. */
@@ -99,19 +116,26 @@ const knit = (base: string) => onceC(`knit${base}`, () => rimLight(new THREE.Mes
 }), 0.35));
 
 /** Glossy anime hair: dark, with a cool blue sheen along the rim. */
-const hairMat = (color: string) => onceC(`hair${color}`, () => rimLight(new THREE.MeshPhysicalMaterial({
+export const hairMat = (color: string) => onceC(`hair${color}`, () => rimLight(new THREE.MeshPhysicalMaterial({
   color, roughness: 0.52, clearcoat: 0.25, clearcoatRoughness: 0.45,
   sheen: 0.55, sheenRoughness: 0.4, sheenColor: new THREE.Color("#5a78d8"), envMapIntensity: 0.6,
 }), 0.3));
 
-const skinMat = (color: string) => onceC(`skin${color}`, () => rimLight(new THREE.MeshPhysicalMaterial({
+export const skinMat = (color: string) => onceC(`skin${color}`, () => rimLight(new THREE.MeshPhysicalMaterial({
   color, roughness: 0.55, sheen: 0.4, sheenRoughness: 0.6, sheenColor: new THREE.Color("#ffd9c9"),
   clearcoat: 0.15, clearcoatRoughness: 0.6,
 }), 0.22));
 
-const basic = (color: string) => onceC(`basic${color}`, () => new THREE.MeshBasicMaterial({ color }));
+export const basic = (color: string) => onceC(`basic${color}`, () => new THREE.MeshBasicMaterial({ color }));
 
-export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
+/** The torso's profile, revolved: the squad's bean, slimmer. */
+export const TORSO_PTS = [
+  [0, -0.44], [0.26, -0.42], [0.39, -0.3], [0.44, -0.08], [0.43, 0.12], [0.37, 0.3], [0.22, 0.42], [0, 0.45],
+];
+export const torsoGeo = () => onceC("torso", () =>
+  new THREE.LatheGeometry(new THREE.SplineCurve(TORSO_PTS.map(([x, y]) => new THREE.Vector2(x, y))).getPoints(20), 32));
+
+export function buildChibi(kind: "quang" | "cipher", seated: boolean): MascotRig {
   const quang = kind === "quang";
   const root = new THREE.Group();
   const keep = new Set<THREE.Object3D>();
@@ -134,12 +158,7 @@ export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
   const soleM = flat(quang ? "#35b6f2" : "#2f4dff", 0.45);
 
   // Torso: the squad's bean, slimmer, as a shirt or a sweater.
-  const torso = mesh(onceC("torso", () => {
-    const pts = [
-      [0, -0.44], [0.26, -0.42], [0.39, -0.3], [0.44, -0.08], [0.43, 0.12], [0.37, 0.3], [0.22, 0.42], [0, 0.45],
-    ].map(([x, y]) => new THREE.Vector2(x, y));
-    return new THREE.LatheGeometry(new THREE.SplineCurve(pts).getPoints(20), 32);
-  }), top, root, 0, 1.1, -0.18);
+  const torso = mesh(torsoGeo(), top, root, 0, 1.1, -0.18);
   torso.scale.set(0.84, 0.98, 0.78);
   // Neck.
   mesh(onceC("neck", () => new THREE.CylinderGeometry(0.11, 0.13, 0.22, 18)), skin, root, 0, 1.56, -0.17);
@@ -170,6 +189,7 @@ export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
       mesh(onceC("pocketFlap", () => new RoundedBoxGeometry(0.165, 0.045, 0.035, 2, 0.012)), top, pk, 0, 0.075, 0.006);
       mesh(onceC("pocketSeam", () => new THREE.BoxGeometry(0.004, 0.1, 0.028)), seam, pk, 0, -0.01, 0.002);
       mesh(btn, btnMat, pk, 0, 0.068, 0.028);
+      adopt(pk);
     }
   } else {
     // Ribbed crew neck and hem, and a blue edge on the shoulders like the art.
@@ -252,6 +272,7 @@ export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
       })), lens);
       glass.castShadow = false;
       keep.add(glass);
+      adopt(lens);
       // Arm of the glasses back to the ear.
       const temple = mesh(onceC("temple", () => new THREE.CylinderGeometry(0.007, 0.007, 0.3, 6).rotateX(Math.PI / 2)), flat("#1c1f2a", 0.25), head, 0.405 * s, 0.0, 0.14);
       temple.rotation.y = 0.28 * s;
@@ -296,6 +317,7 @@ export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
       lk.rotateX(-0.2);
       const m2 = mesh(lockGeo(len, 0.1, -bend), i === 7 ? white : hair, lk);
       m2.rotation.z = tilt;
+      adopt(lk);
     });
     // The white streak continues back over the top as a highlight ribbon.
     const streak = mesh(onceC("streak", () => new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
@@ -309,6 +331,7 @@ export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
         head.add(side);
         const lm = mesh(lockGeo(0.26 - k * 0.03, 0.08, 0.02), hair, side);
         lm.rotation.set(0.1, 0, 0.18 * s);
+        adopt(side);
       }
     }
     for (const [x, z, r] of [[-0.05, -0.05, -0.5], [0.08, -0.12, 0.4], [0.0, -0.22, 0.1]]) {
@@ -398,6 +421,7 @@ export function buildChibi(kind: SkinDriver, seated: boolean): MascotRig {
       lk.rotateX(-0.2);
       const m2 = mesh(lockGeo(len, 0.1, -0.05), hair, lk);
       m2.rotation.z = tilt;
+      adopt(lk);
     }
     // The bubble.
     const bubble = dome("#cfe0ff", 0.68, 0.16, "#7fa6ff");

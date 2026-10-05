@@ -4,7 +4,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import * as T from "./textures";
 import type { CharId, SkinId } from "../../shared/rules";
 import { animateCape, blink, buildMascot, disposeMascots, type DriverId, type EvilLook, type MascotRig } from "./mascot";
-import type { SkinDriver } from "./chibi";
+import { isSkinDriver, type SkinDriver } from "./chibi";
 import { rimLight } from "./rim";
 
 /**
@@ -106,15 +106,19 @@ export interface KartLook {
   letter?: string;
 }
 
-/** Karts for the shop skins: Quang and Retree bring their own; liveries repaint the squad kart. */
+/** Karts for the shop skins: the skin drivers bring their own; liveries repaint the squad kart. */
 export const SKIN_LOOKS: Record<SkinDriver, KartLook> = {
   quang: { body: "#ffffff", trim: "#1fb2ef", accent: "#0b7fc4", glow: "#7fe6ff", number: "8", driver: "quang", livery: "waves", letter: "Q" },
   cipher: { body: "#ffffff", trim: "#2f4dff", accent: "#1a2cc2", glow: "#4d7bff", number: "01", driver: "cipher", livery: "matrix", letter: "C" },
+  rehan: { body: "#ffffff", trim: "#14151b", accent: "#2f7bff", glow: "#4d9bff", number: "17", driver: "rehan", livery: "midnight", letter: "R" },
+  abubakker: { body: "#ffffff", trim: "#16161b", accent: "#9aa1b0", glow: "#dfe7ff", number: "11", driver: "abubakker", livery: "fade", letter: "AB" },
+  vic: { body: "#ffffff", trim: "#ff7a1c", accent: "#7a3cff", glow: "#7dff3a", number: "13", driver: "vic", livery: "slime", letter: "V" },
+  abhishek: { body: "#ffffff", trim: "#111114", accent: "#d9a640", glow: "#ffc95a", number: "9", driver: "abhishek", livery: "tux", letter: "A" },
 };
 
 /** The kart a player drives: their squad driver's, dressed in any equipped skin. */
 export function lookFor(char: CharId, skin: SkinId | null | undefined): KartLook {
-  if (skin === "quang" || skin === "cipher") return SKIN_LOOKS[skin];
+  if (isSkinDriver(skin)) return SKIN_LOOKS[skin];
   const base = DRIVER_LOOKS[char];
   if (skin === "gold") return { ...base, body: "#ffffff", trim: "#15161f", accent: "#2a2b36", glow: "#ffd24d", livery: "gold" };
   if (skin === "carbon") return { ...base, body: "#ffffff", trim: "#1c2030", accent: "#8fe3ff", glow: "#8fe3ff", livery: "carbon" };
@@ -169,9 +173,9 @@ function liveryPaint(kind: T.Livery): THREE.MeshPhysicalMaterial {
   const k = `livery${kind}`;
   let m = matCache.get(k) as THREE.MeshPhysicalMaterial | undefined;
   if (!m) {
-    const metal = kind === "gold" ? 0.55 : kind === "carbon" ? 0.3 : 0.1;
+    const metal = { gold: 0.55, carbon: 0.3, tux: 0.25, midnight: 0.2 }[kind as string] ?? 0.1;
     m = rimLight(new THREE.MeshPhysicalMaterial({
-      map: T.liveryTex(kind), roughness: kind === "gold" ? 0.22 : 0.3, metalness: metal, clearcoat: 1, clearcoatRoughness: 0.05,
+      map: T.liveryTex(kind), roughness: kind === "gold" ? 0.22 : kind === "tux" ? 0.26 : 0.3, metalness: metal, clearcoat: 1, clearcoatRoughness: 0.05,
     }), 0.38);
     matCache.set(k, m);
   }
@@ -313,6 +317,9 @@ export class KartModel {
       if (o.children.filter((c) => (c as THREE.Mesh).isMesh).length > 1) groups.push(o);
     });
     for (const g of groups) mergeChildren(g, this.keepApart);
+    // The driver's eyes and mouth stay apart (they blink and talk), but
+    // their own parts can still merge.
+    if (this.rig) for (const g of [...this.rig.eyes, this.rig.mouth]) if (g.children.length > 1) mergeChildren(g, this.keepApart);
 
     this.shadow = new THREE.Mesh(
       cached("shadowPlane", () => new THREE.PlaneGeometry(2.7, 3.6).rotateX(-Math.PI / 2)),

@@ -49,11 +49,15 @@ export const isCharId = (c: unknown): c is CharId => typeof c === "string" && (C
  * kart of whichever squad driver is picked.
  */
 // "cipher" is Retree's id; it was named before release and stays for saved purchases.
-export const SKIN_IDS = ["quang", "cipher", "gold", "carbon"] as const;
+export const SKIN_IDS = ["quang", "cipher", "rehan", "abubakker", "vic", "abhishek", "gold", "carbon"] as const;
 export type SkinId = (typeof SKIN_IDS)[number];
 export const SKIN_INFO: Record<SkinId, { name: string; kind: "driver" | "livery"; price: number; rarity: string; blurb: string; color: string }> = {
   quang: { name: "Quang", kind: "driver", price: 300, rarity: "Epic", blurb: "Sky-blue wave racer. Glasses on, smile on.", color: "#3fc7ff" },
   cipher: { name: "Retree", kind: "driver", price: 500, rarity: "Legendary", blurb: "Code in the dome, stars in the sweater.", color: "#2f4dff" },
+  rehan: { name: "Rehan", kind: "driver", price: 350, rarity: "Epic", blurb: "Hood down, fringe low, eyes on the gap. Midnight kart, blue neon.", color: "#4d8dff" },
+  abubakker: { name: "Abu Bakker", kind: "driver", price: 400, rarity: "Epic", blurb: "Fresh fade, white blazer, calm as anything. Wins without looking up.", color: "#e9ebf2" },
+  vic: { name: "Vic", kind: "driver", price: 650, rarity: "Mythic", blurb: "Undead and unbothered. Beanie on, tongue out, slime on the wheels.", color: "#8dff4a" },
+  abhishek: { name: "Abhishek", kind: "driver", price: 550, rarity: "Legendary", blurb: "Sharp suit, gold watch, every hair in place. Black-tie kart.", color: "#f2c15a" },
   gold: { name: "Gold Rush", kind: "livery", price: 200, rarity: "Rare", blurb: "Polished gold paint with black pinstripes.", color: "#ffc21a" },
   carbon: { name: "Carbon Ghost", kind: "livery", price: 120, rarity: "Rare", blurb: "Bare carbon weave and ice-blue neon.", color: "#8fe3ff" },
 };

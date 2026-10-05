@@ -8,6 +8,7 @@ import { mountStage, trimStagePool, type MenuStage } from "./ui/stage3d";
 import { ICON, portrait, skinPortrait } from "./ui/icons";
 import { lookFor } from "./kart/models";
 import { MASCOT } from "./kart/mascot";
+import { isSkinDriver } from "./kart/chibi";
 import { sfx, setMuted, isMuted } from "./engine/audio";
 import * as api from "./app/api";
 import { RoomClient, checkRoom, createRoom } from "./net/room";
@@ -122,7 +123,7 @@ const fmtTime = (t: number | null) => {
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const face = (c: CharId) => portrait(MASCOT[c].head, MASCOT[c].dome, MASCOT[c].mouth);
 /** The player's portrait: a skin driver's if one is in the seat. */
-const faceOf = (p: api.Player) => (p.skin === "quang" || p.skin === "cipher" ? skinPortrait(p.skin) : face(p.char));
+const faceOf = (p: api.Player) => (isSkinDriver(p.skin) ? skinPortrait(p.skin) : face(p.char));
 /** The track picked in the hub, remembered between visits. */
 const TRACK_KEY = "dilicart.track";
 let trackPick: TrackId = (() => { try { const t = localStorage.getItem(TRACK_KEY); return isTrackId(t) ? t : "circuit"; } catch { return "circuit"; } })();
@@ -375,7 +376,7 @@ function hub() {
   const next = nextTier(p.points);
   const floor = [...TIERS].reverse().find((t) => p.points >= t.at)?.at ?? 0;
   const tierPct = next ? Math.min(1, Math.max(0, (p.points - floor) / (next.at - floor))) : 1;
-  const driverSkin = p.skin === "quang" || p.skin === "cipher" ? p.skin : null;
+  const driverSkin = isSkinDriver(p.skin) ? p.skin : null;
 
   const drivers = CHAR_IDS.map((id) => {
     const need = CHAR_UNLOCK[id];
@@ -526,7 +527,7 @@ function hub() {
     view.querySelectorAll(".driver").forEach((x) => x.classList.toggle("on", x === b));
     // A squad driver takes the seat back from a skin driver; liveries stay.
     const cur = api.player()!;
-    const keepSkin = cur.skin === "quang" || cur.skin === "cipher" ? null : cur.skin;
+    const keepSkin = isSkinDriver(cur.skin) ? null : cur.skin;
     stage3d?.setLook(lookFor(c, keepSkin));
     const nd = view.querySelector<HTMLElement>(".now-driving")!;
     nd.innerHTML = `<span>${CHAR_INFO[c].rarity}</span><b>${CHAR_INFO[c].name}</b>${keepSkin ? `<i>${SKIN_INFO[keepSkin].name} livery</i>` : ""}`;
@@ -610,7 +611,7 @@ function shop(focus?: SkinId) {
 
   const card = (id: SkinId) => {
     const s = SKIN_INFO[id];
-    const art = s.kind === "driver" ? skinPortrait(id as "quang" | "cipher") : `<span class="swatch ${id}"></span>`;
+    const art = isSkinDriver(id) ? skinPortrait(id) : `<span class="swatch ${id}"></span>`;
     return `<button type="button" class="skin" data-skin="${id}" style="--tint:${s.color}">
       <span class="skin-art">${art}</span>
       <span class="skin-txt"><small>${s.rarity} · ${s.kind === "driver" ? "Driver + kart" : "Livery"}</small><b>${s.name}</b></span>

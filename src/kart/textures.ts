@@ -335,19 +335,21 @@ export function emblemTex(bg: string, fg: string, ring: string, letter = "D") {
   g.arc(S / 2, S / 2, S / 2 - 12, 0, Math.PI * 2);
   g.fill();
   g.fillStyle = fg;
-  g.font = "900 78px 'Inter', 'Arial Black', sans-serif";
+  g.font = `900 ${letter.length > 1 ? 54 : 78}px 'Inter', 'Arial Black', sans-serif`;
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.fillText(letter, S / 2 + 2, S / 2 + 5);
+  g.fillText(letter, S / 2 + (letter.length > 1 ? 0 : 2), S / 2 + 5);
   return tex(c, false);
 }
 
-export type Livery = "waves" | "matrix" | "gold" | "carbon";
+export type Livery = "waves" | "matrix" | "gold" | "carbon" | "midnight" | "fade" | "slime" | "tux";
 
 /**
  * Paint jobs for the shop skins, tiled over the kart shell (about one tile
  * per metre): Quang's sky and surf, Retree's falling code, gold flake with
- * pinstripes, and bare carbon weave.
+ * pinstripes, bare carbon weave, Rehan's midnight with a blue rim light
+ * and a white ring, Abu Bakker's halftone fade, Vic's toxic slime, and
+ * Abhishek's black satin with gold pinstripes.
  */
 export function liveryTex(kind: Livery) {
   const S = 512;
@@ -420,6 +422,141 @@ export function liveryTex(kind: Livery) {
     for (const y of [120, 138, 380, 398]) {
       g.beginPath(); g.moveTo(0, y); g.lineTo(S, y); g.stroke();
     }
+  } else if (kind === "midnight") {
+    const base = g.createLinearGradient(0, 0, 0, S);
+    base.addColorStop(0, "#0b0d16");
+    base.addColorStop(1, "#05060b");
+    g.fillStyle = base;
+    g.fillRect(0, 0, S, S);
+    // Blue rim light washing in from the corners (drawn wrapped, so it tiles).
+    for (const [x, y, r, a] of [[0, 0, 230, 0.26], [S, S, 200, 0.18], [S * 0.8, S * 0.1, 130, 0.1]] as const) {
+      for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) {
+        const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+        gr.addColorStop(0, `rgba(47,123,255,${a})`);
+        gr.addColorStop(1, "rgba(47,123,255,0)");
+        g.fillStyle = gr;
+        g.fillRect(0, 0, S, S);
+      }
+    }
+    g.strokeStyle = "rgba(255,255,255,.035)";
+    g.lineWidth = 2;
+    for (let k = -S; k < S; k += 10) { g.beginPath(); g.moveTo(k, S); g.lineTo(k + S, 0); g.stroke(); }
+    // The thin white ring from his picture, glowing, with a faint R inside.
+    g.font = "900 230px 'Inter', 'Arial Black', sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = "rgba(77,141,255,.16)";
+    g.fillText("R", S / 2 + 6, S / 2 + 14);
+    g.shadowColor = "#8fb8ff";
+    g.shadowBlur = 18;
+    g.strokeStyle = "rgba(255,255,255,.92)";
+    g.lineWidth = 5;
+    g.beginPath();
+    g.arc(S / 2, S / 2, 165, 0, Math.PI * 2);
+    g.stroke();
+    g.shadowBlur = 0;
+    // Neon underline.
+    g.fillStyle = "#3d8bff";
+    g.fillRect(0, S * 0.9, S, 7);
+    g.fillStyle = "rgba(61,139,255,.25)";
+    g.fillRect(0, S * 0.9 - 8, S, 23);
+  } else if (kind === "fade") {
+    // Pearl white in the middle fading to graphite through halftone dots,
+    // the same at top and bottom so it tiles.
+    g.fillStyle = "#1a1b21";
+    g.fillRect(0, 0, S, S);
+    g.fillStyle = "#f3f3f0";
+    g.fillRect(0, S * 0.3, S, S * 0.4);
+    const step = 16;
+    for (let y = 0; y < S; y += step) {
+      const d = Math.abs(y + step / 2 - S / 2) / (S / 2);       // 0 middle … 1 edge
+      const k = THREE.MathUtils.clamp((d - 0.32) / 0.5, 0, 1);  // 0 white … 1 graphite
+      if (k <= 0 || k >= 1) continue;
+      g.fillStyle = "#f3f3f0";
+      g.fillRect(0, y, S, step);
+      g.fillStyle = "#1a1b21";
+      for (let x = 0; x < S; x += step) {
+        const ox = (y / step) % 2 ? step / 2 : 0;
+        g.beginPath();
+        g.arc(x + ox, y + step / 2, (step / 2) * Math.sqrt(k) * 1.15, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+    g.fillStyle = "#15161b";
+    g.fillRect(0, S * 0.5 - 3, S, 6);
+    g.fillStyle = "#b9bdc8";
+    g.fillRect(0, S * 0.5 + 9, S, 2);
+  } else if (kind === "slime") {
+    const base = g.createLinearGradient(0, 0, 0, S);
+    base.addColorStop(0, "#7a3cff");
+    base.addColorStop(1, "#3f1a86");
+    g.fillStyle = base;
+    g.fillRect(0, 0, S, S);
+    // Orange splats and dark cross stitches.
+    for (let i = 0; i < 26; i++) {
+      const x = rnd() * S, y = 120 + rnd() * (S - 140), r = 3 + rnd() * 9;
+      g.fillStyle = rnd() > 0.4 ? "rgba(255,122,28,.85)" : "rgba(141,255,74,.7)";
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.strokeStyle = "rgba(20,10,40,.7)";
+    g.lineWidth = 3;
+    for (const [x0, y0] of [[90, 330], [360, 250], [250, 440]]) {
+      g.beginPath(); g.moveTo(x0, y0); g.lineTo(x0 + 90, y0 - 20); g.stroke();
+      for (let k = 0; k < 5; k++) {
+        const x = x0 + 10 + k * 18, y = y0 - 2 - k * 4;
+        g.beginPath(); g.moveTo(x - 4, y - 8); g.lineTo(x + 4, y + 8); g.stroke();
+      }
+    }
+    // Toxic slime poured over the top, dripping, wrapped sideways.
+    const slime = (fill: string, shrink: number) => {
+      g.fillStyle = fill;
+      g.fillRect(0, 0, S, 46 - shrink);
+      let sd = 21;
+      const r2 = () => ((sd = (sd * 16807) % 2147483647) / 2147483647);
+      for (let i = 0; i < 14; i++) {
+        const x = (i / 14) * S + r2() * 20, len = 30 + r2() * 150 - shrink * 2, w = 12 + r2() * 14 - shrink;
+        for (const ox of [-S, 0, S]) {
+          g.beginPath();
+          g.moveTo(x + ox - w, 40);
+          g.quadraticCurveTo(x + ox - w * 0.4, 40 + len * 0.6, x + ox - w * 0.45, 40 + len);
+          g.arc(x + ox, 40 + len, w * 0.45, Math.PI, 0, true);
+          g.quadraticCurveTo(x + ox + w * 0.4, 40 + len * 0.6, x + ox + w, 40);
+          g.fill();
+        }
+      }
+    };
+    slime("#5fd12c", 0);
+    slime("#94ff5a", 6);
+    g.fillStyle = "rgba(255,255,255,.55)";
+    for (let i = 0; i < 14; i++) {
+      g.beginPath();
+      g.ellipse(rnd() * S, 14 + rnd() * 18, 9, 3, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  } else if (kind === "tux") {
+    const base = g.createLinearGradient(0, 0, S, 0);
+    base.addColorStop(0, "#0c0c0f");
+    base.addColorStop(0.5, "#1a1a20");
+    base.addColorStop(1, "#0c0c0f");
+    g.fillStyle = base;
+    g.fillRect(0, 0, S, S);
+    // Gold pinstripes, a gold band with a black inlay, a little flake.
+    g.fillStyle = "rgba(242,193,90,.55)";
+    for (let x = 16; x < S; x += 64) g.fillRect(x, 0, 2, S);
+    for (let i = 0; i < 900; i++) {
+      g.fillStyle = `rgba(255,214,120,${0.08 + rnd() * 0.2})`;
+      g.fillRect(rnd() * S, rnd() * S, 1.5, 1.5);
+    }
+    const band = g.createLinearGradient(0, S * 0.58, 0, S * 0.7);
+    band.addColorStop(0, "#ffe39a");
+    band.addColorStop(0.5, "#d9a640");
+    band.addColorStop(1, "#a8761c");
+    g.fillStyle = band;
+    g.fillRect(0, S * 0.58, S, S * 0.12);
+    g.fillStyle = "#0d0d10";
+    g.fillRect(0, S * 0.635, S, 5);
   } else {
     const n = 16, q = S / n;
     g.fillStyle = "#101219";

@@ -14,6 +14,7 @@ import { RaceAudio } from "./sound";
 import { Hud, ITEM_NAME, type ItemKind } from "./hud";
 import { COURSE_INFO, ENDLESS_HEARTS, type CharId, type CourseId, type SkinId, type TrackId } from "../../shared/rules";
 import { MASCOT } from "./mascot";
+import { isSkinDriver } from "./chibi";
 import { tickNature } from "./nature";
 import { ContactAO, gradePass, sanitizePass } from "./grade";
 import { portrait, skinPortrait } from "../ui/icons";
@@ -529,7 +530,7 @@ export class DiliCart {
     // SVG portrait the menus use.
     const c = MASCOT[this.char];
     const img = new Image();
-    const svg = this.skin === "quang" || this.skin === "cipher" ? skinPortrait(this.skin) : portrait(c.head, c.dome, c.mouth);
+    const svg = isSkinDriver(this.skin) ? skinPortrait(this.skin) : portrait(c.head, c.dome, c.mouth);
     img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg.replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" '));
     await Promise.race([
       Promise.all([

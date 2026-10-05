@@ -3,6 +3,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import { KartModel, RIVAL_LOOKS, lookFor } from "../kart/models";
 import { MascotModel, type DriverId, type Pose } from "../kart/mascot";
 import { blobTex } from "../kart/textures";
+import { isSkinDriver } from "../kart/chibi";
 import type { CharId } from "../../shared/rules";
 
 /**
@@ -51,7 +52,13 @@ floor.receiveShadow = true;
 scene.add(floor);
 
 const t = num("t", 1.2);
-const draw = () => { renderer.render(scene, cam); (window as unknown as { __done: boolean }).__done = true; };
+const draw = () => {
+  renderer.render(scene, cam);
+  const w = window as unknown as { __done: boolean; __calls: number; __tris: number };
+  w.__calls = renderer.info.render.calls;
+  w.__tris = renderer.info.render.triangles;
+  w.__done = true;
+};
 let lookY = 1.0;
 if (what === "mascot") {
   const m = new MascotModel(char);
@@ -61,9 +68,9 @@ if (what === "mascot") {
   for (let i = 0; i < 90; i++) m.update(t * i / 90, 1 / 60);
   lookY = 1.25;
 } else {
-  const skin = q.get("skin") ?? (char === "quang" || char === "cipher" ? char : null);
+  const skin = q.get("skin") ?? (isSkinDriver(char) ? char : null);
   const look = what === "rival" ? RIVAL_LOOKS[num("n", 0)] : lookFor((skin ? "dili" : char) as CharId, skin as never);
-  const k = new KartModel(look, blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)"));
+  const k = new KartModel(look, blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)"), { lite: q.has("lite") });
   scene.add(k.root, k.shadowRoot);
   k.update({ speed: 0, steer: 0, slide: 0, hop: 0, squash: 1, roll: 0, flip: 0, boost: 0, glide: 0, wave: num("wave", 0), time: t }, 1 / 60);
   lookY = 0.9;

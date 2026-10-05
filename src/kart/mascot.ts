@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import type { CharId } from "../../shared/rules";
 import { buildChibi, isSkinDriver, type SkinDriver } from "./chibi";
+import { buildCrew, isCrew } from "./crew";
 import { chromeTrim, darken, disposeToon, dome, flat, glowMat, lighten, once, onceTex, suitMat, vinyl } from "./toon";
 
 /**
@@ -165,6 +166,7 @@ export interface MascotRig {
  * by the caller.
  */
 export function buildMascot(char: DriverId, seated: boolean, evil?: EvilLook): MascotRig {
+  if (isCrew(char)) return buildCrew(char, seated);
   if (isSkinDriver(char)) return buildChibi(char, seated);
   const c: MascotColors = evil
     ? { suit: "#25243a", head: "#1c1a2a", glove: evil.team, cape: darken(evil.team, 0.45), dome: evil.glow, mouth: "smile" }
