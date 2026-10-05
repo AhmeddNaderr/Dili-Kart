@@ -1,14 +1,21 @@
 import "./style.css";
-import { DiliCart, LAPS, type RaceResult } from "./kart/race";
+import "./ui/console.css";
+import { DiliCart, type RaceResult, type RaceSnapshot, type NetRace as RaceNet } from "./kart/race";
 import { buildIntro, greetedThisSession } from "./ui/intro";
-import { mountStage, type MenuStage } from "./ui/stage3d";
-import { ICON, LOGO, portrait } from "./ui/icons";
+import { filmSeen, playFilm, prepareFilm } from "./ui/film";
+import { dropLoader, finishLoader, progress } from "./ui/loader";
+import { mountStage, trimStagePool, type MenuStage } from "./ui/stage3d";
+import { ICON, portrait, skinPortrait } from "./ui/icons";
+import { lookFor } from "./kart/models";
 import { MASCOT } from "./kart/mascot";
+import { isSkinDriver } from "./kart/chibi";
 import { sfx, setMuted, isMuted } from "./engine/audio";
 import * as api from "./app/api";
+import { RoomClient, checkRoom, createRoom } from "./net/room";
+import { CODE_LEN, ROOM_MAX, normaliseCode, type NetPlayer } from "../shared/net";
 import {
-  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, PASSWORD_MIN, nextTier, normaliseHandle,
-  type BoardEntry, type CharId, type RaceReply,
+  CHAR_IDS, CHAR_INFO, CHAR_UNLOCK, COURSE_INFO, PASSWORD_MIN, SKIN_IDS, SKIN_INFO, TIERS, TRACK_IDS, TRACK_INFO, isTrackId, nextTier, normaliseHandle,
+  type BoardBy, type BoardEntry, type CharId, type RaceReply, type SkinId, type TrackId,
 } from "../shared/rules";
 
 /**
@@ -35,20 +42,47 @@ let cleanup: (() => void) | null = null;
 // two screens so logging in doesn't rebuild the world.
 const liveEl = document.createElement("div");
 liveEl.className = "live-bg";
-liveEl.innerHTML = `<div class="live-shade"></div><div class="live-cut"></div>`;
+liveEl.innerHTML = `<div class="live-shade"></div>`;
 document.body.insertBefore(liveEl, app);
 let live: DiliCart | null = null;
 const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+let liveTrack: TrackId = "circuit";
+let backdropTimer = 0;
+/** Phones and low-core machines (set in index.html): lighter everything. */
+const LITE = document.documentElement.classList.contains("lite");
+
 function backdrop(on: boolean) {
+  if (LITE) {
+    // A still of the stadium instead of a whole live 3D track rendering
+    // behind the menus: menus open instantly and stay smooth on a phone.
+    if (on) {
+      liveEl.style.backgroundImage = `url(bg-${trackPick}.jpg)`;
+      liveEl.classList.add("still", "on");
+    } else liveEl.classList.remove("on");
+    return;
+  }
+  // The backdrop shows whichever track is picked; switching rebuilds it.
+  if (on && live && liveTrack !== trackPick) {
+    live.destroy();
+    live = null;
+    liveEl.classList.remove("on");
+  }
   if (on && !live && !calm) {
+    liveTrack = trackPick;
     live = new DiliCart();
-    const cut = liveEl.querySelector<HTMLElement>(".live-cut")!;
+    // Camera changes are clean cuts, like a broadcast; no dip to black.
     live.mount(liveEl, {
       onEnd() {}, onRestart() {}, onQuit() {},
       onReady: () => liveEl.classList.add("on"),
-      onCut: () => { cut.classList.remove("go"); void cut.offsetWidth; cut.classList.add("go"); },
-    }, "dili", { attract: true });
+      // Lost its graphics: fall back to the still picture of the track.
+      onRecover: () => {
+        live?.destroy();
+        live = null;
+        liveEl.style.backgroundImage = `url(bg-${liveTrack}.jpg)`;
+        liveEl.classList.add("still", "on");
+      },
+    }, "dili", { attract: true, track: liveTrack });
     if (import.meta.env.DEV) (window as unknown as { __live: DiliCart }).__live = live;
   } else if (!on && live) {
     live.destroy();
@@ -74,7 +108,7 @@ function show(view: HTMLElement, withBackdrop = false) {
   cleanup?.();
   cleanup = null;
   backdrop(withBackdrop);
-  liveEl.dataset.screen = view.classList[1] ?? "";
+  liveEl.dataset.screen = view.dataset.scene ?? view.classList[1] ?? "";
   app.replaceChildren(view);
 }
 
@@ -88,16 +122,26 @@ const fmtTime = (t: number | null) => {
 };
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const face = (c: CharId) => portrait(MASCOT[c].head, MASCOT[c].dome, MASCOT[c].mouth);
+/** The player's portrait: a skin driver's if one is in the seat. */
+const faceOf = (p: api.Player) => (isSkinDriver(p.skin) ? skinPortrait(p.skin) : face(p.char));
+/** The track picked in the hub, remembered between visits. */
+const TRACK_KEY = "dilicart.track";
+let trackPick: TrackId = (() => { try { const t = localStorage.getItem(TRACK_KEY); return isTrackId(t) ? t : "circuit"; } catch { return "circuit"; } })();
+function setTrack(t: TrackId) {
+  trackPick = t;
+  try { localStorage.setItem(TRACK_KEY, t); } catch { /* storage blocked */ }
+}
+const trackLabel = (t: TrackId) => `${TRACK_INFO[t].name} · ${TRACK_INFO[t].laps} laps`;
 
 const canFullscreen = () => document.fullscreenEnabled === true;
 
-/** Chequered flag for the big Race button. */
-const FLAG = `<svg viewBox="0 0 48 48"><path d="M10 6v38" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
-  <path d="M12 8c8-4 14 4 24 0v20c-10 4-16-4-24 0z" fill="#fff"/>
-  <path d="M12 8c2-1 4-1 6-.6v6.4c-2-.4-4-.4-6 .4zM24 9.4c2 .8 4 1 6 .6v6.4c-2 .4-4 .2-6-.6zM18 13.8c2 .4 4 1 6 1.6v6.4c-2-.6-4-1.2-6-1.6zM30 16.4c2-.2 4-.8 6-1.6v6.4c-2 .8-4 1.4-6 1.6zM12 21c2-.8 4-1 6-.8v6.4c-2-.2-4 0-6 .8zM24 21.8c2 .6 4 1 6 .8v6.2c-2 .2-4-.2-6-.8z" fill="#0b0c14"/></svg>`;
+/** The app mark: the Dlicom swoosh on a glossy squircle, like a home-screen icon. */
+function appIcon(size = "") {
+  return `<span class="app-icon ${size}" aria-hidden="true"><img src="logo.jpg" alt="" draggable="false" /><i class="ai-shine"></i></span>`;
+}
 
-function brand() {
-  return `<div class="brand">${LOGO}<b>Dili Cart</b><span>by Dlicom</span></div>`;
+function brand(name = "Dili Cart", by = "by Dlicom") {
+  return `<div class="brand">${appIcon()}<span class="brand-text"><b>${name}</b>${by ? `<span>${by}</span>` : ""}</span></div>`;
 }
 
 function soundButton() {
@@ -132,54 +176,76 @@ function intro(then: () => void, isNew?: boolean) {
   if (host) {
     stage3d = mountStage(host, { kind: "solo", char: "dili" }, () => sfx.pop());
     view.addEventListener("intro:pose", (e) => stage3d?.setPose((e as CustomEvent).detail));
+    view.addEventListener("intro:prop", (e) => stage3d?.setProp((e as CustomEvent).detail));
+    view.addEventListener("intro:speak", (e) => stage3d?.setSpeaking((e as CustomEvent).detail));
     stage3d.setPose("wave");
   }
 }
 
 /* ================================================================== */
-/* Sign in                                                             */
+/* Sign in: the title screen                                           */
 /* ================================================================== */
 
+/** The DILI CART wordmark: each letter springs in and catches the light. */
+function wordmark() {
+  const letters = (word: string, from: number) =>
+    [...word].map((c, i) => `<span class="wm-l" style="--i:${from + i}" data-l="${c}">${c}</span>`).join("");
+  return `<h1 class="wm" aria-label="Dili Cart"><span class="wm-row" aria-hidden="true">${letters("DILI", 0)}</span><span class="wm-row wm-gold" aria-hidden="true">${letters("CART", 4)}</span></h1>`;
+}
+
+/** The LED ticker set into the console's hood. */
+function ticker(items: [string, string][]) {
+  const row = items.map(([t, c]) => `<span class="${c}">${t}</span><i>◆</i>`).join("");
+  return `<div class="ticker" aria-hidden="true"><div class="ticker-track">${row}${row}</div></div>`;
+}
+
+const LEDS = `<span class="leds"><i class="con-dot" style="--c:#ff3d5a"></i><i class="con-dot" style="--c:#ffb31c"></i><i class="con-dot" style="--c:#27ff7a"></i></span>`;
+
 function auth(mode: "signup" | "login" = "signup") {
-  const view = h(`<div class="screen auth">
-    <header class="bar">${brand()}<div class="bar-right">${soundButton()}</div></header>
-    <main class="auth-grid">
-      <section class="auth-copy">
-        <div class="chip live-chip"><i class="live-dot"></i>Live now · Dlicom Grand Prix</div>
-        <h1 class="hero-title">
-          <span class="w" style="--i:0">Race.</span> <span class="w" style="--i:1">Drift.</span><br>
-          <span class="w hl" style="--i:2">Beat the</span> <span class="w hl" style="--i:3">Custodians.</span>
-        </h1>
-        <p class="lead rise" style="--i:4">A 3D kart racer from the Dlicom universe. Claim your handle, keep every score, and climb the global board.</p>
-        <form class="panel form rise" id="form" novalidate style="--i:5">
-          <div class="seg" role="tablist">
-            <button type="button" data-mode="signup">Create account</button>
+  const view = h(`<div class="screen stage-screen title-screen" data-scene="title">
+    <header class="bar">${brand()}<div class="bar-right">
+      <button class="key cream replay" id="replay" title="Watch the intro film">▶ Intro</button>
+      ${soundButton()}
+    </div></header>
+    <section class="title-top">
+      ${wordmark()}
+      <p class="title-sub">Dlicom Grand Prix</p>
+    </section>
+    <form class="console" id="form" novalidate>
+      <div class="con-hood">${LEDS}${ticker([
+        ["New: Neon Town at night", "p"], ["8 racers · 2 tracks", ""], ["Skins for Dili coins", "y"], ["Beat the Custodians", "y"], ["Drift for turbo", ""], ["$DLI TGE 2027", "y"],
+        ["Your ad on a stadium board · $5 · DM @00xmado", "p"], ["Hold your keys", "g"],
+      ])}</div>
+      <div class="con-body">
+        <div class="gauge rev con-left" style="--v:0.12" aria-hidden="true">
+          <i class="gauge-needle"></i><i class="gauge-cap"></i>
+          <span class="gauge-read"><b id="st-players">0</b><small>DRIVERS</small></span>
+        </div>
+        <div class="screen-bezel"><div class="crt crt-in">
+          <i class="crt-boot"></i>
+          <div class="px-tabs glow" role="tablist" style="--i:0">
+            <button type="button" data-mode="signup">New driver</button>
             <button type="button" data-mode="login">Log in</button>
           </div>
-          <label class="field"><span class="at">@</span>
+          <div class="px-field" style="--i:1"><label for="handle">Handle</label><span class="at">@</span>
             <input id="handle" name="username" autocomplete="username" placeholder="your X handle" maxlength="16" spellcheck="false" autocapitalize="off" />
-          </label>
-          <label class="field">
-            <input id="pw" name="password" type="password" placeholder="Password (${PASSWORD_MIN}+ characters)" maxlength="64" />
+          </div>
+          <div class="px-field" style="--i:2"><label for="pw">Password</label>
+            <input id="pw" name="password" type="password" placeholder="${PASSWORD_MIN}+ characters" maxlength="64" />
             <button type="button" class="eye" id="eye">Show</button>
-          </label>
-          <p class="msg" id="msg" role="status"></p>
-          <button class="btn primary" id="submit" type="submit">Create account</button>
-          <button type="button" class="link" id="guest">Just play as a guest</button>
-        </form>
-        <p class="fine rise" style="--i:6">No email, no wallet, no personal data — just a handle and a password.<br>Race points are for fun and have no monetary value.</p>
-      </section>
-      <section class="auth-stage" id="stage3d" title="Click the squad to say hi"></section>
-    </main>
-    <div class="live-stats rise" style="--i:7">
-      <div><b data-count="8">0</b><span>racers a race</span></div>
-      <div><b data-count="3">0</b><span>laps of Dili Circuit</span></div>
-      <div><b id="st-players" data-count="0">0</b><span>drivers signed up</span></div>
-      <div><b id="st-races" data-count="0">0</b><span>races run</span></div>
-    </div>
-    ${marquee()}
-    <a class="scroll-hint" href="#inside">See what's inside <span>↓</span></a>
-    ${landingSections()}
+          </div>
+          <p class="px-msg glow" id="msg" role="status" style="--i:3"></p>
+        </div></div>
+        <div class="go-wrap">
+          <button class="go-btn" id="submit" type="submit" aria-label="Start"><span class="go-dome"><span>START</span></span></button>
+          <span class="go-label" id="go-label">Create account</span>
+        </div>
+      </div>
+      <div class="con-foot">
+        <button type="button" class="key yellow" id="guest">Play as guest</button>
+        <p class="con-fine">No email, no wallet, no personal data — a handle and a password.<br>Race points are for fun and have no monetary value.</p>
+      </div>
+    </form>
   </div>`);
 
   const form = view.querySelector<HTMLFormElement>("#form")!;
@@ -187,14 +253,16 @@ function auth(mode: "signup" | "login" = "signup") {
   const pwEl = view.querySelector<HTMLInputElement>("#pw")!;
   const msg = view.querySelector<HTMLElement>("#msg")!;
   const submit = view.querySelector<HTMLButtonElement>("#submit")!;
+  const goLabel = view.querySelector<HTMLElement>("#go-label")!;
+  const idle = () => (mode === "signup" ? "> Pick a handle and a password" : "> Welcome back, driver");
+  const say = (text: string, cls = "") => { msg.textContent = text; msg.className = `px-msg glow ${cls}`; };
 
   const setMode = (m: typeof mode) => {
     mode = m;
     view.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
-    submit.textContent = m === "signup" ? "Create account" : "Log in";
+    goLabel.textContent = m === "signup" ? "Create account" : "Log in";
     pwEl.autocomplete = m === "signup" ? "new-password" : "current-password";
-    msg.textContent = "";
-    msg.className = "msg";
+    say(idle());
   };
   view.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.addEventListener("click", () => { sfx.ui(); setMode(b.dataset.mode as typeof mode); }));
   setMode(mode);
@@ -207,8 +275,8 @@ function auth(mode: "signup" | "login" = "signup") {
   });
 
   const fail = (text: string) => {
-    msg.textContent = text;
-    msg.className = "msg err";
+    sfx.miss();
+    say(`! ${text}`, "err");
     form.classList.remove("shake");
     void form.offsetWidth;
     form.classList.add("shake");
@@ -220,124 +288,47 @@ function auth(mode: "signup" | "login" = "signup") {
     if (!handle) return fail("Handles are 3–15 letters, numbers or underscores.");
     if (pwEl.value.length < PASSWORD_MIN) return fail(`Passwords need at least ${PASSWORD_MIN} characters.`);
     submit.disabled = true;
-    submit.textContent = mode === "signup" ? "Creating…" : "Logging in…";
+    say(mode === "signup" ? "> Registering driver…" : "> Checking the garage…");
+    msg.insertAdjacentHTML("beforeend", `<span class="px-blink">_</span>`);
     try {
       if (mode === "signup") await api.signup(handle, pwEl.value);
       else await api.login(handle, pwEl.value);
       sfx.start();
-      intro(hub, mode === "signup");
+      say("> Engine on!");
+      // Arrived by an invite: the room is waiting, Dili can say hi later.
+      if (pendingRoom) hub();
+      else intro(hub, mode === "signup");
     } catch (err) {
       fail(err instanceof Error ? err.message : "Something went wrong.");
       submit.disabled = false;
-      submit.textContent = mode === "signup" ? "Create account" : "Log in";
     }
   });
 
   view.querySelector("#guest")!.addEventListener("click", () => {
     sfx.ui();
     api.playAsGuest();
-    intro(hub);
+    if (pendingRoom) hub();
+    else intro(hub);
   });
+  view.querySelector("#replay")!.addEventListener("click", () => { sfx.ui(); playFilm(() => {}); });
 
   wireCommon(view);
   show(view, true);
-  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "squad", chars: ["dcoded", "dili", "dco"] }, () => sfx.pop());
   handleEl.focus({ preventScroll: true });
-  cleanup = animateLanding(view);
+  cleanup = parallax(view);
+
+  // The gauge reads out how many drivers have signed up.
   void api.stats().then((st) => {
     if (!st || !view.isConnected) return;
-    const set = (id: string, n: number) => {
-      const b = view.querySelector<HTMLElement>(id);
-      if (!b) return;
-      b.dataset.count = String(n);
-      countUp(b, n);
-    };
-    set("#st-players", st.players);
-    set("#st-races", st.races);
+    const b = view.querySelector<HTMLElement>("#st-players")!;
+    countUp(b, st.players, 1600);
+    view.querySelector<HTMLElement>(".gauge")!.style.setProperty("--v", String(Math.min(0.92, 0.18 + Math.log10(1 + st.players) / 4)));
   });
 
   void api.serverUp().then((up) => {
     if (up || !view.isConnected) return;
-    msg.textContent = "Online accounts aren't reachable right now — you can still play as a guest.";
-    msg.className = "msg warn";
+    say("! Online accounts are offline — you can still play as a guest.", "warn");
   });
-}
-
-/** Everything below the sign-in hero: features, squad, controls, ads, Dlicom. */
-function landingSections() {
-  let n = 0;
-  const feature = (icon: string, title: string, text: string) =>
-    `<article class="feat panel tilt" data-reveal style="--d:${n++ * 0.08}s"><div class="feat-ico">${icon}</div><h3>${title}</h3><p>${text}</p></article>`;
-  const ico = {
-    kart: `<svg viewBox="0 0 24 24"><path d="M3 15h18l-2-5H8L6 7H3z" fill="currentColor"/><circle cx="7" cy="17" r="2.6" fill="currentColor"/><circle cx="17" cy="17" r="2.6" fill="currentColor"/></svg>`,
-    drift: `<svg viewBox="0 0 24 24"><path d="M4 18c4-1 7-4 8-8s4-6 8-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="6" cy="20" r="1.6" fill="#6fb2ff"/><circle cx="9" cy="19" r="1.3" fill="#ffae3d"/><circle cx="12" cy="17" r="1.1" fill="#d59bff"/></svg>`,
-    items: `<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4" fill="currentColor"/><text x="12" y="17" text-anchor="middle" font-size="13" font-weight="900" fill="#05060d" font-family="Inter">?</text></svg>`,
-    board: ICON.trophy,
-  };
-  const squad = CHAR_IDS.map((id, k) => `<article class="mate panel tilt" data-reveal style="--d:${k * 0.1}s">
-      <div class="mate-pic">${face(id)}</div>
-      <h3>${CHAR_INFO[id].name}</h3>
-      <span class="tag">${CHAR_INFO[id].rarity}</span>
-      <p>${id === "dili" ? "Dlicom's delivery hero. Brave, fast and always smiling." : id === "dcoded" ? "Reads the fine print so you don't have to. Unlocks at 3,000 points." : "Ultra-rare. Only seven of them exist. Unlocks at 12,000 points."}</p>
-    </article>`).join("");
-  return `
-    <section class="land" id="inside">
-      <div class="land-head" data-reveal><div class="chip">What's inside</div><h2>Built like a real <span>kart racer.</span></h2></div>
-      <div class="feats">
-        ${feature(ico.kart, "Real 3D karts", "Every kart, driver and Custodian is modelled in 3D — with drifts, jumps and a cape glide over the lake.")}
-        ${feature(ico.drift, "Drift for turbo", "Hold a turn to drift. Sparks go blue, orange, then purple — let go for a boost.")}
-        ${feature(ico.items, "Items & rivals", "DLI Rocket, D-Shield, Coin Magnet, Freeze Zap. The Custodians fight back with goo and freeze orbs.")}
-        ${feature(ico.board, "Global leaderboard", "Every race is saved to your account. Climb from Rookie to Founder.")}
-      </div>
-    </section>
-    <section class="land">
-      <div class="land-head" data-reveal><div class="chip">The squad</div><h2>Pick your <span>driver.</span></h2></div>
-      <div class="mates">${squad}</div>
-    </section>
-    <section class="land">
-      <div class="land-head" data-reveal><div class="chip">How to play</div><h2>Arrows. <span>That's it.</span></h2></div>
-      <div class="keys panel" data-reveal>
-        <div><span class="kc k1">←</span><span class="kc k2">→</span><b>Steer</b></div>
-        <div><span class="kc wide k3">hold</span><b>Drift, then let go for turbo</b></div>
-        <div><span class="kc k4">↑</span><b>Gas</b></div>
-        <div><span class="kc k5">↓</span><b>Fire your item</b></div>
-        <div><span class="kc wide">Esc</span><b>Pause</b></div>
-        <p>On a phone, big on-screen arrows appear automatically.</p>
-      </div>
-    </section>
-    <section class="land">
-      <div class="ad panel" data-reveal>
-        <div class="ad-copy">
-          <div class="chip">Advertise in Dili Cart</div>
-          <h2>Your ad on a stadium billboard. <span>$5.</span></h2>
-          <p>Put your ad or post in front of every racer, on the big boards around the track. Reach out to <b>@00xmado</b> on X for details.</p>
-          <a class="btn primary" href="https://x.com/00xmado" target="_blank" rel="noopener">DM @00xmado on X</a>
-        </div>
-        <div class="ad-board" aria-hidden="true">
-          <div class="ad-screen"><span class="ad-bubble">YOUR AD HERE</span><b>$5</b><small>DM @00xmado on X</small><em class="scan"></em></div>
-          <i></i><i></i>
-        </div>
-      </div>
-    </section>
-    <section class="land">
-      <div class="about panel" data-reveal>
-        <div class="brand big">${LOGO}<b>Dlicom</b></div>
-        <h2>One app for your whole crypto life.</h2>
-        <p>Encrypted messages, a social feed, DliClips, communities — and a wallet built right in, on Base. You hold your own keys.</p>
-        <div class="tge"><span class="bubble">$DLI TGE</span><span>The token generation event is scheduled for <b>2027</b>. Follow <a href="https://x.com/DlicomApp" target="_blank" rel="noopener">@DlicomApp</a> for the date.</span></div>
-      </div>
-    </section>
-    <footer class="foot">Dili Cart · made for the Dlicom AI Game Jam · Race points are for fun and have no monetary value.</footer>`;
-}
-
-/** The scrolling LED ticker from the stadium, as a band across the page. */
-function marquee() {
-  const items = [
-    ["DLICOM", ""], ["$DLI TGE 2027", "y"], ["DILI CART", "b"], ["YOUR AD HERE · $5 · DM @00xmado", "p"],
-    ["HOLD YOUR KEYS", "t"], ["BEAT THE CUSTODIANS", ""], ["DRIFT FOR TURBO", "y"],
-  ];
-  const row = items.map(([t, c]) => `<span class="${c}">${t}</span><i>◆</i>`).join("");
-  return `<div class="marquee" aria-hidden="true"><div class="mq-track">${row}${row}</div></div>`;
 }
 
 /** Count a number up from zero with an ease-out. */
@@ -351,141 +342,169 @@ function countUp(el: HTMLElement, to: number, ms = 1400) {
   requestAnimationFrame(tick);
 }
 
-/**
- * Landing motion: sections rise in as they scroll into view, cards tilt
- * toward the pointer with a glow that follows it, stats count up.
- */
-function animateLanding(view: HTMLElement) {
-  const io = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting) continue;
-      e.target.classList.add("in");
-      io.unobserve(e.target);
-    }
-  }, { threshold: 0.18 });
-  view.querySelectorAll("[data-reveal]").forEach((el) => io.observe(el));
-
-  const stats = view.querySelector(".live-stats");
-  if (stats) {
-    const so = new IntersectionObserver(([e]) => {
-      if (!e?.isIntersecting) return;
-      so.disconnect();
-      stats.querySelectorAll<HTMLElement>("[data-count]").forEach((b) => countUp(b, Number(b.dataset.count)));
-    });
-    so.observe(stats);
-  }
-
-  const fine = matchMedia("(pointer: fine)").matches;
+/** The stadium behind drifts gently against the pointer. */
+function parallax(view: HTMLElement) {
+  if (calm || !matchMedia("(pointer: fine)").matches) return () => {};
+  let raf = 0, tx = 0, ty = 0, x = 0, y = 0;
+  const loop = () => {
+    x += (tx - x) * 0.06;
+    y += (ty - y) * 0.06;
+    liveEl.style.setProperty("--px", x.toFixed(4));
+    liveEl.style.setProperty("--py", y.toFixed(4));
+    raf = Math.abs(tx - x) + Math.abs(ty - y) > 0.001 ? requestAnimationFrame(loop) : 0;
+  };
   const onMove = (e: PointerEvent) => {
-    const card = (e.target as HTMLElement).closest<HTMLElement>(".tilt");
-    if (!card) return;
-    const r = card.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
-    card.style.setProperty("--mx", `${x * 100}%`);
-    card.style.setProperty("--my", `${y * 100}%`);
-    card.style.setProperty("--ry", `${(x - 0.5) * 10}deg`);
-    card.style.setProperty("--rx", `${(0.5 - y) * 8}deg`);
+    tx = (e.clientX / innerWidth) * 2 - 1;
+    ty = (e.clientY / innerHeight) * 2 - 1;
+    if (!raf) raf = requestAnimationFrame(loop);
   };
-  const onLeave = (e: PointerEvent) => {
-    const card = (e.target as HTMLElement).closest<HTMLElement>(".tilt");
-    if (card && !card.contains(e.relatedTarget as Node)) { card.style.removeProperty("--rx"); card.style.removeProperty("--ry"); }
-  };
-  if (fine) {
-    view.addEventListener("pointermove", onMove);
-    view.addEventListener("pointerout", onLeave);
-  }
-
-  // The hero drifts up and fades as you scroll into the sections.
-  const hero = view.querySelector<HTMLElement>(".auth-grid");
-  const onScroll = () => {
-    if (!hero) return;
-    const y = view.scrollTop;
-    hero.style.setProperty("--scroll", String(Math.min(1, y / 600)));
-    liveEl.style.setProperty("--scroll", String(Math.min(1, y / 700)));
-  };
-  view.addEventListener("scroll", onScroll, { passive: true });
+  view.addEventListener("pointermove", onMove);
   return () => {
-    io.disconnect();
-    liveEl.style.removeProperty("--scroll");
+    cancelAnimationFrame(raf);
+    liveEl.style.removeProperty("--px");
+    liveEl.style.removeProperty("--py");
   };
 }
 
 /* ================================================================== */
-/* Hub                                                                 */
+/* Hub: the garage                                                     */
 /* ================================================================== */
 
 function hub() {
   const p = api.player();
   if (!p) return auth();
   const next = nextTier(p.points);
+  const floor = [...TIERS].reverse().find((t) => p.points >= t.at)?.at ?? 0;
+  const tierPct = next ? Math.min(1, Math.max(0, (p.points - floor) / (next.at - floor))) : 1;
+  const driverSkin = isSkinDriver(p.skin) ? p.skin : null;
 
-  const squad = CHAR_IDS.map((id) => {
+  const drivers = CHAR_IDS.map((id) => {
     const need = CHAR_UNLOCK[id];
     const open = p.points >= need;
-    const on = p.char === id;
     const pct = open ? 100 : Math.floor((p.points / need) * 100);
-    return `<button class="driver ${on ? "on" : ""} ${open ? "" : "locked"}" data-char="${id}" ${open ? "" : "aria-disabled=\"true\""}>
+    return `<button type="button" class="driver ${p.char === id && !driverSkin ? "on" : ""} ${open ? "" : "locked"}" data-char="${id}" style="--tint:${CHAR_INFO[id].color}" ${open ? "" : "aria-disabled=\"true\""}>
       <span class="pic">${face(id)}${open ? "" : `<i class="lock">${ICON.lock}</i>`}</span>
-      <b>${CHAR_INFO[id].name}</b>
-      <small>${open ? CHAR_INFO[id].rarity : `${fmt(need)} pts`}</small>
-      ${open ? "" : `<span class="bar"><i style="width:${pct}%"></i></span>`}
+      <span><b>${CHAR_INFO[id].name}</b><small>${open ? CHAR_INFO[id].rarity : `${fmt(need)} pts`}</small>${open ? "" : `<span class="bar"><i style="width:${pct}%"></i></span>`}</span>
+      <i class="led"></i>
     </button>`;
   }).join("");
 
-  const view = h(`<div class="screen hub">
+  const streak = p.streak >= 2 ? `${p.streak}-day streak · up to 2× points` : "Race daily for up to 2× points";
+  const news: [string, string][] = [
+    ["New track: Neon Town · 5 laps at night", "p"],
+    ["Dili Circuit · 3 laps · 8 racers", ""],
+    ["New: skins in the shop · pay in Dili coins", "y"],
+    [streak, "g"],
+    ["$DLI TGE 2027 · follow @DlicomApp", "y"],
+    ["Your ad on a stadium board · $5 · DM @00xmado", "p"],
+    ...(p.guest ? [["Guest mode · scores stay on this device", "y"] as [string, string]] : []),
+  ];
+  const tierName = p.tier;
+
+  const view = h(`<div class="screen stage-screen garage" data-scene="hub">
     <header class="bar">${brand()}
       <div class="bar-right">
         ${soundButton()}
         ${canFullscreen() ? `<button class="iconbtn" data-act="full" title="Fullscreen" aria-label="Fullscreen">${ICON.full}</button>` : ""}
-        <div class="who">
-          <span class="pic">${face(p.char)}</span>
-          <span class="name">${p.guest ? "Guest" : "@" + esc(p.handle)}<small>${p.tier}${next ? ` · ${fmt(next.at - p.points)} to ${next.name}` : ""}</small></span>
-          <button class="pill-btn" id="out">${p.guest ? "Sign up" : "Log out"}</button>
+        <button type="button" class="wallet" id="wallet" title="Dili coins · open the shop">${ICON.coin}<b data-count="${p.coins}">${fmt(p.coins)}</b></button>
+        <div class="plate">
+          <span class="who-pic" style="--p:${tierPct.toFixed(3)}"><span>${faceOf(p)}</span></span>
+          <span class="who-name"><b>${p.guest ? "Guest" : "@" + esc(p.handle)}</b><small>${tierName.toUpperCase()}${next ? ` · ${fmt(next.at - p.points)} TO ${next.name.toUpperCase()}` : " · TOP TIER"}</small></span>
+          <button class="key" id="out">${p.guest ? "Sign up" : "Log out"}</button>
         </div>
       </div>
     </header>
-    <main class="hub-grid">
-      <section class="hub-copy">
-        <div class="chip">Dlicom Grand Prix · 3 laps · 8 racers</div>
-        <h1 class="title"><span class="t1">DILI</span> <em class="t2">CART</em></h1>
-        <p class="lead">Seven Custodians want the crown. Drift, boost, glide over the lake — and bring it home for Dlicom.</p>
-        <div class="stats">
-          <div><b>${p.best ? fmt(p.best) : "—"}</b><span>Best score</span></div>
-          <div><b>${fmt(p.points)}</b><span>Points</span></div>
-          <div><b>${p.wins}</b><span>Wins</span></div>
-          <div><b>${fmtTime(p.bestTime)}</b><span>Best time</span></div>
-        </div>
-        <div class="race-wrap">
-          <span class="rb-ring" aria-hidden="true"></span>
-          <button class="race-btn" id="race">
-            <span class="rb-check" aria-hidden="true"></span>
-            <span class="rb-flag" aria-hidden="true">${FLAG}</span>
-            <span class="rb-text"><b>RACE</b><small>Dili Circuit · 3 laps</small></span>
-            <kbd>Enter ↵</kbd>
-            <i class="rb-shine" aria-hidden="true"></i>
+    <section class="garage-top">
+      <div class="stage3d" id="stage3d" title="Drag to spin · click to wave"></div>
+      ${wordmark()}
+      <div class="now-driving"><span>${driverSkin ? SKIN_INFO[driverSkin].rarity : CHAR_INFO[p.char].rarity}</span><b>${driverSkin ? SKIN_INFO[driverSkin].name : CHAR_INFO[p.char].name}</b>${p.skin && !driverSkin ? `<i>${SKIN_INFO[p.skin].name} livery</i>` : ""}</div>
+    </section>
+    <div class="console">
+      <div class="con-hood">${LEDS}${ticker(news)}</div>
+      <div class="con-body">
+        <div class="drivers con-left" role="radiogroup" aria-label="Driver">${drivers}</div>
+        <div class="dash-bezel"><div class="dash">
+          <section class="dash-stats">
+            <header class="dash-h"><span>Your stats</span><span class="dash-chip">${tierName}</span></header>
+            <div class="dstats">
+              <div class="dstat hero"><small>Best score</small><b data-count="${p.best}">${p.best ? "0" : "–"}</b></div>
+              <div class="dstat"><small>Points</small><b data-count="${p.points}">0</b></div>
+              <div class="dstat"><small>Wins</small><b data-count="${p.wins}">0</b></div>
+              <div class="dstat"><small>Best time</small><b>${fmtTime(p.bestTime)}</b></div>
+            </div>
+            <div class="dtier"><div class="dtier-row"><span>${tierName}</span><span>${next ? `${fmt(next.at - p.points)} to ${next.name}` : "Top tier"}</span></div>
+              <div class="dtier-bar"><i style="--w:${Math.max(3, tierPct * 100).toFixed(1)}%"></i></div></div>
+          </section>
+          <section class="dash-board">
+            <header class="dash-h"><span>Top racers</span><button type="button" id="board2">See all <svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></header>
+            <ol id="mini" class="dboard">${Array.from({ length: 4 }, () => `<li class="sk"><i></i><span></span><b></b></li>`).join("")}</ol>
+          </section>
+        </div></div>
+        <div class="go-wrap">
+          <div class="tracks" role="radiogroup" aria-label="Track">${TRACK_IDS.map((t) => `<button type="button" class="trk ${t} ${t === trackPick ? "on" : ""}" data-track="${t}" role="radio" aria-checked="${t === trackPick}"><i></i><span><b>${TRACK_INFO[t].name}</b><small>${TRACK_INFO[t].laps} laps · ${t === "town" ? "night" : "dusk"}</small></span></button>`).join("")}</div>
+          <button class="launch" id="race" aria-label="Race">
+            <span class="launch-ring"></span>
+            <span class="launch-body">
+              <span class="launch-shine"></span>
+              <span class="launch-chev"><i></i><i></i><i></i></span>
+              <b>RACE</b>
+              <small id="go-track">${trackLabel(trackPick)}</small>
+            </span>
           </button>
+          <span class="go-label"><kbd>Enter</kbd> to race</span>
+          <div class="go-modes">
+            <button type="button" class="mp-btn" id="mp"><i>${PEOPLE}</i><span><b>Race friends</b><small>Room code</small></span></button>
+            <button type="button" class="mp-btn inf" id="inf"><i>${INFINITY}</i><span><b>Infinite</b><small>${p.endless ? `Best ${fmt(p.endless)}` : "4 hearts · endless"}</small></span></button>
+          </div>
         </div>
-        <div class="cta">
-          <button class="btn ghost" id="board">${ICON.trophy} Leaderboard</button>
-        </div>
-        ${p.guest ? `<p class="guestnote">You're playing as a guest — scores stay on this device. <button class="link" id="claim">Create an account</button> to join the global board.</p>` : ""}
-        <div class="tge"><span class="bubble">$DLI TGE</span><span>The Dlicom token generation event is scheduled for <b>2027</b>. Follow <b>@DlicomApp</b> for the date.</span></div>
-        <a class="adnote" href="https://x.com/00xmado" target="_blank" rel="noopener">📣 Your ad on a stadium billboard — <b>$5</b>. DM <b>@00xmado</b></a>
-      </section>
-      <section class="hub-stage">
-        <div class="stage3d" id="stage3d" title="Drag to spin · click to wave"></div>
-        <div class="squad"><p class="eyebrow">Your driver</p><div class="drivers">${squad}</div></div>
-      </section>
-      <aside class="panel mini-board">
-        <div class="mini-head"><b>Top racers</b><button class="link" id="board2">See all</button></div>
-        <ol id="mini"><li class="muted">Loading…</li></ol>
-      </aside>
-    </main>
+      </div>
+      <div class="con-foot">
+        <span style="display:flex;gap:10px">
+          <button type="button" class="key cream" id="board">${ICON.trophy} Leaderboard</button>
+          <button type="button" class="key yellow" id="shop">${ICON.bag} Shop</button>
+          ${p.guest ? `<button type="button" class="key" id="claim">Create account</button>` : ""}
+        </span>
+        ${LEDS}
+      </div>
+    </div>
   </div>`);
 
-  const go = () => { sfx.start(); race(); };
-  view.querySelector("#race")!.addEventListener("click", go);
+  let leaving = false;
+  const raceBtn = view.querySelector<HTMLButtonElement>("#race")!;
+  const go = () => {
+    if (leaving) return;
+    leaving = true;
+    sfx.start();
+    raceBtn.classList.add("press");
+    view.classList.add("launch-out");
+    setTimeout(race, calm ? 0 : 420);
+  };
+  raceBtn.addEventListener("click", go);
+  view.querySelector("#inf")!.addEventListener("click", () => {
+    if (leaving) return;
+    leaving = true;
+    sfx.start();
+    view.classList.add("launch-out");
+    setTimeout(() => race(undefined, true), calm ? 0 : 420);
+  });
   for (const id of ["#board", "#board2"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); void board("best"); });
+  view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => b.addEventListener("click", () => {
+    const t = b.dataset.track as TrackId;
+    if (t === trackPick) return;
+    sfx.pop();
+    setTrack(t);
+    view.querySelectorAll<HTMLElement>("[data-track]").forEach((x) => {
+      x.classList.toggle("on", x === b);
+      x.setAttribute("aria-checked", String(x === b));
+    });
+    view.querySelector("#go-track")!.textContent = trackLabel(t);
+    // Rebuild the backdrop only once the choice has settled, and never if
+    // the player goes straight to the race (that builds the track anyway).
+    clearTimeout(backdropTimer);
+    backdropTimer = window.setTimeout(() => { if (view.isConnected && !leaving && trackPick === t) backdrop(true); }, 1400);
+  }));
+  for (const id of ["#shop", "#wallet"]) view.querySelector(id)?.addEventListener("click", () => { sfx.ui(); shop(); });
+  view.querySelector("#mp")!.addEventListener("click", () => { if (leaving) return; sfx.ui(); mpHome(); });
   view.querySelector("#out")!.addEventListener("click", async () => {
     sfx.ui();
     if (p.guest) return auth("signup");
@@ -494,7 +513,7 @@ function hub() {
   });
   view.querySelector("#claim")?.addEventListener("click", () => { sfx.ui(); auth("signup"); });
 
-  view.querySelectorAll<HTMLElement>("[data-char]").forEach((b) => b.addEventListener("click", async () => {
+  const pick = async (b: HTMLElement) => {
     const c = b.dataset.char as CharId;
     if (b.classList.contains("locked")) {
       sfx.miss();
@@ -503,22 +522,58 @@ function hub() {
       b.classList.add("nope");
       return;
     }
+    if (b.classList.contains("on")) return;
     sfx.pop();
     view.querySelectorAll(".driver").forEach((x) => x.classList.toggle("on", x === b));
-    stage3d?.setChar(c);
-    view.querySelector<HTMLElement>(".who .pic")!.innerHTML = face(c);
-    try { await api.chooseChar(c); } catch { /* keep the local choice; the server will catch up */ }
-  }));
+    // A squad driver takes the seat back from a skin driver; liveries stay.
+    const cur = api.player()!;
+    const keepSkin = isSkinDriver(cur.skin) ? null : cur.skin;
+    stage3d?.setLook(lookFor(c, keepSkin));
+    const nd = view.querySelector<HTMLElement>(".now-driving")!;
+    nd.innerHTML = `<span>${CHAR_INFO[c].rarity}</span><b>${CHAR_INFO[c].name}</b>${keepSkin ? `<i>${SKIN_INFO[keepSkin].name} livery</i>` : ""}`;
+    nd.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 400, easing: "cubic-bezier(.22,1,.36,1)" });
+    const pic = view.querySelector<HTMLElement>(".who-pic span")!;
+    pic.innerHTML = face(c);
+    pic.animate([{ transform: "scale(.6)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], { duration: 450, easing: "cubic-bezier(.34,1.56,.64,1)" });
+    try {
+      if (cur.skin !== keepSkin) await api.equipSkin(keepSkin);
+      await api.chooseChar(c);
+    } catch { /* keep the local choice; the server will catch up */ }
+  };
+  const keys = [...view.querySelectorAll<HTMLElement>("[data-char]")];
+  keys.forEach((b) => b.addEventListener("click", () => void pick(b)));
 
   wireCommon(view);
   show(view, true);
-  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", char: p.char }, () => sfx.pop());
+  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", look: lookFor(p.char, p.skin) }, () => sfx.pop());
 
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Enter") go(); };
+  // Enter races; ← → flip through the unlocked drivers.
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Enter") go();
+    else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      const open = keys.filter((d) => !d.classList.contains("locked"));
+      const at = open.findIndex((d) => d.classList.contains("on"));
+      const nextD = open[(at + (e.key === "ArrowRight" ? 1 : open.length - 1)) % open.length];
+      if (nextD && open.length > 1) void pick(nextD);
+    }
+  };
   addEventListener("keydown", onKey);
-  cleanup = () => removeEventListener("keydown", onKey);
+  const stopParallax = parallax(view);
+  cleanup = () => { removeEventListener("keydown", onKey); stopParallax(); };
+
+  // The numbers count up once the console has landed.
+  setTimeout(() => view.querySelectorAll<HTMLElement>(".dstat [data-count]").forEach((b) => {
+    const n = Number(b.dataset.count);
+    if (n) countUp(b, n, 1100);
+  }), calm ? 0 : 1100);
 
   void miniBoard(view.querySelector<HTMLElement>("#mini")!, p);
+  // Arrived by an invite link: straight into that room.
+  if (pendingRoom) {
+    const code = pendingRoom;
+    pendingRoom = null;
+    void joinFromLink(code);
+  }
   // Races that finished offline get sent now; refresh the board if any did.
   if (!p.guest && api.pendingCount()) {
     void api.syncPending().then((n) => { if (n && view.isConnected) hub(); });
@@ -526,18 +581,156 @@ function hub() {
 }
 
 async function miniBoard(el: HTMLElement, p: api.Player) {
+  const row = (rank: number, handle: string, sub: string, value: number, me: boolean) => `<li class="${rank <= 3 ? `r${rank}` : ""} ${me ? "me" : ""}" style="--d:${rank * 0.06}s">
+      <i class="medal">${rank}</i>
+      <span class="av" style="--h:${[...handle].reduce((a, c) => a + c.charCodeAt(0), 0) % 360}">${esc(handle.slice(0, 1).toUpperCase())}</span>
+      <span class="nm"><b>${esc(handle)}</b><small>${sub}</small></span>
+      <b class="sc">${fmt(value)}</b></li>`;
   try {
     const { entries, me } = await api.leaderboard("best");
     if (!el.isConnected) return;
     if (!entries.length) {
-      el.innerHTML = `<li class="muted">No races yet. Be the first on the board.</li>`;
+      el.innerHTML = `<li class="empty">No races yet. Be the first on the board.</li>`;
       return;
     }
-    el.innerHTML = entries.slice(0, 5).map((e, i) => `<li class="${e.handle === p.handle && !p.guest ? "me" : ""}">
-      <i>${i + 1}</i><span>@${esc(e.handle)}</span><b>${fmt(e.best)}</b></li>`).join("")
-      + (me && me.rank > 5 ? `<li class="me"><i>${me.rank}</i><span>You</span><b>${fmt(me.value)}</b></li>` : "");
+    el.innerHTML = entries.slice(0, 4).map((e, i) => row(i + 1, e.handle, `${e.tier} · ${e.wins} win${e.wins === 1 ? "" : "s"}`, e.best, e.handle === p.handle && !p.guest)).join("")
+      + (me && me.rank > 4 ? row(me.rank, p.handle, "You", me.value, true) : "");
   } catch {
-    if (el.isConnected) el.innerHTML = `<li class="muted">The global board is offline right now.</li>`;
+    if (el.isConnected) el.innerHTML = `<li class="empty">The board is offline right now.</li>`;
+  }
+}
+
+/* ================================================================== */
+/* Shop: kart skins for Dili coins                                     */
+/* ================================================================== */
+
+function shop(focus?: SkinId) {
+  const p = api.player();
+  if (!p) return auth();
+  let sel: SkinId = focus ?? (p.skin ?? "quang");
+
+  const card = (id: SkinId) => {
+    const s = SKIN_INFO[id];
+    const art = isSkinDriver(id) ? skinPortrait(id) : `<span class="swatch ${id}"></span>`;
+    return `<button type="button" class="skin" data-skin="${id}" style="--tint:${s.color}">
+      <span class="skin-art">${art}</span>
+      <span class="skin-txt"><small>${s.rarity} · ${s.kind === "driver" ? "Driver + kart" : "Livery"}</small><b>${s.name}</b></span>
+      <span class="skin-tag"></span>
+    </button>`;
+  };
+
+  const view = h(`<div class="screen stage-screen shop" data-scene="hub">
+    <header class="bar">
+      <button class="iconbtn" id="back" aria-label="Back to the hub">${ICON.back}</button>
+      <div class="shop-title"><b>Kart Shop</b><span>Skins for Dili coins</span></div>
+      <div class="bar-right">
+        ${soundButton()}
+        <span class="wallet big" id="wallet">${ICON.coin}<b>${fmt(p.coins)}</b></span>
+      </div>
+    </header>
+    <div class="shop-body">
+      <section class="shop-stage">
+        <div class="stage3d" id="stage3d" title="Drag to spin"></div>
+        <div class="shop-info" id="info"></div>
+      </section>
+      <aside class="shop-list">
+        <div class="shop-list-h">Drivers</div>
+        ${SKIN_IDS.filter((x) => SKIN_INFO[x].kind === "driver").map(card).join("")}
+        <div class="shop-list-h">Liveries</div>
+        ${SKIN_IDS.filter((x) => SKIN_INFO[x].kind === "livery").map(card).join("")}
+        <p class="shop-fine">Every coin you grab on track goes in your wallet. Liveries repaint whichever squad driver you pick.</p>
+      </aside>
+    </div>
+  </div>`);
+
+  const info = view.querySelector<HTMLElement>("#info")!;
+  const wallet = view.querySelector<HTMLElement>("#wallet b")!;
+  const render = () => {
+    const cur = api.player()!;
+    const s = SKIN_INFO[sel];
+    const owned = cur.skins.includes(sel);
+    const on = cur.skin === sel;
+    const short = s.price - cur.coins;
+    view.querySelectorAll<HTMLElement>(".skin").forEach((b) => {
+      const id = b.dataset.skin as SkinId;
+      b.classList.toggle("sel", id === sel);
+      b.classList.toggle("owned", cur.skins.includes(id));
+      b.querySelector(".skin-tag")!.innerHTML = cur.skin === id ? "Equipped" : cur.skins.includes(id) ? "Owned" : `${ICON.coin}${fmt(SKIN_INFO[id].price)}`;
+    });
+    info.style.setProperty("--tint", s.color);
+    info.innerHTML = `<small>${s.rarity} ${s.kind === "driver" ? "driver" : "livery"}</small>
+      <h2>${s.name}</h2><p>${s.blurb}</p>
+      <div class="shop-acts">
+        ${on ? `<button class="buy ghost" data-do="unequip">Equipped · take off</button>`
+          : owned ? `<button class="buy" data-do="equip">Equip</button>`
+          : `<button class="buy" data-do="buy" ${short > 0 ? "disabled" : ""}>${ICON.coin}<span>Buy for ${fmt(s.price)}</span></button>`}
+        ${!owned && short > 0 ? `<span class="need">${fmt(short)} more coins · grab them on track</span>` : ""}
+      </div>
+      <p class="shop-msg" id="msg"></p>`;
+    info.querySelector<HTMLButtonElement>("[data-do]")?.addEventListener("click", (e) => void act((e.currentTarget as HTMLElement).dataset.do!));
+    wallet.textContent = fmt(cur.coins);
+  };
+  const preview = () => {
+    const cur = api.player()!;
+    stage3d?.setLook(lookFor(cur.char, sel));
+  };
+  const act = async (what: string) => {
+    const btn = info.querySelector<HTMLButtonElement>("[data-do]");
+    if (btn) btn.disabled = true;
+    try {
+      if (what === "buy") {
+        await api.buySkin(sel);
+        sfx.perfect(3);
+        confetti(info);
+      } else if (what === "equip") {
+        await api.equipSkin(sel);
+        sfx.pop();
+      } else {
+        await api.equipSkin(null);
+        sfx.ui();
+      }
+      render();
+    } catch (e) {
+      sfx.miss();
+      render();
+      const m = view.querySelector<HTMLElement>("#msg");
+      if (m) m.textContent = e instanceof Error ? e.message : "That didn't work. Try again.";
+    }
+  };
+  view.querySelectorAll<HTMLElement>(".skin").forEach((b) => b.addEventListener("click", () => {
+    const id = b.dataset.skin as SkinId;
+    if (id === sel) return;
+    sel = id;
+    sfx.pop();
+    render();
+    preview();
+  }));
+  view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); hub(); });
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") hub(); };
+  addEventListener("keydown", onKey);
+
+  wireCommon(view);
+  show(view, true);
+  cleanup = () => removeEventListener("keydown", onKey);
+  stage3d = mountStage(view.querySelector<HTMLElement>("#stage3d")!, { kind: "kart", look: lookFor(p.char, sel), far: true }, () => sfx.pop());
+  render();
+}
+
+/** A burst of coins and sparks from an element, for a purchase. */
+function confetti(from: HTMLElement) {
+  if (calm) return;
+  const r = from.getBoundingClientRect();
+  for (let i = 0; i < 26; i++) {
+    const s = document.createElement("i");
+    s.className = "coin-burst";
+    const a = Math.random() * Math.PI * 2, d = 80 + Math.random() * 160;
+    s.style.left = `${r.left + r.width / 2}px`;
+    s.style.top = `${r.top + r.height * 0.7}px`;
+    document.body.appendChild(s);
+    s.animate([
+      { transform: "translate(-50%,-50%) scale(.4)", opacity: 1 },
+      { transform: `translate(calc(-50% + ${Math.cos(a) * d}px), calc(-50% + ${Math.sin(a) * d - 60}px)) rotate(${Math.random() * 720}deg) scale(1)`, opacity: 0 },
+    ], { duration: 900 + Math.random() * 500, easing: "cubic-bezier(.22,1,.36,1)" }).onfinish = () => s.remove();
   }
 }
 
@@ -545,9 +738,10 @@ async function miniBoard(el: HTMLElement, p: api.Player) {
 /* Race                                                                */
 /* ================================================================== */
 
-function race() {
+function race(net?: NetRace, endless = false, resume?: RaceSnapshot) {
   const p = api.player();
   if (!p) return auth();
+  if (mp && !net) mpLeave();
 
   const view = h(`<div class="screen race-view">
     <div class="race-stage" id="stage"></div>
@@ -562,48 +756,102 @@ function race() {
   wireCommon(view);
   view.querySelector("#pause")!.addEventListener("click", () => dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })));
 
+  // Phones: hand back the spare menu renderers' GPU memory before the race loads.
+  trimStagePool();
   const game = new DiliCart();
   racer = game;
+  if (mp) mp.at = "race";
   game.mount(stageEl, {
-    onEnd: (r) => void results(stageEl, r),
-    onRestart: () => { sfx.ui(); race(); },
-    onQuit: () => { sfx.ui(); hub(); },
-  }, p.char);
+    onEnd: (r) => void (r.endless ? endlessResults(stageEl, r) : results(stageEl, r)),
+    // Online there's no restarting on your own; the pause menu's button just closes it.
+    onRestart: () => { sfx.ui(); if (net) dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })); else race(undefined, endless); },
+    onQuit: () => { sfx.ui(); if (net) mpLeave(); hub(); },
+    // The graphics were lost: rebuild the same race (online, rejoin the room's race).
+    onRecover: () => race(net, endless, game.snapshot() ?? undefined),
+  }, p.char, { skin: p.skin, track: net ? net.track : trackPick, net, endless, resume });
 }
 
-/** End-of-race card, over the still-running finish camera. */
-async function results(stageEl: HTMLElement, r: RaceResult) {
+const RI = {
+  coin: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="currentColor"/><path d="M9.5 7.5h2.6a4.5 4.5 0 0 1 0 9H9.5z" fill="#0b0d1c" opacity=".55"/></svg>`,
+  turbo: `<svg viewBox="0 0 24 24"><path d="M13 2 5 13h6l-1 9 8-11h-6z" fill="currentColor"/></svg>`,
+  star: `<svg viewBox="0 0 24 24"><path d="m12 2.5 2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z" fill="currentColor"/></svg>`,
+  pass: `<svg viewBox="0 0 24 24"><path d="M4 17 10 11l4 4 6-7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 8h5v5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  hit: `<svg viewBox="0 0 24 24"><path d="M12 2v5M12 17v5M2 12h5M17 12h5M5 5l3.5 3.5M15.5 15.5 19 19M19 5l-3.5 3.5M8.5 15.5 5 19" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>`,
+  flag: `<svg viewBox="0 0 24 24"><path d="M5 3v18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M6 4h12l-2.5 4L18 12H6z" fill="currentColor"/></svg>`,
+  clock: `<svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 9v4l3 2M9 2h6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`,
+  home: `<svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>`,
+  share: `<svg viewBox="0 0 24 24"><path d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  replay: `<svg viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v4h4" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
+const INFINITY = `<svg viewBox="0 0 24 24"><path d="M6.5 8.5c-2 0-3.5 1.6-3.5 3.5s1.5 3.5 3.5 3.5c3.5 0 7.5-7 11-7 2 0 3.5 1.6 3.5 3.5s-1.5 3.5-3.5 3.5c-3.5 0-7.5-7-11-7z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const HEART = `<svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 4.4 2.6.8-1.4 2.3-2.6 4.4-2.6 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z" fill="currentColor"/></svg>`;
+const fmtDist = (m: number) => (m < 1000 ? `${fmt(Math.round(m))} m` : `${(m / 1000).toFixed(2)} km`);
+
+/** Infinite: the run's card, over the replay of the crash. */
+async function endlessResults(stageEl: HTMLElement, r: RaceResult) {
   const p = api.player()!;
-  const podium = r.position <= 3;
-  const rows: [string, number, string][] = [
-    ["Coins", r.tally.coins, `${r.coins} grabbed`],
-    ["Mini-turbos", r.tally.turbos, `${r.turbos} fired`],
-    ["Stunts", r.tally.stunts, `${r.tricks} tricks`],
-    ["Overtakes", r.tally.passes, ""],
-    ["Takedowns", r.tally.takedowns, r.takedowns ? `${r.takedowns} Custodians` : ""],
-    ["Laps", r.tally.laps, `${LAPS} laps`],
-    [`${ORD(r.position)} place`, r.finishBonus, "finish bonus"],
-    ["Time bonus", r.timeBonus, fmtTime(r.time)],
+  const e = r.endless!;
+  const prevBest = p.endless ?? 0;
+  const tiles: [string, string, number, string, string][] = [
+    [INFINITY, "Distance", r.tally.distance, fmtDist(e.distance), "#9db4ff"],
+    [RI.hit, "Dodges", r.tally.dodges, `${e.nearMisses} close calls · ${e.gates} gates`, "#7fe0ff"],
+    [RI.coin, "Coins", r.tally.coins, `${r.coins} grabbed`, "#ffc21a"],
+    [RI.turbo, "Mini-turbos", r.tally.turbos, `${r.turbos} fired`, "#2ee6ff"],
+    [RI.star, "Stunts", r.tally.stunts, `${r.tricks} tricks · ${e.heartsFound} hearts found`, "#b58cff"],
+    [RI.flag, "Stages", r.tally.laps + r.tally.passes + r.tally.takedowns, `reached stage ${e.stage}`, "#ff9bd6"],
   ];
-  const over = h(`<div class="rr ${podium ? "podium" : ""}">
+  const over = h(`<div class="rr endless">
     <div class="rr-card">
-      <div class="rr-top">
-        <div class="rr-place" data-t="${ORD(r.position)}">${ORD(r.position)}</div>
-        <div class="rr-cap"><b>${r.position === 1 ? "Custodians defeated!" : podium ? "On the podium!" : "Good race — go again!"}</b>
-          <span>${fmtTime(r.time)} · best lap ${fmtTime(r.bestLap)}</span></div>
+      <header class="rr-head">
+        <div class="rr-medal inf"><i>${INFINITY}</i><b>${e.stage}</b><sup>STAGE</sup></div>
+        <div class="rr-cap">
+          <small>Dlicom Skyway · Infinite</small>
+          <b>${fmtDist(e.distance)}</b>
+          <div class="rr-chips">
+            <span>${RI.clock}${fmtTime(r.time)}</span>
+            <span class="out">${HEART}${e.cause ? `Out of hearts · ${esc(e.cause.replace(/!$/, "").toLowerCase())}` : "Out of hearts"}</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="rr-grid">
+        ${tiles.map(([icon, label, v, note, c], i) => `<div class="rr-tile ${v ? "" : "zero"}" style="--c:${c};--d:${0.15 + i * 0.07}s">
+          <i class="ico">${icon}</i>
+          <span class="lab">${label}<small>${note}</small></span>
+          <b data-n="${v}">0</b>
+        </div>`).join("")}
       </div>
-      <div class="rr-rows">
-        ${rows.map(([k, v, note], i) => `<div class="rr-row" style="--d:${0.2 + i * 0.1}s">
-          <span>${k}${note ? `<i>${note}</i>` : ""}</span><b data-n="${v}">0</b></div>`).join("")}
+
+      <div class="rr-bonus" style="--d:${0.6}s">
+        <span class="pill gold">Best combo <b>${e.bestCombo}</b></span>
+        <span class="pill">Top multiplier <b>×${e.bestMult}</b></span>
       </div>
-      <div class="rr-total" style="--d:${0.3 + rows.length * 0.1}s"><span>Total</span><b data-n="${r.score}">0</b></div>
-      <div class="rr-earn" id="earn">Saving your race…</div>
+
+      <div class="rr-total" style="--d:0.75s">
+        <span>Run score</span>
+        <b data-n="${r.score}" data-total="1">0</b>
+        <i class="rr-ribbon" ${r.score > prevBest ? "" : "hidden"}>New best</i>
+      </div>
+      <div class="rr-rewards" id="earn">
+        <div class="rw sk"></div><div class="rw sk"></div><div class="rw sk"></div>
+      </div>
+      <div class="rr-unlocks" id="unlocks"></div>
+
       <div class="rr-acts">
-        <button class="btn primary" id="again">Race again <kbd>Enter</kbd></button>
+        <button class="rr-go" id="again" aria-label="Run again">
+          <span class="rr-go-face">
+            <span class="rr-go-shine"></span>
+            <span class="rr-go-ico">${RI.replay}</span>
+            <span class="rr-go-txt"><b>Run again</b><small>${prevBest || r.score ? `Best ${fmt(Math.max(prevBest, r.score))}` : "4 hearts · beat your distance"}</small></span>
+            <span class="rr-go-chev"><i></i><i></i><i></i></span>
+          </span>
+          <kbd class="rr-go-key">Enter ↵</kbd>
+        </button>
         <div class="rr-row2">
-          <button class="btn ghost" id="rank">Leaderboard</button>
-          <button class="btn ghost" id="share">Share</button>
-          <button class="btn ghost" id="home">Hub</button>
+          <button class="rr-sec" id="home"><i>${RI.home}</i><span>Hub</span></button>
+          <button class="rr-sec" id="rank"><i>${ICON.trophy}</i><span>Leaderboard</span></button>
+          <button class="rr-sec" id="share"><i>${RI.share}</i><span>Share</span></button>
         </div>
       </div>
     </div>
@@ -612,32 +860,211 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
 
   over.querySelectorAll<HTMLElement>("[data-n]").forEach((b, i) => {
     const target = Number(b.dataset.n);
-    const total = !!b.closest(".rr-total");
+    const total = b.dataset.total === "1";
     setTimeout(() => {
       const t0 = performance.now();
-      const dur = total ? 1100 : 450;
+      const dur = total ? 1200 : 500;
       const tick = (now: number) => {
         const k = Math.min(1, (now - t0) / dur);
-        b.textContent = fmt(Math.round(target * (1 - Math.pow(1 - k, 3))));
+        b.textContent = (total ? "" : "+") + fmt(Math.round(target * (1 - Math.pow(1 - k, 3))));
         if (k < 1) requestAnimationFrame(tick);
-        else if (target > 0) sfx.good(Math.min(9, i));
+        else if (target > 0) {
+          sfx.good(Math.min(9, i));
+          if (total) b.closest(".rr-total")!.classList.add("done");
+        }
       };
       requestAnimationFrame(tick);
-    }, 200 + i * 100 + (total ? 200 : 0));
+    }, calm ? 0 : (total ? 950 : 220 + i * 90));
   });
 
-  const again = () => { sfx.ui(); race(); };
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Enter") again(); };
+  const again = () => { sfx.ui(); race(undefined, true); };
+  const onKey = (ev: KeyboardEvent) => { if (ev.key === "Enter") again(); };
   addEventListener("keydown", onKey);
   cleanup = () => removeEventListener("keydown", onKey);
   over.querySelector("#again")!.addEventListener("click", again);
   over.querySelector("#home")!.addEventListener("click", () => { sfx.ui(); hub(); });
-  over.querySelector("#rank")!.addEventListener("click", () => { sfx.ui(); void board("best"); });
+  over.querySelector("#rank")!.addEventListener("click", () => { sfx.ui(); void board("endless"); });
   const shareBtn = over.querySelector<HTMLButtonElement>("#share")!;
   shareBtn.addEventListener("click", async () => {
-    const line = `I finished ${ORD(r.position)} in DILI CART with ${fmt(r.score)} points. Beat me on the Dlicom Grand Prix.`;
-    try { await navigator.clipboard.writeText(line); shareBtn.textContent = "Copied!"; } catch { shareBtn.textContent = "Copy failed"; }
-    setTimeout(() => (shareBtn.textContent = "Share"), 1600);
+    const line = `I ran ${fmtDist(e.distance)} on the Dlicom Skyway in DILI CART Infinite (stage ${e.stage}, ${fmt(r.score)} points). Beat me: ${location.origin}`;
+    const label = shareBtn.querySelector("span")!;
+    try {
+      if (navigator.share) await navigator.share({ text: line });
+      else { await navigator.clipboard.writeText(line); label.textContent = "Copied!"; }
+    } catch { /* cancelled */ }
+    setTimeout(() => (label.textContent = "Share"), 1600);
+  });
+
+  // Save the run and show what it earned.
+  const earn = over.querySelector<HTMLElement>("#earn")!;
+  let reply: Awaited<ReturnType<typeof api.submitEndless>>;
+  try {
+    reply = await api.submitEndless({ score: r.score, distance: e.distance, time: r.time, coins: r.coins, stage: e.stage });
+  } catch (err) {
+    earn.innerHTML = `<div class="rw err"><b>Couldn't save this run</b><small>${esc(err instanceof Error ? err.message : "unknown error")}</small></div>`;
+    return;
+  }
+  if (!over.isConnected) return;
+  if (reply.isBest) over.querySelector<HTMLElement>(".rr-ribbon")!.hidden = false;
+  const rankTxt = p.guest ? "Guest" : reply.offline ? "Offline" : reply.rank ? `#${fmt(reply.rank)}` : "—";
+  const rankSub = p.guest ? "sign up to get ranked" : reply.offline ? "syncs when you're back online" : "worldwide · Infinite";
+  earn.innerHTML = `
+    <div class="rw pts"><small>Points earned</small><b>+${fmt(reply.earned)}</b><em class="dim">40% of the run score</em></div>
+    <div class="rw rank"><small>Infinite rank</small><b>${rankTxt}</b><em class="dim">${rankSub}</em></div>
+    <div class="rw coins"><small>${ICON.coin}Wallet</small><b>${fmt(reply.player.coins ?? 0)}</b><em class="dim">best run ${fmtDist(reply.player.endlessDist ?? 0)}</em></div>`;
+  const unlocks = over.querySelector<HTMLElement>("#unlocks")!;
+  const before = reply.player.points - reply.earned;
+  for (const id of CHAR_IDS) {
+    if (before < CHAR_UNLOCK[id] && reply.player.points >= CHAR_UNLOCK[id]) {
+      unlocks.insertAdjacentHTML("beforeend", `<div class="rr-unlock" style="--c:${CHAR_INFO[id].color}">
+        <span class="pic">${face(id)}</span><span><small>New driver unlocked</small><b>${CHAR_INFO[id].name}</b></span><em>${CHAR_INFO[id].rarity}</em></div>`);
+      sfx.perfect(9);
+    }
+  }
+}
+
+/** End-of-race card, over the still-running finish camera. */
+async function results(stageEl: HTMLElement, r: RaceResult) {
+  const p = api.player()!;
+  const mpRes = mp && mp.at === "race" ? mp : null;
+  if (mpRes) mpRes.at = "results";
+  const hostNow = () => !!mpRes && mpRes.room.isHost();
+  const podium = r.position <= 3;
+  const tiles: [string, string, number, string, string][] = [
+    // icon, label, points, detail, accent
+    [RI.coin, "Coins", r.tally.coins, `${r.coins} grabbed`, "#ffc21a"],
+    [RI.turbo, "Mini-turbos", r.tally.turbos, `${r.turbos} fired`, "#2ee6ff"],
+    [RI.star, "Stunts", r.tally.stunts, `${r.tricks} tricks`, "#b58cff"],
+    [RI.pass, "Overtakes", r.tally.passes, "passes", "#39ff9e"],
+    [RI.hit, "Takedowns", r.tally.takedowns, `${r.takedowns} Custodians`, "#ff5c7a"],
+    [RI.flag, "Laps", r.tally.laps, `${r.laps} laps`, "#9db4ff"],
+  ];
+  const title = r.position === 1 ? "Custodians defeated!" : podium ? "On the podium!" : "Good race. Go again!";
+  const over = h(`<div class="rr ${podium ? "podium" : ""} p${r.position} ${mpRes ? "online" : ""}">
+    <div class="rr-card">
+      <header class="rr-head">
+        <div class="rr-medal"><b>${r.position}</b><sup>${ORD(r.position).replace(/\d+/, "")}</sup></div>
+        <div class="rr-cap">
+          <small>${COURSE_INFO[r.track].name} · ${r.laps} laps</small>
+          <b>${title}</b>
+          <div class="rr-chips">
+            <span>${RI.clock}${fmtTime(r.time)}</span>
+            <span>${RI.turbo}Best lap ${fmtTime(r.bestLap)}</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="rr-grid">
+        ${tiles.map(([icon, label, v, note, c], i) => `<div class="rr-tile ${v ? "" : "zero"}" style="--c:${c};--d:${0.15 + i * 0.07}s">
+          <i class="ico">${icon}</i>
+          <span class="lab">${label}<small>${note}</small></span>
+          <b data-n="${v}">0</b>
+        </div>`).join("")}
+      </div>
+
+      <div class="rr-bonus" style="--d:${0.6}s">
+        <span class="pill gold">${ORD(r.position)} place <b data-n="${r.finishBonus}">0</b></span>
+        <span class="pill">Time bonus <b data-n="${r.timeBonus}">0</b></span>
+      </div>
+
+      <div class="rr-total" style="--d:0.75s">
+        <span>Total score</span>
+        <b data-n="${r.score}" data-total="1">0</b>
+        <i class="rr-ribbon" hidden>New best</i>
+      </div>
+
+      ${mpRes ? `<div class="rr-room" id="mpst"></div>` : ""}
+      <div class="rr-rewards" id="earn">
+        <div class="rw sk"></div><div class="rw sk"></div><div class="rw sk"></div>
+      </div>
+      <div class="rr-unlocks" id="unlocks"></div>
+
+      <div class="rr-acts">
+        <button class="rr-go" id="again" aria-label="${mpRes ? "Rematch" : "Race again"}">
+          <span class="rr-go-face">
+            <span class="rr-go-shine"></span>
+            <span class="rr-go-ico">${RI.replay}</span>
+            <span class="rr-go-txt"><b id="againTxt">${mpRes ? "Rematch" : "Race again"}</b><small id="againSub">${mpRes ? `Room ${mpRes.room.code} · everyone races again` : `${COURSE_INFO[r.track].name} · ${r.laps} laps`}</small></span>
+            <span class="rr-go-chev"><i></i><i></i><i></i></span>
+          </span>
+          <kbd class="rr-go-key">Enter ↵</kbd>
+        </button>
+        <div class="rr-row2">
+          ${mpRes
+            ? `<button class="rr-sec" id="lobby"><i>${PEOPLE}</i><span>Lobby</span></button>
+               <button class="rr-sec" id="leave"><i>${RI.home}</i><span>Leave room</span></button>`
+            : `<button class="rr-sec" id="home"><i>${RI.home}</i><span>Hub</span></button>
+               <button class="rr-sec" id="rank"><i>${ICON.trophy}</i><span>Leaderboard</span></button>`}
+          <button class="rr-sec" id="share"><i>${RI.share}</i><span>Share</span></button>
+        </div>
+      </div>
+    </div>
+  </div>`);
+  stageEl.appendChild(over);
+
+  over.querySelectorAll<HTMLElement>("[data-n]").forEach((b, i) => {
+    const target = Number(b.dataset.n);
+    const total = b.dataset.total === "1";
+    setTimeout(() => {
+      const t0 = performance.now();
+      const dur = total ? 1200 : 500;
+      const tick = (now: number) => {
+        const k = Math.min(1, (now - t0) / dur);
+        b.textContent = (total ? "" : "+") + fmt(Math.round(target * (1 - Math.pow(1 - k, 3))));
+        if (k < 1) requestAnimationFrame(tick);
+        else if (target > 0) {
+          sfx.good(Math.min(9, i));
+          if (total) b.closest(".rr-total")!.classList.add("done");
+        }
+      };
+      requestAnimationFrame(tick);
+    }, calm ? 0 : (total ? 950 : 220 + i * 90));
+  });
+
+  const againBtn = over.querySelector<HTMLButtonElement>("#again")!;
+  const again = () => {
+    if (!mpRes) { sfx.ui(); race(); return; }
+    // Online only the host can call the rematch.
+    if (!hostNow() || againBtn.disabled) { sfx.miss(); return; }
+    sfx.ui();
+    againBtn.disabled = true;
+    mpRes.room.send({ t: "start" });
+  };
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Enter") again(); };
+  addEventListener("keydown", onKey);
+  cleanup = () => { removeEventListener("keydown", onKey); if (mpRes) { mpRes.onFin = null; mpRes.onRoom = null; } };
+  againBtn.addEventListener("click", again);
+  over.querySelector("#home")?.addEventListener("click", () => { sfx.ui(); hub(); });
+  over.querySelector("#rank")?.addEventListener("click", () => { sfx.ui(); void board("best"); });
+  if (mpRes) {
+    const st = over.querySelector<HTMLElement>("#mpst")!;
+    const syncHost = () => {
+      const host = hostNow();
+      againBtn.classList.toggle("waiting", !host);
+      over.querySelector("#againTxt")!.textContent = host ? "Rematch" : "Waiting for host";
+      over.querySelector("#againSub")!.textContent = host ? `Room ${mpRes.room.code} · everyone races again` : "The host starts the next race";
+    };
+    mpStandings(st);
+    const draw = mpRes.onRoom;
+    mpRes.onRoom = () => { draw?.(); syncHost(); };
+    syncHost();
+    over.querySelector("#lobby")!.addEventListener("click", () => {
+      sfx.ui();
+      // The host brings everyone back; anyone else just looks at the lobby.
+      if (hostNow()) mpRes.room.send({ t: "lobby" });
+      lobby();
+    });
+    over.querySelector("#leave")!.addEventListener("click", () => { sfx.ui(); mpLeave(); hub(); });
+  }
+  const shareBtn = over.querySelector<HTMLButtonElement>("#share")!;
+  shareBtn.addEventListener("click", async () => {
+    const line = `I finished ${ORD(r.position)} on ${COURSE_INFO[r.track].name} in DILI CART with ${fmt(r.score)} points. Beat me: ${location.origin}`;
+    const label = shareBtn.querySelector("span")!;
+    try {
+      if (navigator.share) await navigator.share({ text: line });
+      else { await navigator.clipboard.writeText(line); label.textContent = "Copied!"; }
+    } catch { /* cancelled */ }
+    setTimeout(() => (label.textContent = "Share"), 1600);
   });
 
   // Save the race and show what it earned.
@@ -646,30 +1073,364 @@ async function results(stageEl: HTMLElement, r: RaceResult) {
   try {
     reply = await api.submitRace({ score: r.score, position: r.position, time: r.time, coins: r.coins });
   } catch (e) {
-    earn.innerHTML = `<span class="err">Couldn't save this race: ${esc(e instanceof Error ? e.message : "unknown error")}</span>`;
+    earn.innerHTML = `<div class="rw err"><b>Couldn't save this race</b><small>${esc(e instanceof Error ? e.message : "unknown error")}</small></div>`;
     return;
   }
-  const bits = [`+${fmt(reply.earned)} points`];
-  if (reply.multiplier > 1) bits.push(`${reply.multiplier.toFixed(1)}× streak`);
-  if (reply.rank && !p.guest) bits.push(`#${reply.rank} worldwide`);
-  earn.innerHTML = `${reply.isBest ? '<span class="rr-best">New personal best!</span>' : ""}<span>${bits.join(" · ")}</span>`
-    + (p.guest ? `<span class="muted">Guest score — saved on this device only.</span>` : "")
-    + (reply.offline ? `<span class="muted">No connection — this race is saved on your device and will sync to the board automatically.</span>` : "");
+  if (!over.isConnected) return;
+  if (reply.isBest) over.querySelector<HTMLElement>(".rr-ribbon")!.hidden = false;
+
+  // Coins: progress toward the cheapest skin not owned yet.
+  const wallet = reply.player.coins ?? 0;
+  const next = SKIN_IDS.filter((id) => !(reply.player.skins ?? []).includes(id)).sort((a, b) => SKIN_INFO[a].price - SKIN_INFO[b].price)[0];
+  const price = next ? SKIN_INFO[next].price : 0;
+  const canBuy = !!next && wallet >= price;
+  const rankTxt = p.guest ? "Guest" : reply.offline ? "Offline" : reply.rank ? `#${fmt(reply.rank)}` : "—";
+  const rankSub = p.guest ? "sign up to get ranked" : reply.offline ? "syncs when you're back online" : "worldwide · best race";
+  earn.innerHTML = `
+    <div class="rw pts"><small>Points earned</small><b>+${fmt(reply.earned)}</b>${reply.multiplier > 1 ? `<em>${reply.multiplier.toFixed(1)}× streak</em>` : `<em class="dim">race daily for up to 2×</em>`}</div>
+    <div class="rw rank"><small>Rank</small><b>${rankTxt}</b><em class="dim">${rankSub}</em></div>
+    <div class="rw coins ${canBuy ? "ready" : ""}">
+      <small>${ICON.coin}Wallet</small><b>${fmt(wallet)}</b>
+      ${next ? (canBuy
+        ? `<button class="rw-shop" id="toshop">${SKIN_INFO[next].name} is yours · Shop</button>`
+        : `<div class="rw-bar"><i style="width:${Math.min(100, (wallet / price) * 100).toFixed(1)}%"></i></div><em class="dim">${fmt(price - wallet)} to ${SKIN_INFO[next].name}</em>`)
+        : `<em class="dim">every skin owned</em>`}
+    </div>`;
+  earn.querySelector("#toshop")?.addEventListener("click", () => { sfx.ui(); shop(next); });
+
   // Newly unlocked drivers.
+  const unlocks = over.querySelector<HTMLElement>("#unlocks")!;
   const before = reply.player.points - reply.earned;
   for (const id of CHAR_IDS) {
     if (before < CHAR_UNLOCK[id] && reply.player.points >= CHAR_UNLOCK[id]) {
-      earn.insertAdjacentHTML("beforeend", `<span class="unlock">${face(id)} ${CHAR_INFO[id].name} unlocked!</span>`);
+      unlocks.insertAdjacentHTML("beforeend", `<div class="rr-unlock" style="--c:${CHAR_INFO[id].color}">
+        <span class="pic">${face(id)}</span><span><small>New driver unlocked</small><b>${CHAR_INFO[id].name}</b></span><em>${CHAR_INFO[id].rarity}</em></div>`);
       sfx.perfect(9);
     }
   }
 }
 
 /* ================================================================== */
+/* Multiplayer                                                         */
+/* ================================================================== */
+
+type NetRace = RaceNet & { track: TrackId };
+
+/** The room we're in, if any, and what it's up to. */
+interface MpSession {
+  room: RoomClient;
+  offs: (() => void)[];
+  /** Where this player is: the lobby, in a race, or on the results card. */
+  at: "lobby" | "race" | "results" | "away";
+  start: { raceId: number; track: TrackId; grid: NetPlayer[] } | null;
+  goAt: number;
+  fins: Map<string, number>;
+  /** Redraw hooks for whatever screen is showing. */
+  onRoom: (() => void) | null;
+  onFin: (() => void) | null;
+}
+let mp: MpSession | null = null;
+
+const PEOPLE = `<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.6" fill="currentColor"/><path d="M2.5 20c.6-3.8 3.3-6 6.5-6s5.9 2.2 6.5 6z" fill="currentColor"/><circle cx="17" cy="9" r="2.8" fill="currentColor" opacity=".6"/><path d="M15.8 13.6c3 .1 5.2 2.2 5.7 5.4h-4.3" fill="currentColor" opacity=".6"/></svg>`;
+const CROWN = `<svg viewBox="0 0 24 24"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z" fill="currentColor"/></svg>`;
+const COPY = `<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M16 5.5A2.5 2.5 0 0 0 13.5 3H6a3 3 0 0 0-3 3v7.5A2.5 2.5 0 0 0 5.5 16" fill="none" stroke="currentColor" stroke-width="2.2"/></svg>`;
+const LINK = `<svg viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4L11.6 6M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1.6-1.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`;
+
+const inviteUrl = (code: string) => `${location.origin}${location.pathname}?room=${code}`;
+
+/** A room code from an invite link, waiting until the player is signed in. */
+let pendingRoom: string | null = normaliseCode(new URLSearchParams(location.search).get("room") ?? "");
+
+async function joinFromLink(code: string) {
+  try {
+    await mpJoin(code);
+    lobby();
+  } catch (e) {
+    mpHome(e instanceof Error ? e.message : "Couldn't join that room.", code);
+  }
+}
+
+/** Connect to a room and wire up the events that move between screens. */
+async function mpJoin(code: string) {
+  const p = api.player()!;
+  if (mp && mp.room.code === code && mp.room.status !== "closed") return;
+  if (mp) mpLeave();
+  const room = new RoomClient(code, { token: api.token(), char: p.char });
+  await room.connect();
+  const s: MpSession = { room, offs: [], at: "lobby", start: null, goAt: 0, fins: new Map(), onRoom: null, onFin: null };
+  mp = s;
+  // The start that arrives with the welcome is a replay of a race in progress.
+  let fresh = true;
+  setTimeout(() => { fresh = false; }, 1500);
+  s.offs.push(
+    room.on("start", (m) => {
+      // The same race again after a reconnect: we're already in it.
+      if (s.start?.raceId === m.raceId && (s.at === "race" || s.at === "results")) return;
+      s.start = { raceId: m.raceId, track: m.track, grid: m.grid };
+      s.goAt = 0;
+      s.fins = new Map();
+      if (!m.grid.some((g) => g.id === room.you)) { s.onRoom?.(); return; }
+      if (s.at === "away") return;
+      // Came back (a reload, a new tab) while that race was already running:
+      // starting from the grid now would be no fun. Next race.
+      if (room.room?.phase === "race" && s.at === "lobby" && fresh) { s.onRoom?.(); return; }
+      sfx.start();
+      race({ room, raceId: m.raceId, grid: m.grid, track: m.track, goAt: () => s.goAt });
+    }),
+    room.on("go", (m) => { if (s.start?.raceId === m.raceId) s.goAt = m.at; }),
+    room.on("fin", (m) => { if (s.start?.raceId === m.raceId) { s.fins.set(m.id, m.time); s.onFin?.(); } }),
+    room.on("room", (m) => {
+      // The host took everyone back to the lobby.
+      if (m.room.phase === "lobby" && s.at === "results") lobby();
+      else s.onRoom?.();
+    }),
+    room.on("status", (st) => { s.onRoom?.(); if (st === "closed" && mp === s && s.at === "lobby") { mpLeave(); mpHome("You left the room."); } }),
+  );
+}
+
+function mpLeave() {
+  if (!mp) return;
+  for (const off of mp.offs) off();
+  mp.room.leave();
+  mp = null;
+  try { history.replaceState(null, "", location.pathname); } catch { /* sandboxed */ }
+}
+
+/** Create or join: the front door. */
+function mpHome(msg = "", prefill = "") {
+  const p = api.player();
+  if (!p) return auth();
+  if (mp) mpLeave();
+  const view = h(`<div class="screen stage-screen mp" data-scene="hub">
+    <header class="bar">
+      <button class="iconbtn" id="back" aria-label="Back to the hub">${ICON.back}</button>
+      <div class="shop-title"><b>Race friends</b><span>Online rooms · up to ${ROOM_MAX} racers</span></div>
+      <div class="bar-right">${soundButton()}</div>
+    </header>
+    <div class="mp-body">
+      <div class="mp-hero">
+        <i class="mp-hero-ico">${PEOPLE}</i>
+        <h1>Race your friends</h1>
+        <p>Make a room, send the code, race. Empty spots on the grid fill up with Custodians.</p>
+      </div>
+      <div class="mp-cards">
+        <section class="mp-card make">
+          <header><b>Create a room</b><small>You pick the track and start the race</small></header>
+          <div class="mp-tracks" role="radiogroup" aria-label="Track">${TRACK_IDS.map((t) => `<button type="button" class="mp-trk ${t} ${t === trackPick ? "on" : ""}" data-track="${t}" role="radio" aria-checked="${t === trackPick}"><i></i><b>${TRACK_INFO[t].name}</b><small>${TRACK_INFO[t].laps} laps</small></button>`).join("")}</div>
+          <button class="mp-cta" id="create"><span>Create room</span><i>${PEOPLE}</i></button>
+        </section>
+        <section class="mp-card join">
+          <header><b>Join a room</b><small>Type the ${CODE_LEN}-character code</small></header>
+          <label class="mp-code">
+            <input id="code" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="${CODE_LEN + 2}" placeholder="ABC12" value="${esc(prefill)}" aria-label="Room code">
+          </label>
+          <button class="mp-cta alt" id="join"><span>Join room</span><i>${ICON.back}</i></button>
+        </section>
+      </div>
+      <p class="mp-msg" id="msg" role="status">${esc(msg)}</p>
+    </div>
+  </div>`);
+  const say = (t: string, bad = true) => { const m = view.querySelector<HTMLElement>("#msg")!; m.textContent = t; m.classList.toggle("bad", bad); };
+  const busy = (b: boolean) => view.querySelectorAll<HTMLButtonElement>(".mp-cta").forEach((x) => (x.disabled = b));
+  view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); hub(); });
+  view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => b.addEventListener("click", () => {
+    sfx.pop();
+    setTrack(b.dataset.track as TrackId);
+    view.querySelectorAll<HTMLElement>("[data-track]").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", String(x === b)); });
+  }));
+  view.querySelector("#create")!.addEventListener("click", async () => {
+    sfx.ui();
+    busy(true);
+    say("Opening a room…", false);
+    try {
+      const code = await createRoom(trackPick);
+      await mpJoin(code);
+      lobby();
+    } catch (e) {
+      busy(false);
+      say(e instanceof Error ? e.message : "Couldn't create a room.");
+    }
+  });
+  const input = view.querySelector<HTMLInputElement>("#code")!;
+  input.addEventListener("input", () => { input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); say("", false); });
+  const join = async () => {
+    const code = normaliseCode(input.value);
+    if (!code) { sfx.miss(); say(`Room codes are ${CODE_LEN} letters and numbers.`); input.focus(); return; }
+    sfx.ui();
+    busy(true);
+    say("Finding the room…", false);
+    try {
+      await checkRoom(code);
+      await mpJoin(code);
+      lobby();
+    } catch (e) {
+      busy(false);
+      sfx.miss();
+      say(e instanceof Error ? e.message : "Couldn't join that room.");
+    }
+  };
+  view.querySelector("#join")!.addEventListener("click", () => void join());
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") void join(); });
+  wireCommon(view);
+  show(view, true);
+  if (!prefill) setTimeout(() => { if (matchMedia("(pointer: fine)").matches) input.focus(); }, 300);
+}
+
+/** The room: who's in, the code to share, the track, and the start button. */
+function lobby() {
+  const s = mp;
+  if (!s) return mpHome();
+  s.at = "lobby";
+  const room = s.room;
+  try { history.replaceState(null, "", `?room=${room.code}`); } catch { /* sandboxed */ }
+  const view = h(`<div class="screen stage-screen mp lobby" data-scene="hub">
+    <header class="bar">
+      <button class="iconbtn" id="back" aria-label="Leave the room">${ICON.back}</button>
+      <div class="shop-title"><b>Room ${room.code}</b><span id="sub">Waiting for racers</span></div>
+      <div class="bar-right">${soundButton()}</div>
+    </header>
+    <div class="mp-body"><div class="lob">
+      <section class="lob-code">
+        <small>Room code</small>
+        <div class="lob-tiles" aria-label="Room code ${room.code}">${[...room.code].map((c, i) => `<b style="--i:${i}">${c}</b>`).join("")}</div>
+        <div class="lob-share">
+          <button class="lob-btn" id="copy">${COPY}<span>Copy code</span></button>
+          <button class="lob-btn" id="link">${LINK}<span>Invite link</span></button>
+        </div>
+        <p>Friends tap <b>Race friends → Join</b> and type the code, or open the link.</p>
+      </section>
+      <section class="lob-grid">
+        <header><span>Racers</span><b id="count"></b></header>
+        <ol id="slots"></ol>
+      </section>
+      <section class="lob-go">
+        <header><span>Track</span><small id="trkNote"></small></header>
+        <div class="mp-tracks" id="tracks">${TRACK_IDS.map((t) => `<button type="button" class="mp-trk ${t}" data-track="${t}" role="radio"><i></i><b>${TRACK_INFO[t].name}</b><small>${TRACK_INFO[t].laps} laps</small></button>`).join("")}</div>
+        <button class="launch lob-start" id="start" aria-label="Start the race">
+          <span class="launch-ring"></span>
+          <span class="launch-body"><span class="launch-shine"></span><span class="launch-chev"><i></i><i></i><i></i></span><b>START</b><small id="startSub"></small></span>
+        </button>
+        <p class="lob-wait" id="wait"></p>
+        <p class="lob-net" id="net"></p>
+      </section>
+    </div></div>
+  </div>`);
+
+  const render = () => {
+    const r = room.room;
+    if (!r || !view.isConnected) return;
+    const host = r.host === room.you;
+    const hostP = r.players.find((x) => x.id === r.host);
+    const inRace = r.phase !== "lobby";
+    view.querySelector("#count")!.textContent = `${r.players.length}/${ROOM_MAX}`;
+    const bots = Math.max(0, ROOM_MAX - r.players.length);
+    const rows = r.players.map((pl, i) => `<li class="${pl.id === room.you ? "me" : ""}" style="--i:${i}">
+        <span class="pic">${face(pl.char)}</span>
+        <span class="nm"><b>${esc(pl.name)}</b><small>${pl.id === room.you ? "You" : pl.guest ? "Guest" : "Player"}</small></span>
+        ${pl.id === r.host ? `<i class="crown" title="Host">${CROWN}</i>` : ""}
+      </li>`).join("")
+      + (bots ? `<li class="bots"><span class="pic bot">${ICON.flag}</span><span class="nm"><b>${bots} Custodian${bots === 1 ? "" : "s"}</b><small>Fill the empty spots</small></span></li>` : "");
+    // Only when someone joins or leaves, so rows don't replay their entrance.
+    const slots = view.querySelector<HTMLElement>("#slots")!;
+    if (slots.dataset.html !== rows) { slots.innerHTML = rows; slots.dataset.html = rows; }
+    view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => {
+      const on = b.dataset.track === r.track;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-checked", String(on));
+      b.toggleAttribute("disabled", !host || inRace);
+    });
+    view.querySelector("#trkNote")!.textContent = host ? "You choose" : `${hostP ? hostP.name : "The host"} chooses`;
+    const start = view.querySelector<HTMLButtonElement>("#start")!;
+    start.hidden = !host;
+    start.disabled = inRace || room.status !== "online";
+    view.querySelector("#startSub")!.textContent = `${r.players.length} racer${r.players.length === 1 ? "" : "s"}${bots ? ` + ${bots} bots` : ""}`;
+    const wait = view.querySelector<HTMLElement>("#wait")!;
+    wait.textContent = inRace
+      ? (r.phase === "race" && s.at === "lobby" ? "A race is on — you're in the next one." : "Race starting…")
+      : host ? (r.players.length > 1 ? "Everyone's here? Hit start." : "Share the code — or start now against the Custodians.") : `Waiting for ${hostP ? hostP.name : "the host"} to start…`;
+    view.querySelector("#sub")!.textContent = `${r.players.length} in the room · ${COURSE_INFO[r.track].name}`;
+    const net = view.querySelector<HTMLElement>("#net")!;
+    net.textContent = room.status === "reconnecting" ? "Connection dropped — reconnecting…" : room.status === "online" && room.rtt ? `Connected · ${room.rtt} ms` : "";
+    net.classList.toggle("bad", room.status !== "online");
+  };
+  view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); mpLeave(); hub(); });
+  view.querySelectorAll<HTMLElement>("[data-track]").forEach((b) => b.addEventListener("click", () => {
+    if (!room.isHost()) return;
+    sfx.pop();
+    room.send({ t: "track", track: b.dataset.track as TrackId });
+  }));
+  const startBtn = view.querySelector<HTMLButtonElement>("#start")!;
+  startBtn.addEventListener("click", () => {
+    if (!room.isHost() || startBtn.disabled) return;
+    startBtn.classList.add("press");
+    startBtn.disabled = true;
+    room.send({ t: "start" });
+  });
+  const flash = (btn: HTMLElement, txt: string) => {
+    const span = btn.querySelector("span")!;
+    const was = span.textContent;
+    span.textContent = txt;
+    btn.classList.add("ok");
+    setTimeout(() => { span.textContent = was; btn.classList.remove("ok"); }, 1500);
+  };
+  view.querySelector("#copy")!.addEventListener("click", async (e) => {
+    sfx.pop();
+    try { await navigator.clipboard.writeText(room.code); flash(e.currentTarget as HTMLElement, "Copied!"); } catch { flash(e.currentTarget as HTMLElement, room.code); }
+  });
+  view.querySelector("#link")!.addEventListener("click", async (e) => {
+    sfx.pop();
+    const url = inviteUrl(room.code);
+    const text = `Race me in Dili Kart! Room ${room.code}: ${url}`;
+    try {
+      if (navigator.share && matchMedia("(pointer: coarse)").matches) await navigator.share({ text, url });
+      else { await navigator.clipboard.writeText(url); flash(e.currentTarget as HTMLElement, "Link copied!"); }
+    } catch { /* cancelled */ }
+  });
+  wireCommon(view);
+  // show() runs the previous screen's cleanup, so hook up after it.
+  show(view, true);
+  s.onRoom = render;
+  s.onFin = null;
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Enter" && room.isHost()) startBtn.click(); };
+  addEventListener("keydown", onKey);
+  const tick = setInterval(render, 2000);
+  cleanup = () => { removeEventListener("keydown", onKey); clearInterval(tick); if (mp?.onRoom === render) mp.onRoom = null; };
+  render();
+}
+
+/** On the results card: everyone's finish, live as they come in. */
+function mpStandings(el: HTMLElement) {
+  const s = mp;
+  if (!s?.start) return;
+  const grid = s.start.grid;
+  const draw = () => {
+    if (!el.isConnected) return;
+    const here = new Set((s.room.room?.players ?? []).map((p) => p.id));
+    // Finishers by time, then those still racing, then anyone who left.
+    const rows = grid
+      .map((g) => ({ g, t: s.fins.get(g.id), gone: !s.fins.has(g.id) && !here.has(g.id) }))
+      .sort((a, b) => (a.t ?? (a.gone ? 2e9 : 1e9)) - (b.t ?? (b.gone ? 2e9 : 1e9)));
+    const best = rows[0]?.t;
+    // Places count everyone who crossed the line, Custodians too.
+    const all = [...s.fins.values()];
+    const place = (t: number) => 1 + all.filter((x) => x < t).length;
+    const done = rows.filter((x) => x.t !== undefined).length;
+    const out = done + rows.filter((x) => x.t === undefined && !x.gone).length;
+    el.innerHTML = `<header><span>Room ${s.room.code}</span><small>${done === out ? "Everyone's in" : `${done}/${out} finished`}</small></header>
+      <ol>${rows.map(({ g, t, gone }, i) => `<li class="${g.id === s.room.you ? "me" : ""} ${t === undefined ? "racing" : ""}">
+        <em>${t === undefined ? "–" : ORD(place(t))}</em><span class="pic">${face(g.char)}</span><b>${esc(g.name)}</b>
+        <span class="t">${t !== undefined ? (i === 0 || best === undefined ? fmtTime(t) : "+" + (t - best).toFixed(2)) : gone ? "left" : "racing…"}</span></li>`).join("")}</ol>`;
+  };
+  s.onFin = draw;
+  s.onRoom = draw;
+  draw();
+}
+
+/* ================================================================== */
 /* Leaderboard                                                         */
 /* ================================================================== */
 
-async function board(by: "best" | "points") {
+async function board(by: BoardBy) {
   const p = api.player();
   const view = h(`<div class="screen board">
     <header class="bar">
@@ -682,6 +1443,7 @@ async function board(by: "best" | "points") {
       <div class="seg tabs">
         <button data-by="best" class="${by === "best" ? "on" : ""}">Best race</button>
         <button data-by="points" class="${by === "points" ? "on" : ""}">Total points</button>
+        <button data-by="endless" class="${by === "endless" ? "on" : ""}">Infinite</button>
       </div>
       <div class="panel lb" id="lb"><p class="muted">Loading…</p></div>
       ${p?.guest ? `<p class="guestnote">Guests aren't on the global board. <button class="link" id="claim">Create an account</button> to get ranked.</p>` : ""}
@@ -689,7 +1451,7 @@ async function board(by: "best" | "points") {
   </div>`);
   view.querySelector("#back")!.addEventListener("click", () => { sfx.ui(); hub(); });
   view.querySelector("#claim")?.addEventListener("click", () => { sfx.ui(); auth("signup"); });
-  view.querySelectorAll<HTMLElement>("[data-by]").forEach((b) => b.addEventListener("click", () => { sfx.ui(); void board(b.dataset.by as "best" | "points"); }));
+  view.querySelectorAll<HTMLElement>("[data-by]").forEach((b) => b.addEventListener("click", () => { sfx.ui(); void board(b.dataset.by as BoardBy); }));
   wireCommon(view);
   show(view, true);
 
@@ -698,13 +1460,16 @@ async function board(by: "best" | "points") {
     const { entries, me } = await api.leaderboard(by);
     if (!lb.isConnected) return;
     if (!entries.length) {
-      lb.innerHTML = `<p class="muted">Nobody has finished a race yet. Go and take first place.</p>`;
+      lb.innerHTML = by === "endless"
+        ? `<p class="muted">No Infinite runs yet. Four hearts, no finish line: set the first record.</p>`
+        : `<p class="muted">Nobody has finished a race yet. Go and take first place.</p>`;
       return;
     }
     const row = (e: BoardEntry, i: number) => `<div class="lb-row ${p && !p.guest && e.handle === p.handle ? "me" : ""} ${i < 3 ? "top t" + i : ""}">
       <i class="rank">${i + 1}</i>
-      <span class="who">@${esc(e.handle)}<small>${e.tier} · ${e.races} race${e.races === 1 ? "" : "s"} · ${e.wins} win${e.wins === 1 ? "" : "s"}</small></span>
-      <b>${fmt(by === "best" ? e.best : e.points)}</b>
+      <span class="lb-av" style="--h:${[...e.handle].reduce((a, c) => a + c.charCodeAt(0), 0) % 360}">${esc(e.handle.slice(0, 1).toUpperCase())}</span>
+      <span class="who">@${esc(e.handle)}<small>${by === "endless" ? `${e.tier} · ${fmtDist(e.endlessDist ?? 0)} run` : `${e.tier} · ${e.races} race${e.races === 1 ? "" : "s"} · ${e.wins} win${e.wins === 1 ? "" : "s"}`}</small></span>
+      <b>${fmt(by === "best" ? e.best : by === "endless" ? e.endless ?? 0 : e.points)}</b>
     </div>`;
     lb.innerHTML = entries.map(row).join("")
       + (me && me.rank > entries.length ? `<div class="lb-row me"><i class="rank">${me.rank}</i><span class="who">You</span><b>${fmt(me.value)}</b></div>` : "");
@@ -718,27 +1483,49 @@ async function board(by: "best" | "points") {
 /* ================================================================== */
 
 void (async () => {
-  app.innerHTML = `<div class="boot">${LOGO}</div>`;
+  progress(0.12, "Checking your garage");
   const p = await api.restore();
-  if (import.meta.env.DEV && location.hash === "#race") {
+  const dev = import.meta.env.DEV ? location.hash : "";
+  if (dev === "#infinite") {
+    dropLoader();
     if (!p) api.playAsGuest();
+    return race(undefined, true);
+  }
+  if (dev === "#race" || dev === "#town") {
+    dropLoader();
+    if (!p) api.playAsGuest();
+    setTrack(dev === "#town" ? "town" : "circuit");
     return race();
   }
   // Dev shortcuts for screenshots: open a screen directly.
-  if (import.meta.env.DEV && location.hash.startsWith("#auth")) {
-    auth();
-    // "#auth@1200" scrolls the page down, for screenshots of the sections.
-    const y = Number(location.hash.split("@")[1] ?? 0);
-    if (y) setTimeout(() => { const sc = document.querySelector<HTMLElement>(".screen"); if (sc) { sc.style.scrollBehavior = "auto"; sc.scrollTop = y; } }, 300);
-    return;
-  }
-  if (import.meta.env.DEV && location.hash === "#hub") {
+  if (dev.startsWith("#auth")) { dropLoader(); return auth(); }
+  if (dev === "#hub") {
+    dropLoader();
     if (!p) api.playAsGuest();
     return hub();
   }
-  if (import.meta.env.DEV && location.hash === "#intro") return intro(hub);
-  // Logged in from last time: Dili says hello once per visit, then the hub.
-  if (!p) auth();
-  else if (!greetedThisSession()) intro(hub, false);
-  else hub();
+  if (dev === "#intro") { dropLoader(); return intro(hub); }
+  if (dev === "#mp") { dropLoader(); if (!p) api.playAsGuest(); return mpHome(); }
+
+  // Fonts, then the film: the loader's kart drives as they arrive.
+  progress(0.3, "Painting the karts");
+  await Promise.race([document.fonts?.ready, new Promise((r) => setTimeout(r, 2500))]);
+  const showFilm = !filmSeen() && !calm;
+  let film: HTMLVideoElement | undefined;
+  if (showFilm) {
+    progress(0.42, "Loading the intro film");
+    film = await prepareFilm((k) => progress(0.42 + 0.53 * k));
+  }
+  await finishLoader();
+
+  // First visit this session: the film, then sign-in (or Dili's hello for
+  // someone already signed in), then the hub. The next screen mounts as the
+  // film fades out, so a phone never plays the film and runs the race at once.
+  const next = () => {
+    if (!p) auth();
+    else if (!greetedThisSession() && !pendingRoom) intro(hub, false);
+    else hub();
+  };
+  if (showFilm) playFilm(next, film);
+  else next();
 })();

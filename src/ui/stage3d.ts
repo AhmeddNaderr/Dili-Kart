@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { DRIVER_LOOKS, KartModel, coinGeometry, coinMaterials } from "../kart/models";
-import { MascotModel, type Pose } from "../kart/mascot";
+import { hdriEnvironment } from "../kart/hdri";
+import { DILI_LOOK, KartModel, add, coinGeometry, coinMaterials, glow, plastic, rbox, torus, type KartLook } from "../kart/models";
+import { MascotModel, type DriverId, type Pose } from "../kart/mascot";
 import { blobTex } from "../kart/textures";
+import { SHARED, share } from "../kart/toon";
 import type { CharId } from "../../shared/rules";
 
 /**
@@ -14,33 +16,108 @@ import type { CharId } from "../../shared/rules";
 
 export interface MenuStage {
   dispose(): void;
-  setChar(c: CharId): void;
+  setChar(c: DriverId): void;
+  setLook(l: KartLook): void;
   setPose(p: Pose): void;
+  /** Intro: a prop that pops in beside Dili for the current line. */
+  setProp(p: Prop): void;
+  /** Intro: flap the mouth while text is typing. */
+  setSpeaking(on: boolean): void;
 }
 
-type Mode = { kind: "squad"; chars: CharId[] } | { kind: "kart"; char: CharId } | { kind: "solo"; char: CharId };
+export type Prop = "none" | "phone" | "coin" | "custodian" | "keys" | "kart";
+
+type Mode = { kind: "squad"; chars: CharId[] } | { kind: "kart"; look: KartLook; far?: boolean } | { kind: "solo"; char: DriverId };
+
+/** Menu renderers not in use, kept warm for the next menu. */
+const pool: THREE.WebGLRenderer[] = [];
+
+function takeRenderer(): THREE.WebGLRenderer {
+  const r = pool.pop();
+  if (r) return r;
+  const n = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
+  // Checking every shader for errors blocks on the compile: phones froze.
+  n.debug.checkShaderErrors = import.meta.env.DEV;
+  if (import.meta.env.DEV) (window as unknown as { __stageR: unknown }).__stageR = n;
+  return n;
+}
+
+function giveRenderer(r: THREE.WebGLRenderer) {
+  r.setAnimationLoop(null);
+  r.renderLists.dispose();
+  // Phones keep one spare (GPU memory is tight); a lost context is never reused.
+  const keep = document.documentElement.classList.contains("lite") ? 1 : 2;
+  if (pool.length < keep && !r.getContext().isContextLost()) pool.push(r);
+  else { r.dispose(); r.forceContextLoss(); }
+}
+
+/** One soft contact shadow for every menu kart. */
+let stageShadow: THREE.Texture | null = null;
+
+/**
+ * Free everything a stage built for itself (platform, rings, beam, props,
+ * thrown-away karts' leftovers). Cached model parts are shared with the
+ * next menu and the races, so they stay.
+ */
+function freeStage(scene: THREE.Scene) {
+  scene.traverse((o) => {
+    const light = o as THREE.DirectionalLight;
+    if (light.isLight && light.shadow?.map) light.shadow.dispose();
+    const m = o as THREE.Mesh;
+    if (!m.isMesh && !(o as THREE.Points).isPoints && !(o as THREE.Line).isLine && !(o as THREE.Sprite).isSprite) return;
+    if (m.geometry && !SHARED.has(m.geometry)) m.geometry.dispose();
+    for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+      if (!mat || SHARED.has(mat)) continue;
+      for (const v of Object.values(mat)) if (v instanceof THREE.Texture && !SHARED.has(v)) v.dispose();
+      mat.dispose();
+    }
+  });
+}
+
+/** Free the spare menu renderers (before a race, when phones need the memory). */
+export function trimStagePool() {
+  if (!document.documentElement.classList.contains("lite")) return;
+  for (const r of pool.splice(0)) { r.dispose(); r.forceContextLoss(); }
+}
 
 export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): MenuStage {
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  // Phones (index.html sets "lite"): fewer pixels, smaller shadows, no
+  // studio photo to decode — the menus must stay smooth.
+  const lite = document.documentElement.classList.contains("lite");
+  const renderer = takeRenderer();
+  renderer.setPixelRatio(Math.min(devicePixelRatio, lite ? 1.5 : 2));   // retina-sharp menus
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NeutralToneMapping;
   renderer.toneMappingExposure = 1.3;
   renderer.shadowMap.enabled = true;
   const cv = renderer.domElement;
+  // The canvas is reused by the next menu: its listeners go with this stage.
+  const ctl = new AbortController();
+  const sig = { signal: ctl.signal };
   Object.assign(cv.style, { width: "100%", height: "100%", display: "block", touchAction: "pan-y", cursor: mode.kind === "kart" ? "grab" : "pointer" });
   host.appendChild(cv);
 
   const scene = new THREE.Scene();
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  room.dispose();
   scene.environmentIntensity = 0.5;
   pmrem.dispose();
+  // Swap in a photographed studio (softboxes, real falloff) once it arrives.
+  let alive = true;
+  if (!lite) void hdriEnvironment(renderer, "studio").then((env) => {
+    if (!alive) { env.dispose(); return; }
+    scene.environment?.dispose();
+    scene.environment = env;
+    scene.environmentIntensity = 0.42;
+  }).catch(() => { /* keep the room lighting */ });
   scene.add(new THREE.HemisphereLight("#b9c8ff", "#1a1530", 0.9));
   const key = new THREE.DirectionalLight("#fff3e2", 2.4);
   key.position.set(-4, 8, 7);
   key.castShadow = true;
-  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.mapSize.set(lite ? 1024 : 2048, lite ? 1024 : 2048);
+  key.shadow.radius = 4;
   Object.assign(key.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6 });
   key.shadow.bias = -0.0005;
   scene.add(key);
@@ -52,7 +129,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   scene.add(rim2);
 
   // Glowing platform.
-  const stageR = mode.kind === "squad" ? 3.3 : mode.kind === "kart" ? 2.35 : 1.7;
+  const stageR = mode.kind === "squad" ? 3.3 : mode.kind === "kart" ? 2.35 : 2.1;
   const plat = new THREE.Group();
   const drum = new THREE.Mesh(new THREE.CylinderGeometry(stageR, stageR + 0.15, 0.45, 64), new THREE.MeshPhysicalMaterial({
     color: "#171a2b", roughness: 0.35, metalness: 0.4, clearcoat: 0.6,
@@ -69,11 +146,43 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   ring2.scale.setScalar(0.72);
   ring2.position.y = 0.01;
   plat.add(ring2);
-  const top = new THREE.Mesh(new THREE.CircleGeometry(stageR, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: "#1d2136", roughness: 0.6, metalness: 0.2 }));
+  // Polished dark showroom floor: it mirrors the studio softboxes instead of greying out under them.
+  const top = new THREE.Mesh(new THREE.CircleGeometry(stageR, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: "#12152a", roughness: 0.28, metalness: 0.7 }));
   top.position.y = 0.005;
   top.receiveShadow = true;
   plat.add(top);
   scene.add(plat);
+  if (mode.kind === "kart" || mode.kind === "solo") {
+    // Showroom touches: a chrome lip, light ticks round the rim, and a
+    // soft beam from above.
+    const lip = new THREE.Mesh(new THREE.TorusGeometry(stageR + 0.13, 0.06, 12, 96), new THREE.MeshPhysicalMaterial({ color: "#dfe6f5", metalness: 1, roughness: 0.14, clearcoat: 1 }));
+    lip.rotation.x = Math.PI / 2;
+    lip.position.y = -0.03;
+    plat.add(lip);
+    const ticks = new THREE.InstancedMesh(new THREE.BoxGeometry(0.05, 0.02, 0.22), new THREE.MeshBasicMaterial({ color: new THREE.Color("#8fb0ff").multiplyScalar(1.8), toneMapped: false }), 60);
+    const m4 = new THREE.Matrix4(), q4 = new THREE.Quaternion(), s4 = new THREE.Vector3(1, 1, 1);
+    for (let i = 0; i < 60; i++) {
+      const a = (i / 60) * Math.PI * 2;
+      q4.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -a);
+      m4.compose(new THREE.Vector3(Math.cos(a) * (stageR - 0.25), 0.012, Math.sin(a) * (stageR - 0.25)), q4, s4.setScalar(i % 5 ? 0.6 : 1));
+      ticks.setMatrixAt(i, m4);
+    }
+    plat.add(ticks);
+    const spot = new THREE.SpotLight("#fff6ea", 45, 20, 0.42, 0.7, 1.4);
+    spot.position.set(0.5, 9, 1.5);
+    scene.add(spot, spot.target);
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.6, stageR * 1.05, 7, 48, 1, true), new THREE.ShaderMaterial({
+      // Pure additive light that leaves the canvas alpha alone (the page shows through it).
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
+      vertexShader: "varying vec2 vUv; varying vec3 vN; varying vec3 vV; void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position,1.); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }",
+      fragmentShader: "varying vec2 vUv; varying vec3 vN; varying vec3 vV; void main(){ float edge = pow(abs(dot(vN, vV)), 1.5); float fade = smoothstep(0.0, 0.35, vUv.y) * (1.0 - vUv.y * 0.6); gl_FragColor = vec4(vec3(0.55, 0.65, 1.0) * edge * fade * 0.09, 0.0); }",
+    }));
+    beam.position.y = 3.4;
+    // In the intro the beam would run off the edge of the stage's box.
+    if (mode.kind === "kart") scene.add(beam);
+  }
 
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
   const spin = new THREE.Group();
@@ -83,15 +192,31 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   let kart: KartModel | null = null;
   let mascots: MascotModel[] = [];
   const coins: THREE.Object3D[] = [];
-  const shadowTex = blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)");
+  const shadowTex = (stageShadow ??= share(blobTex("rgba(0,0,0,.55)", "rgba(0,0,0,0)")));
 
-  const buildKart = (c: CharId) => {
-    if (kart) spin.remove(kart.root, kart.shadowRoot);
-    kart = new KartModel(DRIVER_LOOKS[c], shadowTex);
+  const buildKart = (l: KartLook) => {
+    if (kart) { spin.remove(kart.root, kart.shadowRoot); kart.dispose(); }
+    kart = new KartModel(l, shadowTex, { lite });
     kart.root.rotation.y = 0.5;
     spin.add(kart.root, kart.shadowRoot);
   };
-  const buildMascots = (chars: CharId[]) => {
+  // The shop swaps karts as you browse: compile the new one's shaders off
+  // to the side first, so the turntable never stalls on a new skin.
+  let lookSeq = 0;
+  const swapKart = (l: KartLook, done: () => void) => {
+    const want = ++lookSeq;
+    const next = new KartModel(l, shadowTex, { lite });
+    next.root.rotation.y = kart?.root.rotation.y ?? 0.5;
+    const swap = () => {
+      if (!alive || want !== lookSeq) { next.dispose(); return; }
+      if (kart) { spin.remove(kart.root, kart.shadowRoot); kart.dispose(); }
+      kart = next;
+      spin.add(kart.root, kart.shadowRoot);
+      done();
+    };
+    renderer.compileAsync(next.root, camera, scene).then(swap, swap);
+  };
+  const buildMascots = (chars: DriverId[]) => {
     for (const m of mascots) spin.remove(m.root);
     mascots = chars.map((c, i) => {
       const m = new MascotModel(c, i);
@@ -106,9 +231,11 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
   };
 
   if (mode.kind === "kart") {
-    buildKart(mode.char);
-    camera.position.set(0, 3.0, 9.6);
-    camera.lookAt(0, 0.9, 0);
+    buildKart(mode.look);
+    // The shop's big preview sits further back, so the platform fits.
+    if (mode.far) camera.position.set(0, 3.6, 12.2);
+    else camera.position.set(0, 3.0, 9.6);
+    camera.lookAt(0, mode.far ? 1.1 : 0.9, 0);
   } else {
     buildMascots(mode.kind === "squad" ? mode.chars : [mode.char]);
     if (mode.kind === "squad") {
@@ -129,10 +256,72 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
         coins.push(coin);
       });
     } else {
-      camera.position.set(0, 2.1, 7.4);
-      camera.lookAt(0, 1.2, 0);
+      // Framed a little right of Dili, leaving room for the props.
+      camera.position.set(1.0, 2.3, 9.2);
+      camera.lookAt(0.95, 1.3, 0);
     }
   }
+
+  // Intro props: each pops in beside Dili with a spring, the old one shrinks away.
+  const props = new Map<Prop, THREE.Object3D>();
+  let prop: Prop = "none";
+  let custodian: MascotModel | null = null;
+  let introKart: KartModel | null = null;
+  const makeProp = (p: Prop): THREE.Object3D => {
+    const g = new THREE.Group();
+    if (p === "coin") {
+      const coin = new THREE.Mesh(coinGeometry("dli"), coinMaterials("dli"));
+      coin.scale.setScalar(1.45);
+      coin.name = "spin";
+      g.add(coin);
+      add(g, torus(1.25, 0.03), glow("#ffd84a", 2.6), 0, 0, 0, false).rotation.set(1.25, 0.3, 0);
+      g.position.set(2.0, 2.2, 0.2);
+    } else if (p === "phone") {
+      const ph = new THREE.Group();
+      ph.name = "spin";
+      add(ph, rbox(1.0, 1.95, 0.1, 0.14), plastic("#15161f", 0.3, 0.4));
+      const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 1.84), new THREE.MeshBasicMaterial({ map: appScreenTex(), toneMapped: false }));
+      screen.position.z = 0.056;
+      ph.add(screen);
+      g.add(ph);
+      g.position.set(1.95, 1.95, 0.4);
+      g.scale.setScalar(0.9);
+    } else if (p === "custodian") {
+      custodian = new MascotModel("dili", 3, { team: "#e8384f", glow: "#ff3048" });
+      custodian.root.scale.setScalar(0.9);
+      custodian.root.rotation.y = -0.55;
+      custodian.root.traverse((o) => { (o as THREE.Mesh).castShadow = true; });
+      g.add(custodian.root);
+      g.position.set(2.3, 0, -0.9);
+    } else if (p === "keys") {
+      const k = (label: string, x: number, y: number, col: string) => {
+        const cap = new THREE.Group();
+        add(cap, rbox(0.62, 0.62, 0.3, 0.12), plastic(col, 0.35));
+        const face = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ map: keyTex(label), transparent: true }));
+        face.position.z = 0.16;
+        cap.add(face);
+        cap.position.set(x, y, 0);
+        cap.userData.base = y;
+        g.add(cap);
+      };
+      k("↑", 0, 0.72, "#2fd872");
+      k("←", -0.72, 0, "#f4f6fb");
+      k("↓", 0, 0, "#ffd84a");
+      k("→", 0.72, 0, "#f4f6fb");
+      g.position.set(2.0, 1.7, 0.3);
+      g.rotation.y = -0.35;
+    } else if (p === "kart") {
+      introKart = new KartModel(DILI_LOOK, shadowTex, { lite });
+      introKart.root.rotation.y = -0.9;
+      introKart.driver.visible = false;   // Dili is standing right there
+      g.add(introKart.root, introKart.shadowRoot);
+      g.position.set(2.1, 0, -1.5);
+    }
+    g.visible = false;
+    spin.add(g);
+    return g;
+  };
+  let speaking = false;
 
   // Interaction: drag to spin the kart; click a character to make it wave.
   let vel = mode.kind === "kart" ? 0.35 : 0;
@@ -142,7 +331,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
     moved = 0;
     lastX = e.clientX;
     cv.setPointerCapture(e.pointerId);
-  });
+  }, sig);
   cv.addEventListener("pointermove", (e) => {
     if (!dragging) return;
     const dx = e.clientX - lastX;
@@ -152,7 +341,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       spin.rotation.y += dx * 0.012;
       vel = dx * 0.6;
     }
-  });
+  }, sig);
   const up = (e: PointerEvent) => {
     if (!dragging) return;
     dragging = false;
@@ -163,8 +352,8 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
       for (const m of mascots) m.pose = "wave";
     }
   };
-  cv.addEventListener("pointerup", up);
-  cv.addEventListener("pointercancel", up);
+  cv.addEventListener("pointerup", up, sig);
+  cv.addEventListener("pointercancel", up, sig);
 
   const resize = () => {
     const r = host.getBoundingClientRect();
@@ -181,6 +370,7 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
 
   let raf = 0, last = performance.now(), t = 0, waveT = mode.kind === "kart" ? 1.8 : 0;
   let heldPose: Pose = "idle";
+  let hopT = 9;
   const tick = (now: number) => {
     raf = requestAnimationFrame(tick);
     const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
@@ -195,10 +385,38 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
     if (waveT <= 0) for (const m of mascots) if (m.pose === "wave") m.pose = heldPose;
     // In the line-up, someone waves now and then.
     if (mode.kind === "squad" && Math.floor(t / 4) % 3 === 1 && mascots[1]) mascots[1].pose = t % 4 < 2 ? "wave" : "idle";
-    for (const m of mascots) m.update(t, dt);
+    for (const m of mascots) {
+      m.speaking += ((speaking ? 1 : 0) - m.speaking) * Math.min(1, dt * 12);
+      m.update(t, dt);
+    }
+    if (mode.kind === "solo") {
+      // Every prop eases toward its own target: the current one springs in,
+      // the rest shrink away, however quickly the lines are skipped.
+      for (const [name, obj] of props) {
+        const on = name === prop;
+        let k = (obj.userData.k as number | undefined) ?? 0;
+        k = on ? Math.min(1, k + dt * 1.8) : Math.max(0, k - dt * 4);
+        obj.userData.k = k;
+        obj.visible = k > 0.001;
+        if (!obj.visible) continue;
+        const e = on ? (k >= 1 ? 1 : 1 - Math.pow(2, -9 * k) * Math.cos(k * 9)) : k;
+        obj.scale.setScalar(Math.max(0.001, e) * (name === "kart" ? 0.72 : name === "phone" ? 0.9 : 1));
+        const sp = obj.getObjectByName("spin");
+        if (sp) {
+          sp.rotation.y = name === "coin" ? t * 1.6 : Math.sin(t * 0.8) * 0.35 - 0.3;
+          sp.position.y = Math.sin(t * 1.7) * 0.08;
+        }
+        if (name === "keys") obj.children.forEach((c, i) => { c.position.y = (c.userData.base as number) + Math.max(0, Math.sin(t * 5 - i * 0.9)) * 0.1; });
+      }
+      custodian?.update(t, dt);
+      introKart?.update({ speed: 3, steer: Math.sin(t) * 0.2, slide: 0, hop: 0, squash: 1, roll: 0, flip: 0, boost: Math.max(0, Math.sin(t * 1.3)) * 0.6, glide: 0, wave: 0, time: t }, dt);
+    }
     if (kart) {
+      hopT += dt;
+      const hop = hopT < 0.6 ? Math.sin((hopT / 0.6) * Math.PI) * 0.6 : 0;
+      const squash = hopT < 0.6 ? 1 + Math.sin((hopT / 0.6) * Math.PI) * 0.08 : hopT < 0.9 ? 1 - Math.sin(((hopT - 0.6) / 0.3) * Math.PI) * 0.1 : 1;
       kart.update({
-        speed: 5, steer: Math.sin(t * 0.9) * 0.35, slide: 0, hop: 0, squash: 1, roll: 0, flip: 0,
+        speed: 5, steer: Math.sin(t * 0.9) * 0.35, slide: 0, hop, squash, roll: 0, flip: 0,
         boost: Math.max(0, Math.sin(t * 0.7)) * 0.7, glide: 0, wave: waveT > 0 ? 1 : 0, time: t,
       }, dt);
     }
@@ -211,27 +429,132 @@ export function mountStage(host: HTMLElement, mode: Mode, onPoke?: () => void): 
     ring.rotation.z += dt * 0.3;
     renderer.render(scene, camera);
   };
-  raf = requestAnimationFrame(tick);
+  // Compile the scene's shaders first (in the background where the GPU
+  // allows), then fade the stage in: the menu stays responsive instead of
+  // freezing on the first frame.
+  cv.style.opacity = "0";
+  const reveal = () => {
+    if (!alive) return;
+    cv.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 260, easing: "ease-out" });
+    cv.style.opacity = "";
+    last = performance.now();
+    raf = requestAnimationFrame(tick);
+  };
+  renderer.compileAsync(scene, camera).then(reveal, reveal);
 
   return {
-    setChar(c: CharId) {
-      if (mode.kind === "kart") { buildKart(c); waveT = 1.6; }
-      else if (mode.kind === "solo") buildMascots([c]);
+    setChar(c: DriverId) {
+      if (mode.kind === "solo") buildMascots([c]);
+    },
+    setLook(l: KartLook) {
+      if (mode.kind !== "kart") return;
+      swapKart(l, () => {
+        waveT = 1.6;
+        // A little hop onto the platform.
+        hopT = 0;
+      });
+    },
+    setProp(p: Prop) {
+      if (mode.kind !== "solo" || p === prop) return;
+      prop = p;
+      if (p !== "none" && !props.has(p)) props.set(p, makeProp(p));
+    },
+    setSpeaking(on: boolean) {
+      speaking = on;
     },
     setPose(p: Pose) {
       heldPose = p;
       for (const m of mascots) m.pose = p;
     },
     dispose() {
+      alive = false;
       cancelAnimationFrame(raf);
       ro.disconnect();
-      // Models and textures are shared with the live backdrop (and cached for
-      // the next menu), so only this stage's own GL context is released;
-      // dropping the context frees everything it uploaded.
+      ctl.abort();
+      // The renderer goes back to the pool with its compiled shaders and
+      // uploaded models, so the next menu opens without a stall (building a
+      // fresh GL context and recompiling cost phones well over a second).
       scene.environment?.dispose();
-      renderer.dispose();
-      renderer.forceContextLoss();
+      kart?.dispose();
+      introKart?.dispose();
+      freeStage(scene);
       cv.remove();
+      giveRenderer(renderer);
     },
   };
+}
+
+/** The Dlicom app on the intro phone: chat, a clip, and the wallet. */
+function appScreenTex() {
+  const W = 256, H = 520;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const g = c.getContext("2d")!;
+  const bg = g.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#0f1633");
+  bg.addColorStop(1, "#070a1c");
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = "#3d63ff";
+  g.font = "900 italic 26px Inter, sans-serif";
+  g.fillText("Dlicom", 18, 44);
+  g.fillStyle = "rgba(255,255,255,.5)";
+  g.font = "600 12px Inter, sans-serif";
+  g.fillText("Messages · Feed · Wallet", 18, 64);
+  const bubble = (x: number, y: number, w: number, me: boolean, text: string) => {
+    g.fillStyle = me ? "#3d63ff" : "rgba(255,255,255,.1)";
+    g.beginPath();
+    g.roundRect(x, y, w, 34, 14);
+    g.fill();
+    g.fillStyle = "#fff";
+    g.font = "600 13px Inter, sans-serif";
+    g.fillText(text, x + 12, y + 22);
+  };
+  bubble(16, 86, 170, false, "gm! race tonight? 🏁");
+  bubble(70, 128, 170, true, "always. keys in hand 🔑");
+  bubble(16, 170, 150, false, "see you at the line");
+  // Wallet card.
+  const card = g.createLinearGradient(16, 230, 240, 360);
+  card.addColorStop(0, "#ffd84a");
+  card.addColorStop(1, "#ff9500");
+  g.fillStyle = card;
+  g.beginPath();
+  g.roundRect(16, 226, 224, 128, 18);
+  g.fill();
+  g.fillStyle = "#2a1a00";
+  g.font = "700 12px Inter, sans-serif";
+  g.fillText("SELF-CUSTODY WALLET", 30, 254);
+  g.font = "900 34px Inter, sans-serif";
+  g.fillText("$DLI", 30, 300);
+  g.font = "700 12px Inter, sans-serif";
+  g.fillText("TGE · 2027", 30, 330);
+  // Tab bar.
+  g.fillStyle = "rgba(255,255,255,.08)";
+  g.fillRect(0, H - 64, W, 64);
+  ["#3d63ff", "rgba(255,255,255,.4)", "rgba(255,255,255,.4)", "rgba(255,255,255,.4)"].forEach((col, i) => {
+    g.fillStyle = col;
+    g.beginPath();
+    g.arc(40 + i * 58, H - 32, 10, 0, Math.PI * 2);
+    g.fill();
+  });
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+/** A keycap legend. */
+function keyTex(label: string) {
+  const S = 128;
+  const c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#15161f";
+  g.font = "900 84px Inter, sans-serif";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText(label, S / 2, S / 2 + 4);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }

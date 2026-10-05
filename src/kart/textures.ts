@@ -19,7 +19,7 @@ function tex(c: HTMLCanvasElement, repeat = true, srgb = true): THREE.CanvasText
   const t = new THREE.CanvasTexture(c);
   if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 8;
+  t.anisotropy = 16;   // the renderer clamps this to what the GPU supports
   made.push(t);
   return t;
 }
@@ -323,7 +323,7 @@ export function diliFaceTex() {
 }
 
 /** A round emblem: the Dlicom "D" on a disc. */
-export function emblemTex(bg: string, fg: string, ring: string) {
+export function emblemTex(bg: string, fg: string, ring: string, letter = "D") {
   const S = 128;
   const [c, g] = canvas(S, S);
   g.fillStyle = ring;
@@ -335,11 +335,246 @@ export function emblemTex(bg: string, fg: string, ring: string) {
   g.arc(S / 2, S / 2, S / 2 - 12, 0, Math.PI * 2);
   g.fill();
   g.fillStyle = fg;
-  g.font = "900 78px 'Inter', 'Arial Black', sans-serif";
+  g.font = `900 ${letter.length > 1 ? 54 : 78}px 'Inter', 'Arial Black', sans-serif`;
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.fillText("D", S / 2 + 2, S / 2 + 5);
+  g.fillText(letter, S / 2 + (letter.length > 1 ? 0 : 2), S / 2 + 5);
   return tex(c, false);
+}
+
+export type Livery = "waves" | "matrix" | "gold" | "carbon" | "midnight" | "fade" | "slime" | "tux";
+
+/**
+ * Paint jobs for the shop skins, tiled over the kart shell (about one tile
+ * per metre): Quang's sky and surf, Retree's falling code, gold flake with
+ * pinstripes, bare carbon weave, Rehan's midnight with a blue rim light
+ * and a white ring, Abu Bakker's halftone fade, Vic's toxic slime, and
+ * Abhishek's black satin with gold pinstripes.
+ */
+export function liveryTex(kind: Livery) {
+  const S = 512;
+  const [c, g] = canvas(S, S);
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  if (kind === "waves") {
+    const sky = g.createLinearGradient(0, 0, 0, S);
+    sky.addColorStop(0, "#e9f8ff");
+    sky.addColorStop(0.45, "#8fdcff");
+    sky.addColorStop(1, "#1fb2ef");
+    g.fillStyle = sky;
+    g.fillRect(0, 0, S, S);
+    // Rolling surf: white crests over deeper bands, drawn to wrap sideways.
+    for (let band = 0; band < 5; band++) {
+      const y0 = 150 + band * 80;
+      g.fillStyle = band % 2 ? "rgba(255,255,255,.85)" : "rgba(10,140,210,.55)";
+      g.beginPath();
+      g.moveTo(0, S);
+      for (let x = 0; x <= S; x += 8) {
+        const k = (x / S) * Math.PI * 2;
+        g.lineTo(x, y0 + Math.sin(k * 2 + band) * 18 + Math.sin(k * 5 + band * 2) * 6);
+      }
+      g.lineTo(S, S);
+      g.closePath();
+      g.fill();
+    }
+    // Clouds up top.
+    g.fillStyle = "rgba(255,255,255,.9)";
+    for (let i = 0; i < 9; i++) {
+      const x = rnd() * S, y = 30 + rnd() * 70, r = 18 + rnd() * 26;
+      for (let k = 0; k < 4; k++) {
+        g.beginPath();
+        g.arc(x + k * r * 0.7, y + Math.sin(k) * 6, r * (1 - k * 0.12), 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+  } else if (kind === "matrix") {
+    g.fillStyle = "#0a1450";
+    g.fillRect(0, 0, S, S);
+    const glow = g.createRadialGradient(S / 2, S / 2, 20, S / 2, S / 2, S * 0.7);
+    glow.addColorStop(0, "rgba(47,77,255,.55)");
+    glow.addColorStop(1, "rgba(47,77,255,0)");
+    g.fillStyle = glow;
+    g.fillRect(0, 0, S, S);
+    g.font = "700 22px ui-monospace, 'Courier New', monospace";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    for (let y = 12; y < S; y += 24) {
+      for (let x = 10; x < S; x += 20) {
+        const a = 0.25 + rnd() * 0.6;
+        g.fillStyle = rnd() > 0.93 ? "rgba(220,235,255,.95)" : `rgba(120,150,255,${a})`;
+        g.fillText(String(Math.floor(rnd() * 10)), x, y);
+      }
+    }
+  } else if (kind === "gold") {
+    const base = g.createLinearGradient(0, 0, S, S);
+    base.addColorStop(0, "#ffe27a");
+    base.addColorStop(0.5, "#ffb81c");
+    base.addColorStop(1, "#ffd24d");
+    g.fillStyle = base;
+    g.fillRect(0, 0, S, S);
+    // Metal flake.
+    for (let i = 0; i < 2600; i++) {
+      g.fillStyle = rnd() > 0.5 ? "rgba(255,255,230,.35)" : "rgba(170,110,0,.25)";
+      g.fillRect(rnd() * S, rnd() * S, 2, 2);
+    }
+    g.strokeStyle = "#15161f";
+    g.lineWidth = 6;
+    for (const y of [120, 138, 380, 398]) {
+      g.beginPath(); g.moveTo(0, y); g.lineTo(S, y); g.stroke();
+    }
+  } else if (kind === "midnight") {
+    const base = g.createLinearGradient(0, 0, 0, S);
+    base.addColorStop(0, "#0b0d16");
+    base.addColorStop(1, "#05060b");
+    g.fillStyle = base;
+    g.fillRect(0, 0, S, S);
+    // Blue rim light washing in from the corners (drawn wrapped, so it tiles).
+    for (const [x, y, r, a] of [[0, 0, 230, 0.26], [S, S, 200, 0.18], [S * 0.8, S * 0.1, 130, 0.1]] as const) {
+      for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) {
+        const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+        gr.addColorStop(0, `rgba(47,123,255,${a})`);
+        gr.addColorStop(1, "rgba(47,123,255,0)");
+        g.fillStyle = gr;
+        g.fillRect(0, 0, S, S);
+      }
+    }
+    g.strokeStyle = "rgba(255,255,255,.035)";
+    g.lineWidth = 2;
+    for (let k = -S; k < S; k += 10) { g.beginPath(); g.moveTo(k, S); g.lineTo(k + S, 0); g.stroke(); }
+    // The thin white ring from his picture, glowing, with a faint R inside.
+    g.font = "900 230px 'Inter', 'Arial Black', sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = "rgba(77,141,255,.16)";
+    g.fillText("R", S / 2 + 6, S / 2 + 14);
+    g.shadowColor = "#8fb8ff";
+    g.shadowBlur = 18;
+    g.strokeStyle = "rgba(255,255,255,.92)";
+    g.lineWidth = 5;
+    g.beginPath();
+    g.arc(S / 2, S / 2, 165, 0, Math.PI * 2);
+    g.stroke();
+    g.shadowBlur = 0;
+    // Neon underline.
+    g.fillStyle = "#3d8bff";
+    g.fillRect(0, S * 0.9, S, 7);
+    g.fillStyle = "rgba(61,139,255,.25)";
+    g.fillRect(0, S * 0.9 - 8, S, 23);
+  } else if (kind === "fade") {
+    // Pearl white in the middle fading to graphite through halftone dots,
+    // the same at top and bottom so it tiles.
+    g.fillStyle = "#1a1b21";
+    g.fillRect(0, 0, S, S);
+    g.fillStyle = "#f3f3f0";
+    g.fillRect(0, S * 0.3, S, S * 0.4);
+    const step = 16;
+    for (let y = 0; y < S; y += step) {
+      const d = Math.abs(y + step / 2 - S / 2) / (S / 2);       // 0 middle … 1 edge
+      const k = THREE.MathUtils.clamp((d - 0.32) / 0.5, 0, 1);  // 0 white … 1 graphite
+      if (k <= 0 || k >= 1) continue;
+      g.fillStyle = "#f3f3f0";
+      g.fillRect(0, y, S, step);
+      g.fillStyle = "#1a1b21";
+      for (let x = 0; x < S; x += step) {
+        const ox = (y / step) % 2 ? step / 2 : 0;
+        g.beginPath();
+        g.arc(x + ox, y + step / 2, (step / 2) * Math.sqrt(k) * 1.15, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+    g.fillStyle = "#15161b";
+    g.fillRect(0, S * 0.5 - 3, S, 6);
+    g.fillStyle = "#b9bdc8";
+    g.fillRect(0, S * 0.5 + 9, S, 2);
+  } else if (kind === "slime") {
+    const base = g.createLinearGradient(0, 0, 0, S);
+    base.addColorStop(0, "#7a3cff");
+    base.addColorStop(1, "#3f1a86");
+    g.fillStyle = base;
+    g.fillRect(0, 0, S, S);
+    // Orange splats and dark cross stitches.
+    for (let i = 0; i < 26; i++) {
+      const x = rnd() * S, y = 120 + rnd() * (S - 140), r = 3 + rnd() * 9;
+      g.fillStyle = rnd() > 0.4 ? "rgba(255,122,28,.85)" : "rgba(141,255,74,.7)";
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.strokeStyle = "rgba(20,10,40,.7)";
+    g.lineWidth = 3;
+    for (const [x0, y0] of [[90, 330], [360, 250], [250, 440]]) {
+      g.beginPath(); g.moveTo(x0, y0); g.lineTo(x0 + 90, y0 - 20); g.stroke();
+      for (let k = 0; k < 5; k++) {
+        const x = x0 + 10 + k * 18, y = y0 - 2 - k * 4;
+        g.beginPath(); g.moveTo(x - 4, y - 8); g.lineTo(x + 4, y + 8); g.stroke();
+      }
+    }
+    // Toxic slime poured over the top, dripping, wrapped sideways.
+    const slime = (fill: string, shrink: number) => {
+      g.fillStyle = fill;
+      g.fillRect(0, 0, S, 46 - shrink);
+      let sd = 21;
+      const r2 = () => ((sd = (sd * 16807) % 2147483647) / 2147483647);
+      for (let i = 0; i < 14; i++) {
+        const x = (i / 14) * S + r2() * 20, len = 30 + r2() * 150 - shrink * 2, w = 12 + r2() * 14 - shrink;
+        for (const ox of [-S, 0, S]) {
+          g.beginPath();
+          g.moveTo(x + ox - w, 40);
+          g.quadraticCurveTo(x + ox - w * 0.4, 40 + len * 0.6, x + ox - w * 0.45, 40 + len);
+          g.arc(x + ox, 40 + len, w * 0.45, Math.PI, 0, true);
+          g.quadraticCurveTo(x + ox + w * 0.4, 40 + len * 0.6, x + ox + w, 40);
+          g.fill();
+        }
+      }
+    };
+    slime("#5fd12c", 0);
+    slime("#94ff5a", 6);
+    g.fillStyle = "rgba(255,255,255,.55)";
+    for (let i = 0; i < 14; i++) {
+      g.beginPath();
+      g.ellipse(rnd() * S, 14 + rnd() * 18, 9, 3, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  } else if (kind === "tux") {
+    const base = g.createLinearGradient(0, 0, S, 0);
+    base.addColorStop(0, "#0c0c0f");
+    base.addColorStop(0.5, "#1a1a20");
+    base.addColorStop(1, "#0c0c0f");
+    g.fillStyle = base;
+    g.fillRect(0, 0, S, S);
+    // Gold pinstripes, a gold band with a black inlay, a little flake.
+    g.fillStyle = "rgba(242,193,90,.55)";
+    for (let x = 16; x < S; x += 64) g.fillRect(x, 0, 2, S);
+    for (let i = 0; i < 900; i++) {
+      g.fillStyle = `rgba(255,214,120,${0.08 + rnd() * 0.2})`;
+      g.fillRect(rnd() * S, rnd() * S, 1.5, 1.5);
+    }
+    const band = g.createLinearGradient(0, S * 0.58, 0, S * 0.7);
+    band.addColorStop(0, "#ffe39a");
+    band.addColorStop(0.5, "#d9a640");
+    band.addColorStop(1, "#a8761c");
+    g.fillStyle = band;
+    g.fillRect(0, S * 0.58, S, S * 0.12);
+    g.fillStyle = "#0d0d10";
+    g.fillRect(0, S * 0.635, S, 5);
+  } else {
+    const n = 16, q = S / n;
+    g.fillStyle = "#101219";
+    g.fillRect(0, 0, S, S);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const horiz = (x + y) % 2 === 0;
+      const grad = horiz ? g.createLinearGradient(x * q, 0, x * q + q, 0) : g.createLinearGradient(0, y * q, 0, y * q + q);
+      grad.addColorStop(0, "#171a24");
+      grad.addColorStop(0.5, "#3a4052");
+      grad.addColorStop(1, "#171a24");
+      g.fillStyle = grad;
+      g.fillRect(x * q + 1, y * q + 1, q - 2, q - 2);
+    }
+    // An ice-blue speed line.
+    g.fillStyle = "#8fe3ff";
+    g.fillRect(0, S * 0.62, S, 10);
+  }
+  return tex(c);
 }
 
 /**
@@ -490,25 +725,78 @@ export function coinFaceTex(kind: CoinKind) {
   return tex(c, false);
 }
 
-/** The glowing mark that floats inside item boxes. */
-export function itemGlyphTex() {
-  const S = 128;
+/**
+ * One face of an item box: a bevelled inner frame and a big embossed "?"
+ * with a soft glow, on a transparent ground so the glass shows through.
+ */
+export function itemFaceTex() {
+  const S = 256;
   const [c, g] = canvas(S, S);
-  const glow = g.createRadialGradient(S / 2, S / 2, 4, S / 2, S / 2, S / 2);
-  glow.addColorStop(0, "rgba(255,255,255,.9)");
-  glow.addColorStop(0.5, "rgba(140,200,255,.35)");
-  glow.addColorStop(1, "rgba(140,200,255,0)");
+  const rr = (x: number, y: number, w: number, h: number, r: number) => {
+    g.beginPath();
+    g.roundRect(x, y, w, h, r);
+  };
+  // Inner bevel: a bright hairline with a darker line inside it.
+  rr(22, 22, S - 44, S - 44, 34);
+  g.lineWidth = 7;
+  g.strokeStyle = "rgba(255,255,255,.75)";
+  g.stroke();
+  rr(34, 34, S - 68, S - 68, 26);
+  g.lineWidth = 3;
+  g.strokeStyle = "rgba(255,255,255,.28)";
+  g.stroke();
+  // Corner glints.
+  g.fillStyle = "rgba(255,255,255,.9)";
+  for (const [x, y] of [[40, 40], [S - 40, 40], [40, S - 40], [S - 40, S - 40]]) {
+    g.beginPath();
+    g.arc(x, y, 4, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Soft glow behind the mark.
+  const glow = g.createRadialGradient(S / 2, S / 2, 8, S / 2, S / 2, S * 0.36);
+  glow.addColorStop(0, "rgba(255,255,255,.55)");
+  glow.addColorStop(1, "rgba(255,255,255,0)");
   g.fillStyle = glow;
   g.fillRect(0, 0, S, S);
-  g.font = "900 84px 'Inter', 'Arial Black', sans-serif";
+  // The "?": deep outline, drop shadow, gradient fill, top highlight.
+  g.font = "900 172px 'Inter', 'Arial Black', sans-serif";
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.lineWidth = 10;
-  g.strokeStyle = "#2f6bff";
-  g.strokeText("?", S / 2, S / 2 + 6);
-  g.fillStyle = "#ffffff";
-  g.fillText("?", S / 2, S / 2 + 6);
+  const x = S / 2 + 2, y = S / 2 + 12;
+  g.lineJoin = "round";
+  g.lineWidth = 22;
+  g.strokeStyle = "rgba(20,24,80,.55)";
+  g.strokeText("?", x, y + 7);
+  g.lineWidth = 16;
+  g.strokeStyle = "#2140c8";
+  g.strokeText("?", x, y);
+  const fill = g.createLinearGradient(0, y - 80, 0, y + 80);
+  fill.addColorStop(0, "#ffffff");
+  fill.addColorStop(0.55, "#fff4c2");
+  fill.addColorStop(1, "#ffc63a");
+  g.fillStyle = fill;
+  g.fillText("?", x, y);
   return tex(c, false);
+}
+
+/** Four-point sparkle, for glints that orbit pickups. */
+export function sparkleTex() {
+  const S = 64;
+  const [c, g] = canvas(S, S);
+  const core = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  core.addColorStop(0, "rgba(255,255,255,1)");
+  core.addColorStop(0.18, "rgba(255,255,255,.8)");
+  core.addColorStop(0.4, "rgba(255,255,255,.12)");
+  core.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = core;
+  g.fillRect(0, 0, S, S);
+  g.fillStyle = "rgba(255,255,255,.95)";
+  for (const [w, h] of [[3, S], [S, 3]]) {
+    g.beginPath();
+    g.ellipse(S / 2, S / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  return tex(c, false, false);
 }
 
 /** Soft round blob, used for shadows, glows and particles. */
@@ -832,16 +1120,9 @@ export function rimTex(spoke: string, cap: string) {
   const S = 256;
   const [c, g] = canvas(S, S);
   const R = S / 2;
-  g.fillStyle = "#1a1c24";
-  g.fillRect(0, 0, S, S);
-  // Brake disc glimpsed between the spokes.
-  g.strokeStyle = "#5b5f6e";
-  g.lineWidth = 3;
-  for (let r = 40; r < 100; r += 9) {
-    g.beginPath();
-    g.arc(R, R, r, 0, Math.PI * 2);
-    g.stroke();
-  }
+  // Transparent between the spokes: the brake disc and caliper modelled
+  // behind the rim show through.
+  g.clearRect(0, 0, S, S);
   // Spokes.
   for (let i = 0; i < 6; i++) {
     g.save();
@@ -984,4 +1265,345 @@ export function stoneTex() {
   }
   speckle(g, S, S, 1800, ["rgba(255,255,255,.08)", "rgba(0,0,0,.12)"], 9);
   return tex(c);
+}
+
+/* ------------------------------------------------------------------ */
+/* Neon Town                                                           */
+/* ------------------------------------------------------------------ */
+
+/** Square paving slabs with dark joints. */
+export function pavingTex() {
+  const S = 256;
+  const [c, g] = canvas(S, S);
+  g.fillStyle = "#7e8398";
+  g.fillRect(0, 0, S, S);
+  speckle(g, S, S, 4000, ["#737890", "#8a8fa4", "#6c7188"], 21);
+  g.strokeStyle = "#3b3f52";
+  g.lineWidth = 4;
+  for (let i = 0; i <= 4; i++) {
+    g.beginPath(); g.moveTo(i * 64, 0); g.lineTo(i * 64, S); g.stroke();
+    g.beginPath(); g.moveTo(0, i * 64); g.lineTo(S, i * 64); g.stroke();
+  }
+  return tex(c);
+}
+
+/**
+ * Roughness for rain-soaked tarmac (green channel): mostly damp, with dark
+ * glassy puddles that turn into mirrors for the neon.
+ */
+export function wetTex() {
+  const S = 512;
+  const [c, g] = canvas(S, S);
+  g.fillStyle = "rgb(0,120,0)";
+  g.fillRect(0, 0, S, S);
+  const r = rand(77);
+  for (let i = 0; i < 26; i++) {
+    const x = r() * S, y = r() * S, rad = 20 + r() * 70;
+    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+    gr.addColorStop(0, "rgba(0,52,0,1)");
+    gr.addColorStop(0.7, "rgba(0,70,0,.7)");
+    gr.addColorStop(1, "rgba(0,120,0,0)");
+    g.fillStyle = gr;
+    g.beginPath();
+    g.ellipse(x, y, rad, rad * (0.4 + r() * 0.5), r() * 3, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Streaky drying marks along the lanes.
+  g.globalAlpha = 0.25;
+  for (let i = 0; i < 60; i++) {
+    g.fillStyle = r() < 0.5 ? "rgb(0,170,0)" : "rgb(0,60,0)";
+    g.fillRect(r() * S, r() * S, 2 + r() * 5, 30 + r() * 120);
+  }
+  g.globalAlpha = 1;
+  const t = tex(c, true, false);
+  return t;
+}
+
+/** Concrete jersey barrier with hazard chevrons along the foot. */
+export function barrierTex() {
+  const W = 256, H = 64;
+  const [c, g] = canvas(W, H);
+  g.fillStyle = "#b8bccb";
+  g.fillRect(0, 0, W, H);
+  speckle(g, W, H, 1500, ["#a9adbd", "#c6cad8", "#9ea2b3"], 31);
+  g.fillStyle = "#23263a";
+  g.fillRect(0, H - 16, W, 16);
+  g.fillStyle = "#ffd84a";
+  for (let x = -16; x < W; x += 32) {
+    g.beginPath();
+    g.moveTo(x, H); g.lineTo(x + 12, H - 16); g.lineTo(x + 24, H - 16); g.lineTo(x + 12, H);
+    g.fill();
+  }
+  g.fillStyle = "rgba(0,0,0,.25)";
+  for (let x = 0; x < W; x += 64) g.fillRect(x, 0, 2, H - 16);
+  return tex(c);
+}
+
+/**
+ * Tower facades: a colour map (cladding, mullions, dark glass) and a glow
+ * map with a scatter of lit windows, warm and cool. One tile is a 12 m
+ * square: four floors of four bays.
+ */
+export function facadeTex(variant: number) {
+  const S = 512;
+  const [c, g] = canvas(S, S);
+  const [c2, g2] = canvas(S, S);
+  // Roughness (green): matte cladding, glossy glass that mirrors the neon.
+  const [c3, g3] = canvas(S, S);
+  g3.fillStyle = "rgb(0,215,0)";
+  g3.fillRect(0, 0, S, S);
+  const clad = ["#23273d", "#3a2c3e", "#1f2c3a", "#34323f"][variant];
+  const glassC = ["#0b1130", "#140d22", "#0a1822", "#12121d"][variant];
+  g.fillStyle = clad;
+  g.fillRect(0, 0, S, S);
+  speckle(g, S, S, 3000, ["rgba(255,255,255,.04)", "rgba(0,0,0,.12)"], 50 + variant);
+  g2.fillStyle = "#000";
+  g2.fillRect(0, 0, S, S);
+  const r = rand(100 + variant * 7);
+  const rows = variant === 1 ? 5 : 4, cols = variant === 0 ? 8 : variant === 3 ? 5 : 6;
+  const cw = S / cols, rh = S / rows;
+  // Floor slabs.
+  g.fillStyle = "rgba(255,255,255,.07)";
+  for (let y = 0; y < rows; y++) g.fillRect(0, y * rh + rh - 10, S, 6);
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const inset = variant === 0 ? 3 : variant === 1 ? 14 : 9;
+      const px = x * cw + inset, py = y * rh + 12, w = cw - inset * 2, h = rh - 30;
+      g.fillStyle = glassC;
+      g.fillRect(px, py, w, h);
+      g3.fillStyle = "rgb(0,28,0)";
+      g3.fillRect(px, py, w, h);
+      g.fillStyle = "rgba(150,170,255,.07)";
+      g.beginPath();
+      g.moveTo(px, py + h); g.lineTo(px + w * 0.5, py); g.lineTo(px + w * 0.75, py); g.lineTo(px + w * 0.25, py + h);
+      g.fill();
+      const k = r();
+      if (k < 0.3) {
+        const warm = k < 0.22;
+        const col = warm ? (r() < 0.6 ? "#ffc873" : "#ffe0a6") : (r() < 0.5 ? "#7fc4ff" : "#b89cff");
+        const a = 0.35 + r() * 0.5;
+        g2.globalAlpha = a;
+        const gr = g2.createLinearGradient(0, py, 0, py + h);
+        gr.addColorStop(0, col);
+        gr.addColorStop(1, "#000");
+        g2.fillStyle = col;
+        g2.fillRect(px, py, w, h);
+        g2.globalAlpha = a * 0.8;
+        g2.fillStyle = gr;
+        g2.fillRect(px, py + h * 0.5, w, h * 0.5);
+        g2.globalAlpha = 1;
+        g2.fillStyle = "rgba(0,0,0,.6)";
+        const kind = r();
+        if (kind < 0.35) for (let b = 0; b < h; b += 6) g2.fillRect(px, py + b, w, 2);
+        else if (kind < 0.6) { g2.fillRect(px + w * 0.25, py + h * 0.4, w * 0.18, h * 0.6); g2.fillRect(px + w * 0.21, py + h * 0.3, w * 0.26, h * 0.14); }
+        else if (kind < 0.8) g2.fillRect(px, py, w * 0.5, h);
+        g.fillStyle = col;
+        g.globalAlpha = 0.25;
+        g.fillRect(px, py, w, h);
+        g.globalAlpha = 1;
+      }
+      // Mullion and sill.
+      g.fillStyle = "rgba(0,0,0,.35)";
+      g.fillRect(px + w / 2 - 1, py, 2, h);
+      g.fillStyle = "rgba(255,255,255,.1)";
+      g.fillRect(px - 2, py + h, w + 4, 3);
+    }
+  }
+  if (variant === 3) {
+    // Vertical fins.
+    g.fillStyle = "rgba(255,255,255,.08)";
+    for (let x = 0; x < cols; x++) g.fillRect(x * cw - 3, 0, 6, S);
+  }
+  return { map: tex(c), glow: tex(c2), rough: tex(c3, true, false) };
+}
+
+/** A street-level shopfront: two lit shop windows, each with a neon name. */
+export function shopfrontTex(a: string, b: string, neon: string) {
+  const W = 512, H = 160;
+  const [c, g] = canvas(W, H);
+  g.fillStyle = "#15161f";
+  g.fillRect(0, 0, W, H);
+  [a, b].forEach((name, i) => {
+    const x0 = i * (W / 2) + 8, w = W / 2 - 16;
+    // Sign band.
+    g.fillStyle = "#0b0c14";
+    g.fillRect(x0, 6, w, 42);
+    g.font = "900 30px 'Inter', 'Arial Black', sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.shadowColor = i ? neon : "#ffd28a";
+    g.shadowBlur = 14;
+    g.fillStyle = i ? neon : "#ffe2a8";
+    g.fillText(name, x0 + w / 2, 28);
+    g.shadowBlur = 0;
+    // Warm interior behind glass, with shelves and a door.
+    const gr = g.createLinearGradient(0, 54, 0, H);
+    gr.addColorStop(0, "#ffe6b8");
+    gr.addColorStop(1, "#ffb86b");
+    g.fillStyle = gr;
+    g.fillRect(x0, 54, w, H - 60);
+    g.fillStyle = "rgba(60,30,20,.35)";
+    for (let s = 70; s < H - 10; s += 22) g.fillRect(x0 + 8, s, w * 0.55, 4);
+    g.fillStyle = "#2a1c18";
+    g.fillRect(x0 + w * 0.7, 62, w * 0.22, H - 68);
+    g.strokeStyle = "#0b0c14";
+    g.lineWidth = 4;
+    g.strokeRect(x0, 54, w, H - 60);
+  });
+  return tex(c, false);
+}
+
+/** A neon sign: vertical blade (letters stacked) or a horizontal board. */
+export function bladeSignTex(text: string, neon: string, horizontal = false) {
+  const W = horizontal ? 512 : 96, H = horizontal ? 96 : 384;
+  const [c, g] = canvas(W, H);
+  g.fillStyle = "#0b0c14";
+  g.fillRect(0, 0, W, H);
+  g.strokeStyle = neon;
+  g.lineWidth = 5;
+  g.shadowColor = neon;
+  g.shadowBlur = 12;
+  g.strokeRect(6, 6, W - 12, H - 12);
+  g.fillStyle = "#ffffff";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  if (horizontal) {
+    g.font = "900 italic 58px 'Inter', 'Arial Black', sans-serif";
+    g.fillStyle = neon;
+    g.fillText(text, W / 2, H / 2 + 2);
+    g.shadowBlur = 0;
+    g.fillStyle = "rgba(255,255,255,.85)";
+    g.font = "900 italic 58px 'Inter', 'Arial Black', sans-serif";
+    g.globalAlpha = 0.6;
+    g.fillText(text, W / 2, H / 2 + 2);
+  } else {
+    const letters = text.replace(/\s+/g, "").slice(0, 7).split("");
+    const step = (H - 40) / letters.length;
+    g.font = `900 ${Math.min(56, step * 0.9)}px 'Inter', 'Arial Black', sans-serif`;
+    letters.forEach((ch, i) => {
+      g.fillStyle = neon;
+      g.fillText(ch, W / 2, 24 + step * (i + 0.5));
+      g.shadowBlur = 0;
+      g.globalAlpha = 0.55;
+      g.fillStyle = "#ffffff";
+      g.fillText(ch, W / 2, 24 + step * (i + 0.5));
+      g.globalAlpha = 1;
+      g.shadowBlur = 12;
+    });
+  }
+  g.globalAlpha = 1;
+  return tex(c, false);
+}
+
+/**
+ * Glass curtain wall for the big towers: blue-green panels on a fine
+ * mullion grid with floor lines, a few lit floors and office blocks glowing
+ * behind the glass. One tile is 16 m wide by 16 m tall (four floors).
+ */
+export function curtainTex(variant: number) {
+  const S = 512;
+  const [c, g] = canvas(S, S);
+  const [c2, g2] = canvas(S, S);
+  const [c3, g3] = canvas(S, S);
+  const tints = [["#0d2a3f", "#1b4a6b"], ["#1a1638", "#2c2a62"], ["#0f2a2a", "#1d4d4a"], ["#231a2f", "#3d2d52"]][variant % 4];
+  const grad = g.createLinearGradient(0, 0, S, S);
+  grad.addColorStop(0, tints[0]);
+  grad.addColorStop(1, tints[1]);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, S, S);
+  g2.fillStyle = "#000";
+  g2.fillRect(0, 0, S, S);
+  g3.fillStyle = "rgb(0,20,0)";   // glass: glossy
+  g3.fillRect(0, 0, S, S);
+  const r = rand(300 + variant);
+  const cols = 16, rows = 4, cw = S / cols, rh = S / rows;
+  for (let y = 0; y < rows; y++) {
+    // A lit floor: a warm or cool band across most of the width.
+    const lit = r();
+    if (lit < 0.35) {
+      const col = lit < 0.22 ? "#ffd49a" : "#9fd8ff";
+      const x0 = Math.floor(r() * 6) * cw, x1 = S - Math.floor(r() * 6) * cw;
+      g2.fillStyle = col;
+      g2.globalAlpha = 0.35 + r() * 0.4;
+      g2.fillRect(x0, y * rh + 10, x1 - x0, rh - 22);
+      g2.globalAlpha = 1;
+      // Desks and people break the glow up.
+      g2.fillStyle = "rgba(0,0,0,.45)";
+      for (let k = 0; k < 10; k++) g2.fillRect(x0 + r() * (x1 - x0), y * rh + rh * 0.55, 6 + r() * 14, rh * 0.3);
+    } else {
+      for (let x = 0; x < cols; x++) {
+        if (r() < 0.12) {
+          g2.fillStyle = r() < 0.6 ? "#ffcf8a" : "#8fd0ff";
+          g2.globalAlpha = 0.5 + r() * 0.5;
+          g2.fillRect(x * cw + 2, y * rh + 10, cw - 4, rh - 22);
+          g2.globalAlpha = 1;
+        }
+      }
+    }
+    // Spandrel between floors: opaque and matte.
+    g.fillStyle = "rgba(8,10,20,.85)";
+    g.fillRect(0, y * rh + rh - 12, S, 12);
+    g3.fillStyle = "rgb(0,170,0)";
+    g3.fillRect(0, y * rh + rh - 12, S, 12);
+  }
+  // Mullions.
+  g.fillStyle = "rgba(190,210,235,.35)";
+  for (let x = 0; x <= cols; x++) g.fillRect(x * cw - 1, 0, 2, S);
+  // Sky reflection sweeping across the glass.
+  const sh = g.createLinearGradient(0, 0, S, S * 0.6);
+  sh.addColorStop(0, "rgba(255,255,255,0)");
+  sh.addColorStop(0.5, "rgba(170,190,255,.10)");
+  sh.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = sh;
+  g.fillRect(0, 0, S, S);
+  return { map: tex(c), glow: tex(c2), rough: tex(c3, true, false) };
+}
+
+/**
+ * Giant LED screen content: a tall strip of ad panels that scrolls
+ * upward, so each screen shows a slowly changing billboard.
+ */
+export function ledTex(seed: number) {
+  const W = 256, H = 1024;
+  const [c, g] = canvas(W, H);
+  const panels: [string, string, string, string][] = [
+    ["DLICOM", "one app · every chain", "#3d63ff", "#0b1030"],
+    ["$DLI", "TGE · 2027", "#ffc21a", "#1a1200"],
+    ["HOLD", "your own keys", "#39ff9e", "#021a10"],
+    ["DILI KART", "neon town · 5 laps", "#ff3fa4", "#1d0414"],
+  ];
+  const ph = H / panels.length;
+  const off = seed % panels.length;
+  panels.forEach((_, i) => {
+    const [big, small, col, bg] = panels[(i + off) % panels.length];
+    const y = i * ph;
+    const gr = g.createLinearGradient(0, y, W, y + ph);
+    gr.addColorStop(0, bg);
+    gr.addColorStop(1, "#000");
+    g.fillStyle = gr;
+    g.fillRect(0, y, W, ph);
+    g.save();
+    g.shadowColor = col;
+    g.shadowBlur = 18;
+    g.fillStyle = col;
+    g.font = "900 italic 52px 'Inter', 'Arial Black', sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(big, W / 2, y + ph * 0.45);
+    g.restore();
+    g.fillStyle = "#ffffff";
+    g.font = "700 20px 'Inter', sans-serif";
+    g.textAlign = "center";
+    g.fillText(small, W / 2, y + ph * 0.68);
+    g.fillStyle = col;
+    g.fillRect(W * 0.3, y + ph * 0.78, W * 0.4, 4);
+  });
+  // LED pixel grid.
+  g.fillStyle = "rgba(0,0,0,.28)";
+  for (let x = 0; x < W; x += 4) g.fillRect(x, 0, 1, H);
+  for (let y = 0; y < H; y += 4) g.fillRect(0, y, W, 1);
+  const t = tex(c);
+  t.wrapS = THREE.ClampToEdgeWrapping;
+  t.repeat.set(1, 1 / panels.length);
+  return t;
 }

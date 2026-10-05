@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Dili Cart · teaser renderer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,700;0,800;0,900;1,800;1,900&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* Dev only. The game renders at exactly 1920×1080 behind the preview. */
+      body { margin: 0; background: #111; color: #fff; font: 14px Inter, sans-serif; overflow: hidden; }
+      #stage { position: fixed; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; }
+      #out { position: fixed; left: 0; top: 0; width: 960px; height: 540px; z-index: 2; background: #000; }
+      #status { position: fixed; left: 12px; top: 552px; z-index: 3; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <canvas id="out"></canvas>
+    <div id="status">Starting…</div>
+    <script type="module" src="/src/trailer/teaser.ts"></script>
+  </body>
+</html>

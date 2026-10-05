@@ -7,6 +7,7 @@ import { CURB_W, EDGE, ROAD_HALF, WALL, Track, newFrame } from "./track";
 import { grassTufts, plantAll, type Plant } from "./nature";
 import { buildSky, type Sky } from "./sky";
 import { billboards, streetLamps } from "./trackside";
+import { blimp, cornerDetail, floodMasts, pitBuilding } from "./circuit";
 
 export type Quality = "high" | "low";
 
@@ -43,19 +44,29 @@ export interface World {
   flags: THREE.Object3D[];
   /** Middle of the stadium bowl, at ground level. */
   center: THREE.Vector3;
+  /** Weather that follows the camera (Neon Town's drizzle). */
+  weather?: { update(cam: THREE.Camera, dt: number, focus?: THREE.Vector3): void };
+  /** Anything else in the world that moves (screens, trains, traffic). */
+  animate?: (t: number, dt: number) => void;
+  /** Jumbotron faces that can carry a live camera feed. */
+  liveScreens?: THREE.Mesh[];
 }
 
-const WALL_T = 0.7;
-const WALL_H = 1.25;
+export const WALL_T = 0.7;
+export const WALL_H = 1.25;
 
 /** Props that never move. Merged into a few big meshes once the world is built. */
 let STATIC: THREE.Object3D[] = [];
-const keep = <O extends THREE.Object3D>(o: O) => { STATIC.push(o); return o; };
+export const keep = <O extends THREE.Object3D>(o: O) => { STATIC.push(o); return o; };
+/** Hand over (and clear) the props gathered by `keep`, for merging. */
+export function takeStatic() { const s = STATIC; STATIC = []; return s; }
 
 export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, track: Track, diliImg: HTMLImageElement | null, quality: Quality = "high"): World {
   /* ---------- light ---------- */
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  room.dispose();
   scene.environmentIntensity = 0.42;
   pmrem.dispose();
 
@@ -66,7 +77,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
   scene.add(new THREE.HemisphereLight("#8fa4ff", "#2a2f3e", 0.72));
   const sun = new THREE.DirectionalLight("#ffc07a", 2.1);
   sun.castShadow = true;
-  sun.shadow.mapSize.setScalar(quality === "low" ? 1024 : 2048);
+  sun.shadow.mapSize.setScalar(quality === "low" ? 1024 : 4096);
   const sc = sun.shadow.camera;
   sc.left = -38; sc.right = 38; sc.top = 38; sc.bottom = -38; sc.near = 1; sc.far = 220;
   sun.shadow.bias = -0.0004;
@@ -206,14 +217,19 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
   const gateLamps = buildStart(scene, track);
 
   /* ---------- stadium ---------- */
-  buildStadium(scene, track, diliImg);
+  const liveScreens = buildStadium(scene, track, diliImg);
+  pitBuilding(scene, track, keep);
+  if (quality !== "low") cornerDetail(scene, track, keep);
+  const bowlC = new THREE.Vector3(bw.cx, 0, bw.cz);
+  floodMasts(scene, bowlC, bw.rx, bw.rz, keep);
+  const airship = blimp(scene, bowlC, Math.min(bw.rx, bw.rz) * 0.55);
 
   /* ---------- props ---------- */
   const props = dressInfield(scene, track, quality);
   mergeStatic(scene, STATIC, true);
   STATIC = [];
 
-  return { sun, gateLamps, sky, water, ...props, center: new THREE.Vector3(bw.cx, 0, bw.cz) };
+  return { sun, gateLamps, sky, water, ...props, center: new THREE.Vector3(bw.cx, 0, bw.cz), animate: (t: number) => airship.update(t), liveScreens };
 }
 
 /* ================================================================== */
@@ -227,7 +243,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, tr
  * texture axes, for things like walls whose artwork runs along the track;
  * `uSign` flips that direction so lettering reads the right way round.
  */
-function strip(
+export function strip(
   track: Track, from: number, to: number, step: number,
   a: [number, number], b: [number, number], vPerM: number,
   mat: THREE.Material, alongU: boolean, uSign = 1,
@@ -265,7 +281,7 @@ function strip(
 }
 
 /** Vertical glow falloff for the neon halo: dark → bright at the line → dark. */
-function haloTex() {
+export function haloTex() {
   const c = document.createElement("canvas");
   c.width = 4;
   c.height = 64;
@@ -297,7 +313,7 @@ function ringIndices(from: number, to: number, step: number) {
  * track descends through a hairpin, an unclamped slope from the high side
  * would sit on top of the low side.
  */
-function embankment(track: Track, from: number, to: number, s: number, mat: THREE.Material) {
+export function embankment(track: Track, from: number, to: number, s: number, mat: THREE.Material) {
   const pos: number[] = [];
   const uv: number[] = [];
   const index: number[] = [];
@@ -349,7 +365,7 @@ function embankment(track: Track, from: number, to: number, s: number, mat: THRE
 }
 
 /** Closes the underside of raised road so there's no see-through gap. */
-function underside(track: Track, from: number, to: number, mat: THREE.Material) {
+export function underside(track: Track, from: number, to: number, mat: THREE.Material) {
   const m = strip(track, from, to, 4, [WALL + WALL_T, -3], [-(WALL + WALL_T), -3], 1 / 10, mat, false);
   return m;
 }
@@ -358,9 +374,16 @@ function underside(track: Track, from: number, to: number, mat: THREE.Material) 
 /* Landmarks                                                           */
 /* ================================================================== */
 
-function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture) {
+export function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture, withLake = true) {
   const f = newFrame();
-  // Kicker ramp: the last few metres before the lip rise into a lip.
+  buildRamp(scene, track);
+  abutments(scene, track, f);
+  if (withLake) lake(scene, track, water, f);
+}
+
+/** Kicker ramp: the last few metres before the lip rise into a lip. */
+export function buildRamp(scene: THREE.Scene, track: Track) {
+  const f = newFrame();
   const rampLen = 7;
   const chev = T.chevronTex();
   chev.repeat.set(3, 1);
@@ -390,7 +413,9 @@ function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture) {
   const ramp = new THREE.Mesh(rg, rampMat);
   ramp.receiveShadow = true;
   scene.add(ramp);
+}
 
+function abutments(scene: THREE.Scene, track: Track, f: ReturnType<typeof newFrame>) {
   // Stone abutments where the road stops and starts again. Each one is the
   // full cross-section — embankment slopes, walls and deck — so every cut
   // end at the gap is closed off.
@@ -430,7 +455,9 @@ function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture) {
     band.rotation.y = Math.atan2(f.tan.x, f.tan.z);
     scene.add(keep(band));
   }
+}
 
+function lake(scene: THREE.Scene, track: Track, water: THREE.Texture, f: ReturnType<typeof newFrame>) {
   // A round lake under the gap, with a sandy shore and lily pads.
   track.frame((track.lipU + track.landU) / 2, f);
   const c = new THREE.Vector3(f.pos.x, 0, f.pos.z);
@@ -452,7 +479,7 @@ function buildJump(scene: THREE.Scene, track: Track, water: THREE.Texture) {
   }
 }
 
-function buildStart(scene: THREE.Scene, track: Track) {
+export function buildStart(scene: THREE.Scene, track: Track, banner = "DLICOM GRAND PRIX") {
   const f = newFrame();
   track.frame(track.startU, f);
   const yaw = Math.atan2(f.tan.x, f.tan.z);
@@ -509,7 +536,7 @@ function buildStart(scene: THREE.Scene, track: Track) {
   const span = px * 2 + 3.2;
   M.add(gate, M.rbox(span, 2.6, 1.4, 0.5), M.plastic("#2f6bff", 0.3), 0, 11.1, 0);
   const bannerMat = new THREE.MeshStandardMaterial({
-    map: T.bannerTex("DLICOM GRAND PRIX", "#2f6bff", "#ffffff", 1024, 160),
+    map: T.bannerTex(banner, "#2f6bff", "#ffffff", 1024, 160),
     roughness: 0.4, emissive: "#ffffff", emissiveIntensity: 0.15,
   });
   for (const z of [0.72, -0.72]) {
@@ -674,6 +701,7 @@ function buildStadium(scene: THREE.Scene, track: Track, diliImg: HTMLImageElemen
     { a: Math.PI * 0.08, cap: "GO DILI\nGO!" },
     { a: Math.PI * 0.5, cap: "DLICOM\nTV" },
   ];
+  const live: THREE.Mesh[] = [];
   screens.forEach((s, i) => {
     const p = ringPoint(s.a, 6, 17);
     const grp = new THREE.Group();
@@ -685,10 +713,44 @@ function buildStadium(scene: THREE.Scene, track: Track, diliImg: HTMLImageElemen
     const scr = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({
       map: T.screenTex(diliImg, s.cap, i % 2 ? "#2f6bff" : "#7b3fff"), toneMapped: false,
     }));
-    grp.add(scr);
     M.add(grp, M.cyl(0.8, 0.8, 12, 10), M.plastic("#e8edf8", 0.5), -w * 0.3, -h / 2 - 5, -1);
     M.add(grp, M.cyl(0.8, 0.8, 12, 10), M.plastic("#e8edf8", 0.5), w * 0.3, -h / 2 - 5, -1);
+    if (s.cap !== "DLICOM\nTV") { grp.add(scr); return; }
+    // The TV screens stay separate meshes so the race can feed them live
+    // pictures, with a broadcast bug in the corner.
+    const face = new THREE.Group();
+    face.position.copy(grp.position);
+    face.quaternion.copy(grp.quaternion);
+    face.add(scr);
+    const bug = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.35), new THREE.MeshBasicMaterial({ map: liveBugTex(), transparent: true, toneMapped: false, depthWrite: false }));
+    bug.position.set(-w / 2 + 4.1, h / 2 - 1.2, 0.05);
+    face.add(bug);
+    scene.add(face);
+    live.push(scr);
   });
+  return live;
+}
+
+/** "● LIVE | DLICOM TV", for the corner of the jumbotron feed. */
+function liveBugTex() {
+  const c = document.createElement("canvas");
+  c.width = 512; c.height = 96;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "rgba(8,10,24,0.78)";
+  g.beginPath(); g.roundRect(0, 0, 512, 96, 18); g.fill();
+  g.fillStyle = "#ff2f45";
+  g.beginPath(); g.roundRect(0, 0, 176, 96, [18, 0, 0, 18]); g.fill();
+  g.fillStyle = "#fff";
+  g.beginPath(); g.arc(40, 48, 13, 0, Math.PI * 2); g.fill();
+  g.font = "italic 900 50px Inter, system-ui, sans-serif";
+  g.textBaseline = "middle";
+  g.fillText("LIVE", 64, 50);
+  g.font = "800 40px Inter, system-ui, sans-serif";
+  g.fillStyle = "#cfd8ff";
+  g.fillText("DLICOM TV", 200, 50);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }
 
 function dressInfield(scene: THREE.Scene, track: Track, quality: Quality) {
@@ -741,6 +803,9 @@ function dressInfield(scene: THREE.Scene, track: Track, quality: Quality) {
       for (let k = 0; k < 4; k++) tufts.push({ x: x + (rnd(n, 10 + k) - 0.5) * 6, y: 0, z: z + (rnd(n, 20 + k) - 0.5) * 6, s: 0.8 + rnd(n, 30 + k) * 0.7 });
     }
   }
+  // Trees by the track keep full detail and shadows; the groves further out
+  // are lighter and don't cast (they're rarely inside the shadow box anyway).
+  const nearCount = plants.length;
   // Groves across the open ground: clusters read as natural, even spacing doesn't.
   for (let gI = 0; gI < 70 * density; gI++) {
     const cx = bowlE.cx + (rnd(gI, 40) - 0.5) * bowlE.rx * 1.8;
@@ -757,7 +822,8 @@ function dressInfield(scene: THREE.Scene, track: Track, quality: Quality) {
       for (let t = 0; t < 3; t++) tufts.push({ x: x + (rnd(gI * 7 + k, t) - 0.5) * 5, y: 0, z: z + (rnd(gI * 5 + k, t + 9) - 0.5) * 5, s: 0.7 + rnd(k, t) * 0.8 });
     }
   }
-  plantAll(scene, plants, quality === "low" ? 2 : 3);
+  plantAll(scene, plants.slice(0, nearCount), quality === "low" ? 2 : 3);
+  plantAll(scene, plants.slice(nearCount), 2, false);
   if (quality !== "low") grassTufts(scene, tufts);
 
   // The giant Dlicom "D" in the infield, like the landmark letter in the reference.
@@ -837,7 +903,7 @@ function dressInfield(scene: THREE.Scene, track: Track, quality: Quality) {
  * chunk. Hundreds of trees become a dozen draw calls, and chunking keeps
  * frustum and shadow culling useful.
  */
-function mergeStatic(scene: THREE.Scene, objs: THREE.Object3D[], shadows: boolean) {
+export function mergeStatic(scene: THREE.Scene, objs: THREE.Object3D[], shadows: boolean) {
   const CHUNK = 110;
   const buckets = new Map<string, { mat: THREE.Material; geos: THREE.BufferGeometry[] }>();
   for (const o of objs) {
@@ -904,18 +970,20 @@ function crowdMaterial() {
         vec2 cuv = vMapUv;
         float col = floor(cuv.x * 68.0);
         float hop = max(0.0, sin(uCrowdT * 7.0 + col * 1.7 + floor(cuv.y * 10.0) * 2.3));
-        cuv.y += hop * hop * 0.012;
+        // A Mexican wave rolling round the stands (twice per lap of the bowl).
+        float wave = pow(max(0.0, sin(col / 68.0 * 0.41888 - uCrowdT * 1.1)), 10.0);
+        cuv.y += hop * hop * 0.012 + wave * 0.035;
         vec4 sampledDiffuseColor = texture2D(map, cuv);
         diffuseColor *= sampledDiffuseColor;`)
       .replace("#include <emissivemap_fragment>", `
         vec4 emissiveColor = texture2D(emissiveMap, cuv);
-        float twinkle = 0.55 + 0.45 * sin(uCrowdT * 3.0 + col * 0.9);
+        float twinkle = 0.55 + 0.45 * sin(uCrowdT * 3.0 + col * 0.9) + wave * 1.2;
         totalEmissiveRadiance *= emissiveColor.rgb * twinkle;`);
   };
   return m;
 }
 
-function inflatableArch() {
+export function inflatableArch() {
   const g = new THREE.Group();
   const R = WALL + 0.8;
   const segs = 10;

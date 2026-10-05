@@ -14,24 +14,26 @@ export interface Sky {
   update(t: number): void;
 }
 
-export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THREE.Vector3): Sky {
+export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THREE.Vector3, mood: "dusk" | "night" = "dusk", withCity = true): Sky {
   const uTime = { value: 0 };
+  const night = mood === "night";
   const dome = new THREE.Mesh(
     new THREE.SphereGeometry(2600, 48, 24),
     new THREE.ShaderMaterial({
       side: THREE.BackSide, depthWrite: false, fog: false,
       uniforms: {
-        uTop: { value: new THREE.Color("#050a26") },
-        uMid: { value: new THREE.Color("#23349c") },
-        uViolet: { value: new THREE.Color("#8a4fb8") },
-        uPink: { value: new THREE.Color("#f07aa8") },
-        uHor: { value: new THREE.Color("#ffb45c") },
+        uTop: { value: new THREE.Color(night ? "#010209" : "#050a26") },
+        uMid: { value: new THREE.Color(night ? "#070c2e" : "#23349c") },
+        uViolet: { value: new THREE.Color(night ? "#1e1452" : "#8a4fb8") },
+        uPink: { value: new THREE.Color(night ? "#5a1f6e" : "#f07aa8") },
+        uHor: { value: new THREE.Color(night ? "#b8367a" : "#ffb45c") },
         uSun: { value: sunDir },
+        uNight: { value: night ? 1 : 0 },
         uTime,
       },
       vertexShader: `varying vec3 vD; void main(){ vD = position; vec4 p = projectionMatrix * modelViewMatrix * vec4(position,1.); gl_Position = p.xyww; }`,
       fragmentShader: `
-        uniform vec3 uTop, uMid, uViolet, uPink, uHor, uSun; uniform float uTime;
+        uniform vec3 uTop, uMid, uViolet, uPink, uHor, uSun; uniform float uTime; uniform float uNight;
         varying vec3 vD;
         float hash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
         void main(){
@@ -43,13 +45,20 @@ export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THRE
           vec3 c = mix(hor, uViolet, smoothstep(0.02, 0.16, h));
           c = mix(c, uMid, smoothstep(0.12, 0.38, h));
           c = mix(c, uTop, smoothstep(0.34, 0.9, h));
-          // Sun: a hot disc, a soft glow and a wide warm haze.
           float s = max(dot(d, uSun), 0.0);
-          c += vec3(1.0, 0.86, 0.6) * (smoothstep(0.9993, 0.9996, s) * 2.2 + pow(s, 60.0) * 0.55 + pow(s, 8.0) * 0.16);
-          // Stars come out overhead, twinkling.
+          if (uNight > 0.5) {
+            // Moon: a pale disc with soft maria, a cool halo.
+            float disc = smoothstep(0.99955, 0.99975, s);
+            float maria = 0.85 + 0.15 * sin(d.x * 900.0) * sin(d.y * 700.0);
+            c += vec3(0.85, 0.9, 1.0) * (disc * 1.6 * maria + pow(s, 400.0) * 0.5 + pow(s, 30.0) * 0.12);
+          } else {
+            // Sun: a hot disc, a soft glow and a wide warm haze.
+            c += vec3(1.0, 0.86, 0.6) * (smoothstep(0.9993, 0.9996, s) * 2.2 + pow(s, 60.0) * 0.55 + pow(s, 8.0) * 0.16);
+          }
+          // Stars come out overhead, twinkling (a full sky of them at night).
           vec3 cell = floor(d * 380.0);
           float st = hash(cell);
-          float star = step(0.9965, st) * smoothstep(0.28, 0.75, h);
+          float star = step(0.9965 - uNight * 0.0035, st) * smoothstep(0.28 - uNight * 0.2, 0.75 - uNight * 0.4, h);
           float tw = 0.6 + 0.4 * sin(uTime * (2.0 + st * 5.0) + st * 60.0);
           c += vec3(0.85, 0.9, 1.0) * star * tw * 0.9;
           gl_FragColor = vec4(c, 1.0);
@@ -72,8 +81,9 @@ export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THRE
     const lit = Math.max(0, toward.dot(new THREE.Vector3(sunDir.x, 0, sunDir.z).normalize()));
     const mat = new THREE.SpriteMaterial({
       map: tex[i % tex.length], transparent: true, depthWrite: false, fog: false,
-      color: new THREE.Color().setRGB(1, 0.78 + lit * 0.2, 0.86 - lit * 0.18),
-      opacity: far ? 0.75 : 0.95,
+      // At night the clouds are dim, lit from below by the city's glow.
+      color: night ? new THREE.Color().setRGB(0.2, 0.16, 0.34) : new THREE.Color().setRGB(1, 0.78 + lit * 0.2, 0.86 - lit * 0.18),
+      opacity: night ? (far ? 0.45 : 0.6) : far ? 0.75 : 0.95,
     });
     const sp = new THREE.Sprite(mat);
     const w = (far ? 560 : 400) * (0.8 + (i % 4) * 0.2);
@@ -85,7 +95,8 @@ export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THRE
 
   // Dlicom City: detailed towers around the stadium, and a hazy far layer
   // of plain towers behind them for depth.
-  const city = buildCity(center);
+  // The Skyway keeps only the far towers: its city is a skyline on the horizon.
+  const city = withCity ? buildCity(center) : { group: new THREE.Group(), update: () => {} };
   const skyline = city.group;
   const windows = windowTexture();
   const farMat = new THREE.MeshLambertMaterial({
@@ -105,7 +116,7 @@ export function buildSky(scene: THREE.Scene, sunDir: THREE.Vector3, center: THRE
     b.translate(center.x + Math.cos(a) * r, h / 2 - 2, center.z + Math.sin(a) * r);
     geos.push(b);
   }
-  skyline.add(new THREE.Mesh(mergeBoxes(geos), farMat));
+  if (withCity) skyline.add(new THREE.Mesh(mergeBoxes(geos), farMat));
   scene.add(skyline);
 
   return {
@@ -140,7 +151,7 @@ function mergeBoxes(geos: THREE.BufferGeometry[]) {
 }
 
 /** A cumulus painted from many overlapping soft puffs, flat base, lit top. */
-function cloudTexture(seed: number) {
+export function cloudTexture(seed: number) {
   const W = 512, H = 220;
   const c = document.createElement("canvas");
   c.width = W; c.height = H;

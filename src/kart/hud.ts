@@ -2,32 +2,128 @@ import "./hud.css";
 
 /**
  * The race HUD: plain DOM over the WebGL canvas, laid out like the kart
- * games it's modelled on. Item slot top-left, minimap top-right, coins and
- * score bottom-left, position bottom-right. Everything animates.
+ * games it's modelled on and finished like a native app: frosted-glass
+ * panels, system type, spring motion. Item slot top-left, minimap
+ * top-right, coins and score bottom-left, position bottom-right.
  */
 
-export type ItemKind = "turbo" | "shield" | "magnet" | "zap";
+export type ItemKind = "turbo" | "shield" | "magnet" | "zap" | "seeker" | "ghost" | "goo";
 
 export const ITEM_NAME: Record<ItemKind, string> = {
   turbo: "DLI Rocket", shield: "D-Shield", magnet: "Coin Magnet", zap: "Freeze Zap",
+  seeker: "Seeker Orb", ghost: "Ghost Mode", goo: "Goo Bomb",
 };
 
+/**
+ * Power-up art: glossy, lit-from-the-top illustrations in the style of an
+ * app icon. Each has its own gradient ids so they can sit side by side.
+ */
 const ICON: Record<ItemKind, string> = {
-  turbo: `<svg viewBox="0 0 64 64"><path d="M20 46c-6 4-8 12-8 12s8-2 12-8z" fill="#ff9f1a"/><path d="M18 44c-3 3-4 8-4 8s5-1 8-4z" fill="#fff3a0"/>
-    <path d="M22 42 42 22c6-6 14-8 16-8 0 2-2 10-8 16L30 50z" fill="#f4f7ff" stroke="#1b1f4d" stroke-width="3" stroke-linejoin="round"/>
-    <path d="M22 42l-8-2 8-10 8 2zM30 50l2 8 10-8-2-8z" fill="#2f6bff" stroke="#1b1f4d" stroke-width="3" stroke-linejoin="round"/>
-    <circle cx="43" cy="29" r="6" fill="#2f6bff" stroke="#1b1f4d" stroke-width="3"/><text x="43" y="33" font-size="9" font-family="Inter,Arial Black" font-weight="900" fill="#fff" text-anchor="middle">D</text></svg>`,
-  shield: `<svg viewBox="0 0 64 64"><defs><radialGradient id="sg" cx=".35" cy=".3"><stop offset="0" stop-color="#e6fbff"/><stop offset=".6" stop-color="#5ec8ff"/><stop offset="1" stop-color="#2f6bff"/></radialGradient></defs>
-    <circle cx="32" cy="32" r="25" fill="url(#sg)" stroke="#1b1f4d" stroke-width="3.5"/><ellipse cx="24" cy="21" rx="8" ry="5" fill="#fff" opacity=".8"/>
-    <text x="33" y="42" font-size="28" font-family="Inter,Arial Black" font-weight="900" fill="#fff" stroke="#1b1f4d" stroke-width="2.5" paint-order="stroke" text-anchor="middle">D</text></svg>`,
-  magnet: `<svg viewBox="0 0 64 64"><path d="M14 12h12v22a6 6 0 0 0 12 0V12h12v22a18 18 0 0 1-36 0z" fill="#ff3d5a" stroke="#1b1f4d" stroke-width="3.5" stroke-linejoin="round"/>
-    <path d="M14 12h12v9H14zM38 12h12v9H38z" fill="#e8eef9" stroke="#1b1f4d" stroke-width="3.5" stroke-linejoin="round"/>
-    <circle cx="52" cy="46" r="7" fill="#ffc21f" stroke="#1b1f4d" stroke-width="3"/><circle cx="12" cy="50" r="5" fill="#ffc21f" stroke="#1b1f4d" stroke-width="3"/></svg>`,
-  zap: `<svg viewBox="0 0 64 64"><path d="M36 4 12 36h16l-6 24 28-34H32z" fill="#ffe14d" stroke="#1b1f4d" stroke-width="3.5" stroke-linejoin="round"/>
-    <path d="M34 10 20 32h8" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".8"/></svg>`,
+  turbo: `<svg viewBox="0 0 64 64"><defs>
+      <linearGradient id="it-body" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffffff"/><stop offset=".6" stop-color="#e3e9ff"/><stop offset="1" stop-color="#9eaae0"/></linearGradient>
+      <linearGradient id="it-fin" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7d97ff"/><stop offset="1" stop-color="#2537c9"/></linearGradient>
+      <linearGradient id="it-nose" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a9b"/><stop offset="1" stop-color="#e3143f"/></linearGradient>
+      <radialGradient id="it-fl" cx=".5" cy=".15" r=".85"><stop offset="0" stop-color="#ffffff"/><stop offset=".3" stop-color="#fff0a0"/><stop offset=".62" stop-color="#ffab1f"/><stop offset="1" stop-color="#ff3d6e" stop-opacity="0"/></radialGradient>
+      <radialGradient id="it-win" cx=".35" cy=".3"><stop offset="0" stop-color="#8fd0ff"/><stop offset="1" stop-color="#1a2a9a"/></radialGradient>
+    </defs>
+    <g stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".55"><path d="M6 40l8-8M4 50l10-10M13 56l8-8"/></g>
+    <g transform="rotate(45 32 32)">
+      <path d="M24 44c0 10 4 18 8 20 4-2 8-10 8-20z" fill="url(#it-fl)"/>
+      <path d="M22 34 11 47l1 3 12-4zM42 34l11 13-1 3-12-4z" fill="url(#it-fin)"/>
+      <path d="M32 3c9 6 12 17 11 29l-1 13H22l-1-13C20 20 23 9 32 3z" fill="url(#it-body)"/>
+      <path d="M32 3c5 3.5 8 8.5 9.6 14H22.4C24 11.5 27 6.5 32 3z" fill="url(#it-nose)"/>
+      <rect x="23" y="43" width="18" height="5" rx="2.5" fill="#2b3160"/>
+      <rect x="30" y="36" width="4" height="15" rx="2" fill="url(#it-fin)"/>
+      <circle cx="32" cy="27" r="6.4" fill="url(#it-win)" stroke="#fff" stroke-width="2.6"/>
+      <circle cx="30" cy="25" r="1.8" fill="#fff" opacity=".85"/>
+      <path d="M26.5 17c-1.6 6-1.8 14-1 22" stroke="#fff" stroke-width="2.4" stroke-linecap="round" fill="none" opacity=".9"/>
+    </g></svg>`,
+  shield: `<svg viewBox="0 0 64 64"><defs>
+      <linearGradient id="is-rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#8cc4ff"/></linearGradient>
+      <linearGradient id="is-body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6ff0ff"/><stop offset=".5" stop-color="#2f7bff"/><stop offset="1" stop-color="#4a2bd6"/></linearGradient>
+      <radialGradient id="is-glow"><stop offset="0" stop-color="#5ec8ff" stop-opacity=".55"/><stop offset="1" stop-color="#5ec8ff" stop-opacity="0"/></radialGradient>
+    </defs>
+    <circle cx="32" cy="33" r="31" fill="url(#is-glow)"/>
+    <path d="M32 3 55 11.5V30c0 15-10 25.5-23 31C19 55.5 9 45 9 30V11.5z" fill="url(#is-rim)"/>
+    <path d="M32 8.4 50 15v15c0 11.8-7.6 20.4-18 25.4C21.6 50.4 14 41.8 14 30V15z" fill="url(#is-body)"/>
+    <path d="M32 8.4 50 15v8.6c-10-2.4-24 .6-36 7.6V15z" fill="#fff" opacity=".22"/>
+    <path d="M24.5 21.5h8.6c6.4 0 10.4 4 10.4 10.2S39.5 42 33.1 42h-8.6zm6.2 5.3v9.9h2.2c2.8 0 4.5-1.8 4.5-4.9s-1.7-5-4.5-5z" fill="#fff"/>
+  </svg>`,
+  magnet: `<svg viewBox="0 0 64 64"><defs>
+      <linearGradient id="im-red" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8595"/><stop offset=".5" stop-color="#ff2d55"/><stop offset="1" stop-color="#b80f38"/></linearGradient>
+      <linearGradient id="im-tip" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#aeb8d4"/></linearGradient>
+      <radialGradient id="im-coin" cx=".35" cy=".3"><stop offset="0" stop-color="#fff6b8"/><stop offset=".6" stop-color="#ffc21f"/><stop offset="1" stop-color="#e08600"/></radialGradient>
+    </defs>
+    <g fill="none" stroke="#ffd84a" stroke-width="2.2" stroke-linecap="round" opacity=".85"><path d="M19 9.5c2.2-2.2 4.2-3 6-3.2M45 9.5c-2.2-2.2-4.2-3-6-3.2"/></g>
+    <circle cx="11" cy="8" r="6" fill="url(#im-coin)"/><circle cx="11" cy="8" r="3.4" fill="none" stroke="#fff6b8" stroke-width="1.4"/>
+    <circle cx="53" cy="8" r="6" fill="url(#im-coin)"/><circle cx="53" cy="8" r="3.4" fill="none" stroke="#fff6b8" stroke-width="1.4"/>
+    <path d="M11 15h14v20a7 7 0 0 0 14 0V15h14v20a21 21 0 0 1-42 0z" fill="url(#im-red)"/>
+    <rect x="11" y="15" width="14" height="9" rx="2.2" fill="url(#im-tip)"/>
+    <rect x="39" y="15" width="14" height="9" rx="2.2" fill="url(#im-tip)"/>
+    <path d="M15 28v7a17 17 0 0 0 7 13.7" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none" opacity=".5"/>
+  </svg>`,
+  zap: `<svg viewBox="0 0 64 64"><defs>
+      <linearGradient id="iz-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".45" stop-color="#a6f3ff"/><stop offset="1" stop-color="#2b9dff"/></linearGradient>
+      <radialGradient id="iz-g"><stop offset="0" stop-color="#9ff0ff" stop-opacity=".7"/><stop offset="1" stop-color="#9ff0ff" stop-opacity="0"/></radialGradient>
+    </defs>
+    <circle cx="32" cy="32" r="30" fill="url(#iz-g)"/>
+    <path d="M37.5 3 12.5 36H28l-5 25 28.5-35H35.8z" fill="url(#iz-b)" stroke="#1d5bd8" stroke-width="2.6" stroke-linejoin="round"/>
+    <path d="M34.5 10 19.5 31.5" stroke="#fff" stroke-width="2.8" stroke-linecap="round"/>
+    <g stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M52 6v12M46 12h12M47.8 7.8l8.4 8.4M56.2 7.8l-8.4 8.4"/></g>
+    <g stroke="#dff9ff" stroke-width="1.8" stroke-linecap="round"><path d="M10 48v8M6 52h8"/></g>
+  </svg>`,
+  seeker: `<svg viewBox="0 0 64 64"><defs>
+      <radialGradient id="ik-core" cx=".38" cy=".32"><stop offset="0" stop-color="#ffffff"/><stop offset=".35" stop-color="#fff0a0"/><stop offset=".75" stop-color="#ffb81c"/><stop offset="1" stop-color="#e07a00"/></radialGradient>
+      <radialGradient id="ik-glow"><stop offset="0" stop-color="#ffd84a" stop-opacity=".6"/><stop offset="1" stop-color="#ffd84a" stop-opacity="0"/></radialGradient>
+      <linearGradient id="ik-ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9fc0ff"/><stop offset="1" stop-color="#2f4dff"/></linearGradient>
+    </defs>
+    <circle cx="34" cy="30" r="29" fill="url(#ik-glow)"/>
+    <g stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".6"><path d="M4 46l10-6M6 56l12-8M16 60l8-6"/></g>
+    <ellipse cx="36" cy="28" rx="21" ry="8" fill="none" stroke="url(#ik-ring)" stroke-width="3.2" transform="rotate(-24 36 28)"/>
+    <circle cx="36" cy="28" r="14" fill="url(#ik-core)" stroke="#fff" stroke-width="2.4"/>
+    <path d="M30.5 21h5.2c4.4 0 7.3 2.8 7.3 7s-2.9 7-7.3 7h-5.2z" fill="#fff" opacity=".95"/>
+    <path d="M34 24.6h1.4c2 0 3.3 1.3 3.3 3.4s-1.3 3.4-3.3 3.4H34z" fill="#ffb81c"/>
+    <circle cx="31" cy="22.5" r="2.6" fill="#fff" opacity=".8"/>
+    <path d="M52 8l2.4 5 5 2.4-5 2.4L52 23l-2.4-5-5-2.4 5-2.4z" fill="#fff"/>
+  </svg>`,
+  ghost: `<svg viewBox="0 0 64 64"><defs>
+      <linearGradient id="ig-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#d9c8ff"/><stop offset="1" stop-color="#8f6bff"/></linearGradient>
+      <radialGradient id="ig-g"><stop offset="0" stop-color="#b58cff" stop-opacity=".7"/><stop offset="1" stop-color="#b58cff" stop-opacity="0"/></radialGradient>
+    </defs>
+    <circle cx="32" cy="32" r="30" fill="url(#ig-g)"/>
+    <path d="M32 6c11 0 19 8.4 19 19.5V56l-6-4.5-6.3 5-6.7-5-6.7 5-6.3-5-6 4.5V25.5C13 14.4 21 6 32 6z" fill="url(#ig-b)" stroke="#6a4bd6" stroke-width="2.4" stroke-linejoin="round"/>
+    <ellipse cx="25" cy="27" rx="4" ry="5.4" fill="#2a1a5e"/><ellipse cx="39" cy="27" rx="4" ry="5.4" fill="#2a1a5e"/>
+    <circle cx="23.8" cy="25.2" r="1.5" fill="#fff"/><circle cx="37.8" cy="25.2" r="1.5" fill="#fff"/>
+    <path d="M28 37q4 3 8 0" fill="none" stroke="#2a1a5e" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M19 16c2.5-4 6.5-6 10-6" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none" opacity=".8"/>
+  </svg>`,
+  goo: `<svg viewBox="0 0 64 64"><defs>
+      <radialGradient id="ib-g" cx=".35" cy=".3"><stop offset="0" stop-color="#d6ffe4"/><stop offset=".45" stop-color="#39ff9e"/><stop offset="1" stop-color="#0f9a52"/></radialGradient>
+    </defs>
+    <ellipse cx="32" cy="54" rx="26" ry="6" fill="#0f9a52" opacity=".45"/>
+    <path d="M14 50c-6 0-6-7 0-8 1-8 6-12 10-12 1-9 7-16 14-15 7 1 10 8 9 15 6 1 9 6 8 12 6 2 5 8-1 8z" fill="url(#ib-g)" stroke="#0a7a40" stroke-width="2.4" stroke-linejoin="round"/>
+    <circle cx="26" cy="38" r="3.6" fill="#0a3a22"/><circle cx="40" cy="38" r="3.6" fill="#0a3a22"/>
+    <circle cx="25" cy="37" r="1.2" fill="#fff"/><circle cx="39" cy="37" r="1.2" fill="#fff"/>
+    <path d="M28 45q5 3 10 0" fill="none" stroke="#0a3a22" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="33" cy="22" r="3" fill="#fff" opacity=".7"/>
+    <circle cx="52" cy="14" r="4" fill="url(#ib-g)"/><circle cx="12" cy="20" r="3" fill="url(#ib-g)"/>
+  </svg>`,
 };
 
-const COIN = `<svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17" fill="#ffc21f" stroke="#1b1f4d" stroke-width="3"/><circle cx="20" cy="20" r="12" fill="none" stroke="#fff1a6" stroke-width="2.4"/><text x="20.5" y="26.5" font-size="17" font-family="Inter,Arial Black" font-weight="900" fill="#2f6bff" stroke="#fff" stroke-width="1.6" paint-order="stroke" text-anchor="middle">D</text></svg>`;
+
+const COIN = `<svg viewBox="0 0 40 40"><defs><radialGradient id="hc-g" cx=".35" cy=".3"><stop offset="0" stop-color="#fff6b8"/><stop offset=".55" stop-color="#ffc21f"/><stop offset="1" stop-color="#e08600"/></radialGradient></defs><circle cx="20" cy="20" r="18" fill="url(#hc-g)"/><circle cx="20" cy="20" r="13.5" fill="none" stroke="#fff3b0" stroke-width="2" opacity=".9"/><path d="M15 12.5h5.2c4.6 0 7.5 2.9 7.5 7.5s-2.9 7.5-7.5 7.5H15zm4.4 3.9v7.2h.9c2 0 3.2-1.4 3.2-3.6s-1.2-3.6-3.2-3.6z" fill="#fff"/></svg>`;
+
+/** Line-style glyphs for the on-screen controls and the pause card. */
+const G = {
+  left: `<svg viewBox="0 0 24 24"><path d="M15 5 8 12l7 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  right: `<svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  up: `<svg viewBox="0 0 24 24"><path d="M5 15l7-7 7 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  item: `<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M10 10a2.2 2.2 0 1 1 3 2c-.7.3-1 .8-1 1.5M12 16.6v.1" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>`,
+  play: `<svg viewBox="0 0 24 24"><path d="M7 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L8.5 4.6A1 1 0 0 0 7 5.5z" fill="currentColor"/></svg>`,
+  restart: `<svg viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4v4h4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  home: `<svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>`,
+  warn: `<svg viewBox="0 0 24 24"><path d="M12 3 2 20h20z" fill="currentColor"/><path d="M12 9v5M12 17v.1" stroke="#ff2d55" stroke-width="2.4" stroke-linecap="round"/></svg>`,
+};
 
 const ORD = (n: number) => (n === 1 ? "st" : n === 2 ? "nd" : n === 3 ? "rd" : "th");
 
@@ -44,47 +140,62 @@ export class Hud {
   private mapDots: SVGCircleElement[] = [];
   private mapXf: (x: number, z: number) => [number, number] = () => [0, 0];
   private rollTimer = 0;
+  private rankRows: HTMLLIElement[] = [];
+  private rankKey = "";
 
-  constructor(parent: HTMLElement, private actions: HudActions) {
+  constructor(parent: HTMLElement, private actions: HudActions, course: { name: string; laps: number; night: boolean; online?: { code: string; people: number }; endless?: boolean } = { name: "Dili Circuit", laps: 3, night: false }) {
     this.el = document.createElement("div");
-    this.el.className = "kh";
+    this.el.className = course.endless ? "kh endless" : "kh";
+    const heart = `<svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 4.4 2.6.8-1.4 2.3-2.6 4.4-2.6 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z"/></svg>`;
     this.el.innerHTML = `
       <div class="kh-lines"></div>
       <div class="kh-vignette"></div>
-      <div class="kh-item"><div class="kh-slot"><div class="kh-ico"></div></div><div class="kh-key">↓</div></div>
-      <div class="kh-top"><div class="kh-lap">LAP <b>1</b><i>/3</i></div><div class="kh-clock">0:00.00</div></div>
-      <svg class="kh-map" viewBox="0 0 170 200"><g class="kh-map-g"></g></svg>
+      <div class="kh-item">
+        <div class="kh-slot"><i class="kh-ring"></i><div class="kh-ico"></div></div>
+        <div class="kh-iname"><span></span><kbd>↓</kbd></div>
+      </div>
+      <div class="kh-top"><div class="kh-lap">${course.endless ? "STAGE <b>1</b>" : `LAP <b>1</b><i>/${course.laps}</i>`}</div><span class="kh-sep"></span><div class="kh-clock">0:00.00</div></div>
+      <div class="kh-mapbox"><svg class="kh-map" viewBox="0 0 170 200"><g class="kh-map-g"></g></svg></div>
+      <ol class="kh-rank"></ol>
       <div class="kh-bl">
         <div class="kh-coins"><span class="kh-coin">${COIN}</span><b>0</b></div>
-        <div class="kh-score"><b>0</b><span>SCORE</span></div>
+        <div class="kh-score"><b>0</b><span>Score</span></div>
       </div>
       <div class="kh-pos"><b data-t="8">8</b><sup data-t="th">th</sup></div>
+      ${course.endless ? `<div class="kh-hearts">${Array.from({ length: 4 }, () => `<i class="on">${heart}</i>`).join("")}</div>
+      <div class="kh-run">
+        <div class="kh-dist"><b>0</b><small>m</small></div>
+        <div class="kh-mult"><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="19"/><circle class="arc" cx="22" cy="22" r="19" pathLength="100"/></svg><b>×1</b></div>
+      </div>` : ""}
       <div class="kh-pops"></div>
       <div class="kh-count"></div>
       <div class="kh-banner"></div>
-      <div class="kh-warn">INCOMING!</div>
+      <div class="kh-replay"><i></i>REPLAY<span>Dlicom TV</span></div>
+      <div class="kh-wait"><i></i><span></span></div>
+      <div class="kh-warn">${G.warn}Incoming</div>
       <div class="kh-title">
         <div class="kh-title-card">
-          <small>DLICOM GRAND PRIX</small>
-          <strong>Dili Circuit</strong>
-          <span>3 laps · 8 racers · beat the Custodians</span>
+          <small>${course.endless ? "Dlicom Infinite" : course.online ? `Online · Room ${course.online.code}` : course.night ? "Dlicom Night Series" : "Dlicom Grand Prix"}</small>
+          <strong>${course.name}</strong>
+          <span>${course.endless ? "4 hearts · no finish line · how far can you go?" : course.online ? `${course.laps} laps · ${course.online.people} players${course.online.people < 8 ? ` + ${8 - course.online.people} Custodians` : ""}` : `${course.laps} laps · 8 racers · beat the Custodians`}</span>
         </div>
-        <em>press any arrow to skip</em>
+        <em>${matchMedia("(pointer: coarse)").matches ? "Tap to skip" : "Press any arrow to skip"}</em>
       </div>
-      <div class="kh-hint"><span><b>← →</b> steer</span><span><b>hold</b> to drift</span><span><b>↑</b> gas</span><span><b>↓</b> use item</span><span><b>Esc</b> pause</span></div>
+      <div class="kh-hint"><span><kbd>←</kbd><kbd>→</kbd>Steer</span><span><kbd>hold</kbd>Drift</span><span><kbd>↑</kbd>Gas</span><span><kbd>↓</kbd>Item</span><span><kbd>Esc</kbd>Pause</span></div>
       <div class="kh-pause">
         <div class="kh-pause-card">
           <strong>Paused</strong>
-          <button data-a="resume">Resume</button>
-          <button data-a="restart" class="ghost">Restart race</button>
-          <button data-a="quit" class="ghost">Quit to hub</button>
+          <p>${course.online ? "The race keeps going online." : "The Custodians are waiting."}</p>
+          <button data-a="resume" class="primary">${G.play}Resume</button>
+          ${course.online ? "" : `<button data-a="restart">${G.restart}Restart race</button>`}
+          <button data-a="quit">${G.home}${course.online ? "Leave the room" : "Quit to hub"}</button>
         </div>
       </div>
       <div class="kh-touch">
-        <div class="kh-tl"><button data-k="ArrowLeft" aria-label="Steer left">◀</button><button data-k="ArrowRight" aria-label="Steer right">▶</button></div>
-        <div class="kh-tr"><button data-k="ArrowDown" class="small" aria-label="Use item">▼</button><button data-k="ArrowUp" class="gas" aria-label="Gas">▲</button></div>
+        <div class="kh-tl"><button data-k="ArrowLeft" aria-label="Steer left">${G.left}</button><button data-k="ArrowRight" aria-label="Steer right">${G.right}</button></div>
+        <div class="kh-tr"><button data-k="ArrowDown" class="small" aria-label="Use item">${G.item}</button><button data-k="ArrowUp" class="gas" aria-label="Gas">${G.up}</button></div>
       </div>
-      <div class="kh-load"><div class="kh-spin"></div><span>Building the stadium…</span></div>`;
+      <div class="kh-load"><div class="kh-spin"><i></i></div><b>${course.name}</b><span>${course.night ? "Lighting up the city…" : "Building the stadium…"}</span></div>`;
     parent.appendChild(this.el);
     this.wireTouch();
     this.el.querySelectorAll<HTMLButtonElement>("[data-a]").forEach((b) => {
@@ -162,6 +273,48 @@ export class Hud {
     });
   }
 
+  /** Infinite: hearts left (a lost one shatters, a found one pops back in). */
+  hearts(n: number) {
+    const prev = this.last.hearts as number | undefined;
+    this.set("hearts", n, () => {
+      const icons = this.el.querySelectorAll<HTMLElement>(".kh-hearts i");
+      icons.forEach((el, i) => {
+        const on = i < n;
+        if (el.classList.contains("on") && !on) {
+          el.animate([{ transform: "scale(1.5) rotate(-12deg)", opacity: 1 }, { transform: "scale(.8) rotate(8deg)", opacity: 0.35 }], { duration: 520, easing: "cubic-bezier(.2,.8,.3,1)" });
+        } else if (!el.classList.contains("on") && on && prev !== undefined) {
+          el.animate([{ transform: "scale(0)" }, { transform: "scale(1.45)", offset: 0.6 }, { transform: "scale(1)" }], { duration: 480, easing: "cubic-bezier(.2,.8,.3,1)" });
+        }
+        el.classList.toggle("on", on);
+      });
+      this.el.querySelector(".kh-hearts")?.classList.toggle("last", n === 1);
+    });
+  }
+
+  /** Infinite: distance run, the multiplier and progress to the next one (0..1). */
+  run(metres: number, mult: number, progress: number) {
+    const txt = metres < 1000 ? String(Math.floor(metres)) : (metres / 1000).toFixed(2);
+    this.set("dist", txt, () => {
+      this.q(".kh-dist b").textContent = txt;
+      this.q(".kh-dist small").textContent = metres < 1000 ? "m" : "km";
+    });
+    this.set("mult", mult, () => {
+      const el = this.q(".kh-mult");
+      el.querySelector("b")!.textContent = `×${mult}`;
+      el.dataset.m = String(mult);
+      bump(el, 1.35);
+    });
+    const p = mult >= 5 ? 100 : Math.round(progress * 50) * 2;
+    this.set("multP", p, () => { this.q(".kh-mult .arc").style.strokeDashoffset = String(100 - p); });
+  }
+
+  stage(n: number) {
+    this.set("lap", n, () => {
+      this.q(".kh-lap").innerHTML = `STAGE <b>${n}</b>`;
+      bump(this.q(".kh-lap"));
+    });
+  }
+
   clock(sec: number) {
     const m = Math.floor(sec / 60);
     const s = sec - m * 60;
@@ -174,20 +327,24 @@ export class Hud {
     clearInterval(this.rollTimer);
     const ico = this.q(".kh-ico");
     const slot = this.q(".kh-item");
+    const name = this.q(".kh-iname span");
     if (!kind) {
       ico.innerHTML = "";
+      name.textContent = "";
       slot.classList.remove("has", "rolling");
       return;
     }
     if (rollMs <= 0) {
       ico.innerHTML = ICON[kind];
+      name.textContent = ITEM_NAME[kind];
       slot.classList.add("has");
       slot.classList.remove("rolling");
-      bump(slot, 1.3);
+      bump(this.q(".kh-slot"), 1.22);
       return;
     }
+    name.textContent = "";
     const kinds = Object.keys(ICON) as ItemKind[];
-    let i = 0;
+    let i = Math.floor(Math.random() * kinds.length);
     slot.classList.add("rolling");
     slot.classList.remove("has");
     const start = performance.now();
@@ -233,12 +390,62 @@ export class Hud {
     g.appendChild(this.mapDots[0]);
   }
 
+  /** The live standings: one row per racer, moved (not rebuilt) as places change. */
+  buildRank(racers: { name: string; color: string; me: boolean; human: boolean }[]) {
+    const ol = this.q(".kh-rank");
+    this.rankRows = racers.map((r) => {
+      const li = document.createElement("li");
+      li.className = r.me ? "me" : r.human ? "hu" : "";
+      li.innerHTML = `<b>0</b><i style="background:${r.color}"></i><span></span>`;
+      li.querySelector("span")!.textContent = r.me ? "You" : r.name || "Custodian";
+      ol.appendChild(li);
+      return li;
+    });
+    this.rankKey = "";
+  }
+
+  /**
+   * `order` is racer indices, first place first. Shows the top three and you
+   * (the top four if you're in them); only touches the DOM when that changes.
+   */
+  rank(order: number[]) {
+    const me = order.indexOf(0);
+    const shown = me < 4 ? order.slice(0, 4) : [...order.slice(0, 3), 0];
+    const key = shown.join(",") + "|" + me;
+    if (key === this.rankKey) return;
+    this.rankKey = key;
+    this.rankRows.forEach((li, i) => {
+      const slot = shown.indexOf(i);
+      if (slot < 0) { li.classList.remove("on"); return; }
+      li.classList.add("on");
+      li.classList.toggle("gap", slot === 3 && me >= 4);
+      li.style.setProperty("--y", String(slot));
+      const pos = order.indexOf(i) + 1;
+      li.firstElementChild!.textContent = String(pos);
+      li.dataset.p = String(pos);
+    });
+  }
+
+  /** Another person (online): a bigger dot with a white ring. */
+  mapHuman(i: number) {
+    const c = this.mapDots[i];
+    if (!c || i === 0) return;
+    c.setAttribute("r", "6");
+    c.setAttribute("stroke", "#fff");
+    c.setAttribute("stroke-width", "2");
+  }
+
   mapDot(i: number, x: number, z: number, color?: string) {
     const c = this.mapDots[i];
     if (!c) return;
     const [px, py] = this.mapXf(x, z);
-    c.setAttribute("cx", px.toFixed(1));
-    c.setAttribute("cy", py.toFixed(1));
+    // Only touch the DOM when a dot actually moved (a repaint each time).
+    const cx = px.toFixed(1), cy = py.toFixed(1);
+    if (c.dataset.p !== cx + cy) {
+      c.dataset.p = cx + cy;
+      c.setAttribute("cx", cx);
+      c.setAttribute("cy", cy);
+    }
     if (color && c.getAttribute("fill") !== color) c.setAttribute("fill", color);
   }
 
@@ -340,6 +547,17 @@ export class Hud {
 
   paused(on: boolean) {
     this.q(".kh-pause").classList.toggle("on", on);
+  }
+
+  /** Online: a quiet line while the room gets everyone ready. */
+  waiting(text: string | null) {
+    const el = this.q(".kh-wait");
+    if (text) el.querySelector("span")!.textContent = text;
+    el.classList.toggle("on", !!text);
+  }
+
+  replay(on: boolean) {
+    this.el.classList.toggle("replaying", on);
   }
 
   racing(on: boolean) {

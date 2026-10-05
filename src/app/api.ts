@@ -1,6 +1,6 @@
 import {
-  CHAR_UNLOCK, isCharId, streakMultiplier, tierOf,
-  type BoardEntry, type CharId, type PlayerDTO, type RaceReply, type RaceSubmit,
+  CHAR_UNLOCK, SKIN_INFO, endlessPoints, isCharId, parseSkins, streakMultiplier, tierOf,
+  type BoardBy, type BoardEntry, type CharId, type EndlessReply, type EndlessSubmit, type PlayerDTO, type RaceReply, type RaceSubmit, type SkinId,
 } from "../../shared/rules";
 
 /**
@@ -34,8 +34,21 @@ const store = {
 let current: Player | null = null;
 
 export const player = () => current;
+/** The session token, for connections that can't send headers (multiplayer rooms). */
+export const token = () => (current && !current.guest ? store.get(TOKEN_KEY) : null);
+
+/** Profiles saved before the shop existed have no wallet yet. */
+function fill(p: Player): Player {
+  const skins = parseSkins((p.skins ?? []).join(","));
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    ...p, coins: n(p.coins), skins, skin: p.skin && skins.includes(p.skin) ? p.skin : null,
+    endless: n(p.endless), endlessDist: n(p.endlessDist), endlessRuns: n(p.endlessRuns),
+  };
+}
 
 function remember(p: Player) {
+  p = fill(p);
   current = p;
   store.set(p.guest ? GUEST_KEY : PLAYER_KEY, JSON.stringify(p));
 }
@@ -112,13 +125,13 @@ export async function restore(): Promise<Player | null> {
       } else {
         // Offline: fall back to the cached profile so the game still opens.
         const cached = store.get(PLAYER_KEY);
-        if (cached) { current = JSON.parse(cached); return current; }
+        if (cached) { current = fill(JSON.parse(cached)); return current; }
       }
     }
   }
   const guest = store.get(GUEST_KEY);
   if (guest) {
-    current = { ...JSON.parse(guest), guest: true };
+    current = fill({ ...JSON.parse(guest), guest: true });
     return current;
   }
   return null;
@@ -150,7 +163,7 @@ export function playAsGuest(): Player {
   const saved = store.get(GUEST_KEY);
   const p: Player = saved ? { ...JSON.parse(saved), guest: true } : {
     handle: "guest", points: 0, best: 0, bestTime: null, races: 0, wins: 0, podiums: 0,
-    streak: 0, char: "dili", tier: tierOf(0), guest: true,
+    streak: 0, char: "dili", tier: tierOf(0), guest: true, coins: 0, skins: [], skin: null, endless: 0, endlessDist: 0, endlessRuns: 0,
   };
   remember(p);
   return p;
@@ -166,6 +179,33 @@ export async function chooseChar(char: CharId): Promise<Player> {
   const r = await call<{ player: PlayerDTO }>("char", { body: { char }, auth: true });
   remember(r.player);
   return r.player;
+}
+
+/** Buy a skin with Dili coins; it's equipped straight away. */
+export async function buySkin(skin: SkinId): Promise<Player> {
+  const p = current!;
+  if (p.skins.includes(skin)) throw new ApiError("You already own that skin.", 409);
+  if (p.coins < SKIN_INFO[skin].price) throw new ApiError("Not enough Dili coins yet.", 402);
+  if (p.guest) {
+    remember({ ...p, coins: p.coins - SKIN_INFO[skin].price, skins: [...p.skins, skin], skin });
+    return current!;
+  }
+  const r = await call<{ player: PlayerDTO }>("skin/buy", { body: { skin }, auth: true, retries: 0 });
+  remember(r.player);
+  return current!;
+}
+
+/** Wear an owned skin, or null for the squad driver's own kart. */
+export async function equipSkin(skin: SkinId | null): Promise<Player> {
+  const p = current!;
+  if (skin && !p.skins.includes(skin)) throw new ApiError("You don't own that skin.", 403);
+  if (p.guest) {
+    remember({ ...p, skin });
+    return current!;
+  }
+  const r = await call<{ player: PlayerDTO }>("skin/equip", { body: { skin }, auth: true });
+  remember(r.player);
+  return current!;
 }
 
 type Pending = { rid: string; handle: string; race: RaceSubmit };
@@ -233,6 +273,7 @@ export async function submitRace(race: RaceSubmit): Promise<RaceReply & { offlin
     podiums: p.podiums + (race.position <= 3 ? 1 : 0),
     streak,
     tier: tierOf(p.points + earned),
+    coins: p.coins + race.coins,
     lastDay: day,
   };
   const isBest = race.score > p.best;
@@ -241,7 +282,60 @@ export async function submitRace(race: RaceSubmit): Promise<RaceReply & { offlin
   return { player: next, earned, multiplier, isBest, rank: 0, offline: !p.guest };
 }
 
-export async function leaderboard(by: "best" | "points"): Promise<{ entries: BoardEntry[]; me: { rank: number; value: number } | null }> {
+/** Infinite runs that couldn't reach the server, waiting to sync. */
+const PENDING_RUNS_KEY = "dilicart.pendingRuns";
+type PendingRun = { rid: string; handle: string; run: EndlessSubmit };
+const readRuns = (): PendingRun[] => { try { return JSON.parse(store.get(PENDING_RUNS_KEY) ?? "[]"); } catch { return []; } };
+const writeRuns = (list: PendingRun[]) => (list.length ? store.set(PENDING_RUNS_KEY, JSON.stringify(list.slice(-20))) : store.del(PENDING_RUNS_KEY));
+
+async function syncRuns() {
+  const p = current;
+  if (!p || p.guest || !store.get(TOKEN_KEY)) return;
+  for (const item of readRuns()) {
+    if (item.handle !== p.handle) continue;
+    try {
+      const r = await call<EndlessReply>("endless", { body: { ...item.run, rid: item.rid }, auth: true, retries: 0 });
+      remember(r.player);
+      writeRuns(readRuns().filter((x) => x.rid !== item.rid));
+    } catch (e) {
+      if (retryable(e) || (e instanceof ApiError && (e.status === 401 || e.status === 429))) break;
+      writeRuns(readRuns().filter((x) => x.rid !== item.rid));
+    }
+  }
+}
+
+/** Record an Infinite run. Guests keep their best on this device. */
+export async function submitEndless(run: EndlessSubmit): Promise<EndlessReply & { offline?: boolean }> {
+  const p = current!;
+  if (!p.guest) {
+    const rid = newRid();
+    try {
+      await syncRuns();
+      const r = await call<EndlessReply>("endless", { body: { ...run, rid }, auth: true });
+      remember(r.player);
+      return r;
+    } catch (e) {
+      if (!retryable(e) && !(e instanceof ApiError && e.status === 429)) throw e;
+      writeRuns([...readRuns(), { rid, handle: p.handle, run }]);
+    }
+  }
+  const earned = endlessPoints(run.score);
+  const isBest = run.score > (p.endless ?? 0);
+  const next: Player = {
+    ...p,
+    points: p.points + earned,
+    tier: tierOf(p.points + earned),
+    coins: p.coins + run.coins,
+    endless: Math.max(p.endless ?? 0, run.score),
+    endlessDist: isBest ? run.distance : p.endlessDist ?? 0,
+    endlessRuns: (p.endlessRuns ?? 0) + 1,
+  };
+  if (p.guest) remember(next);
+  else current = next;
+  return { player: next, earned, isBest, rank: 0, offline: !p.guest };
+}
+
+export async function leaderboard(by: BoardBy): Promise<{ entries: BoardEntry[]; me: { rank: number; value: number } | null }> {
   return call("leaderboard?by=" + by, { auth: true });
 }
 
